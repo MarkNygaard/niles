@@ -326,7 +326,7 @@ fn rate_limited(response: &reqwest::Response) -> Option<String> {
     ))
 }
 
-async fn read_capped(
+pub(crate) async fn read_capped(
     mut response: reqwest::Response,
     cap: usize,
     name: &str,

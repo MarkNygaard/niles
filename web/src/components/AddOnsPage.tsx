@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import {
   Bot,
   Calendar,
@@ -53,6 +53,8 @@ import { UnifiPanel } from "@/components/UnifiPanel";
 import { WebSearchPanel } from "@/components/WebSearchPanel";
 import { PodcastsPanel } from "@/components/PodcastsPanel";
 import { AddPluginDialog } from "@/components/AddPluginDialog";
+import { BrowseTab } from "@/components/BrowseTab";
+import { GroupList } from "@/components/GroupList";
 import { PluginPanel, PluginRow } from "@/components/PluginPanel";
 import { PluginLogo } from "@/components/PluginPreview";
 import { cn } from "@/lib/utils";
@@ -163,6 +165,7 @@ export interface AddOnsPageProps {
  *
  * Connected and Available are two tabs over the same groups, so an
  * add-on is found in the same place whether or not it is set up yet.
+ * Browse lists what other people published, from the add-on library.
  */
 export function AddOnsPage({
   integrations: catalogue,
@@ -205,7 +208,7 @@ export function AddOnsPage({
   // Back from a plugin's sign-in page, its panel opens saying how it went.
   const [returned] = useState(() => connectOutcome(window.location.search));
   const [openPlugin, setOpenPlugin] = useState<string | null>(returned?.plugin ?? null);
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -397,7 +400,7 @@ export function AddOnsPage({
     }
   }
 
-  function results(which: Tab) {
+  function results(which: "connected" | "available") {
     const all = which === "connected" ? added : available;
     const found = all.filter((i) => matchesQuery(i, query));
     // Installed plugins are connected things; there is nothing of theirs
@@ -414,7 +417,7 @@ export function AddOnsPage({
         onOpen={() => setOpenPlugin(plugin.id)}
       />
     );
-    const other: Tab = which === "connected" ? "available" : "connected";
+    const other: "connected" | "available" = which === "connected" ? "available" : "connected";
     const elsewhere = (which === "connected" ? available : added).filter((i) =>
       matchesQuery(i, query),
     );
@@ -505,7 +508,7 @@ export function AddOnsPage({
                 size="sm"
                 disabled={saving}
                 aria-label="Add-on from GitHub"
-                onClick={() => setAdding(true)}
+                onClick={() => setAdding("")}
               >
                 Add
               </Button>
@@ -563,12 +566,14 @@ export function AddOnsPage({
 
           <Tabs value={tab} onValueChange={(value) => setPicked(value as Tab)}>
             <TabsList className="w-full sm:w-fit">
-              {(["connected", "available"] as const).map((value) => (
+              {(["connected", "available", "browse"] as const).map((value) => (
                 <TabsTrigger key={value} value={value} className="sm:px-3">
                   {TAB_LABELS[value]}{" "}
-                  <span className="text-muted-foreground tabular-nums">
-                    {value === "connected" ? connected : available.length}
-                  </span>
+                  {value !== "browse" && (
+                    <span className="text-muted-foreground tabular-nums">
+                      {value === "connected" ? connected : available.length}
+                    </span>
+                  )}
                 </TabsTrigger>
               ))}
             </TabsList>
@@ -578,6 +583,21 @@ export function AddOnsPage({
             <TabsContent value="available" className="flex flex-col gap-5 pt-2">
               {results("available")}
             </TabsContent>
+            <TabsContent value="browse" className="flex flex-col gap-5 pt-2">
+              {tab === "browse" && (
+                <BrowseTab
+                  query={query}
+                  plugins={plugins}
+                  disabled={saving}
+                  onInstall={(repo) => setAdding(repo)}
+                  onOpenInstalled={(id) => {
+                    setPicked("connected");
+                    setOpenPlugin(id);
+                  }}
+                  onAddByAddress={() => setAdding("")}
+                />
+              )}
+            </TabsContent>
           </Tabs>
         </CardContent>
       </Card>
@@ -585,8 +605,11 @@ export function AddOnsPage({
       {error && <p className="text-destructive text-sm">{error}</p>}
 
       <AddPluginDialog
-        open={adding}
-        onOpenChange={setAdding}
+        open={adding !== null}
+        address={adding ?? ""}
+        onOpenChange={(next) => {
+          if (!next) setAdding(null);
+        }}
         onInstalled={(plugin) => {
           setPicked("connected");
           setOpenPlugin(plugin.id);
@@ -927,11 +950,12 @@ export function AddOnsPage({
   );
 }
 
-type Tab = "connected" | "available";
+type Tab = "connected" | "available" | "browse";
 
 const TAB_LABELS: Record<Tab, string> = {
   connected: "Connected",
   available: "Available",
+  browse: "Browse",
 };
 
 /** "UniFi", "UniFi and tado°", "UniFi, tado° and Sonos", "4 more". */
@@ -977,34 +1001,6 @@ function Logo({ integration }: { integration: Integration }) {
     <span data-logo="icon" className="flex shrink-0">
       <Icon aria-hidden className="size-6" />
     </span>
-  );
-}
-
-/** One group: its name above, its rows in one rounded block. */
-function GroupList({
-  id,
-  label,
-  footer,
-  children,
-}: {
-  id: string;
-  label: string;
-  footer?: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <section aria-labelledby={id} className="flex flex-col gap-1.5">
-      <h3
-        id={id}
-        className="text-muted-foreground px-3 text-xs font-medium tracking-wide uppercase"
-      >
-        {label}
-      </h3>
-      <div className="bg-muted/50 divide-border/60 divide-y overflow-hidden rounded-2xl">
-        {children}
-      </div>
-      {footer}
-    </section>
   );
 }
 

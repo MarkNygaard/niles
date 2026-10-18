@@ -61,6 +61,30 @@ export function shortRepo(url: string): string {
   return url.replace(/^https?:\/\//, "");
 }
 
+/** What it may do, in the words the household agrees to, and what it may not. */
+export function PermissionList({
+  permissions,
+  cannot,
+}: {
+  permissions: string[];
+  cannot: string;
+}) {
+  return (
+    <>
+      {permissions.length > 0 ? (
+        <ul className="list-disc pl-5">
+          {permissions.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-muted-foreground">Nothing beyond keeping its own settings and data.</p>
+      )}
+      <p className="text-muted-foreground">{cannot}</p>
+    </>
+  );
+}
+
 /**
  * The approval screen: what is being installed, from where, and what it
  * may do, in the words the household is asked to agree to. For an update
@@ -134,16 +158,7 @@ export function PluginPreviewView({ preview }: { preview: PluginPreview }) {
 
       <section aria-label="Permissions" className="flex flex-col gap-1">
         <p className="font-medium">{updating ? "Everything it may do" : "It will be able to"}</p>
-        {preview.permissions.length > 0 ? (
-          <ul className="list-disc pl-5">
-            {preview.permissions.map((line) => (
-              <li key={line}>{line}</li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-muted-foreground">Nothing beyond keeping its own settings and data.</p>
-        )}
-        <p className="text-muted-foreground">{preview.cannot}</p>
+        <PermissionList permissions={preview.permissions} cannot={preview.cannot} />
         {preview.tools.length > 0 && (
           <details className="text-muted-foreground">
             <summary className="cursor-pointer">What its tools do</summary>

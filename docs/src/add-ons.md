@@ -10,11 +10,12 @@ Strava from **My profile**.
 
 ## The Add-ons page
 
-**Settings → Add-ons** has two tabs, **Connected** and **Available**, and
-a search box. Press **Connect** next to an add-on to add it and open its
-settings. A connected add-on shows a status line, such as **Working** or
-**Needs its address**; click it to change its settings or **Remove
-add-on**. Removing one deletes its saved keys too.
+**Settings → Add-ons** has three tabs, **Connected**, **Available** and
+**Browse**, and a search box. **Browse** lists add-ons other people
+published; see [Add-ons from GitHub](#add-ons-from-github). Press **Connect**
+next to an add-on to add it and open its settings. A connected add-on shows a
+status line, such as **Working** or **Needs its address**; click it to change
+its settings or **Remove add-on**. Removing one deletes its saved keys too.
 
 | Add-on | What it does | What it needs |
 |---|---|---|
@@ -132,12 +133,32 @@ always ends with: "It cannot see your conversations, the people in your
 house, other add-ons' passwords or Niles's database." **What its tools do**
 lists each tool. Press **Install** if you agree.
 
+**Browse** lists add-ons other people published on GitHub, with each one's
+author, latest version, installs and stars. **Listed** ones come first: they
+passed Niles's checks when they were added to the library, and someone read
+what they ask for. That is not a review of their code. **Unreviewed** ones
+are folded away below: their authors only tagged them for Niles. **Install**
+opens the same preview as pasting the address, so you still see and agree to
+what it may do. One that needs a newer Niles says so and can't be installed.
+If the library can't be loaded, Browse says so, and pasting an address still
+works.
+
 An add-on runs walled off from the rest of Niles. It has no files and no
 network beyond the addresses it declared, and it can reach your home
 network only if the list said so.
 
 Its panel shows where it came from, its version and its log, and the
 settings it asks for. It starts once the required ones are filled in.
+
+The panel also says whether it is **Listed**, **Unreviewed** or **No longer
+listed** in the library, with the reason when it was taken off the list. It
+keeps working either way. One the library doesn't know, such as a private
+repo installed by its address, shows no library line.
+
+Installing counts once: after an install, Niles downloads the release's tiny
+`niles-installed` file, and GitHub's count of it is the add-on's number of
+installs. Nothing else is sent. Previews and updates don't count, and
+installing the same add-on again later doesn't count twice.
 
 **Updates.** Niles checks for a newer release every six hours but never
 updates by itself. The row says **Update available**, and **Update…** shows

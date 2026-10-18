@@ -31,6 +31,11 @@ pub(crate) struct CheckArgs {
     /// or its GitHub repo (`jane/niles-spotprice`, or the repo's or a
     /// release's address), whose latest release is checked.
     path: PathBuf,
+    /// Also check what the add-on library needs to list it: a
+    /// niles-installed asset of at most 1 KiB. For a GitHub release only;
+    /// the registry's check of a listing pull request runs this.
+    #[arg(long)]
+    listing: bool,
 }
 
 #[derive(Args)]
@@ -212,7 +217,10 @@ async fn check(args: CheckArgs) -> anyhow::Result<()> {
         && let Some(text) = args.path.to_str()
         && let Ok((repo, tag)) = niles_plugins::github::parse_repo(text)
     {
-        return check_release(repo, tag).await;
+        return check_release(repo, tag, args.listing).await;
+    }
+    if args.listing {
+        bail!("--listing checks a release on GitHub: give the repo, like jane/niles-spotprice");
     }
     let found = locate(&args.path)?;
     let logo = Manifest::parse(&found.manifest)
@@ -236,6 +244,7 @@ async fn check(args: CheckArgs) -> anyhow::Result<()> {
 async fn check_release(
     repo: niles_plugins::github::Repo,
     tag: Option<String>,
+    listing: bool,
 ) -> anyhow::Result<()> {
     use niles_plugins::github::{GitHub, MAX_MANIFEST};
     let github = GitHub::default();
@@ -288,6 +297,16 @@ async fn check_release(
             release.tag_name, m.version
         ));
     }
+    if listing {
+        let problems = niles_plugins::library::listing_problems(&release);
+        if problems.is_empty() {
+            report.passed.push(format!(
+                "{} is attached, so the add-on library counts installs",
+                niles_plugins::library::MARKER
+            ));
+        }
+        report.problems.extend(problems);
+    }
     print_report(&report)
 }
 
@@ -304,6 +323,19 @@ fn print_report(report: &niles_plugins::check::Report) -> anyhow::Result<()> {
             tool.name,
             first_line(&tool.description)
         );
+    }
+    if let Some(manifest) = &report.manifest {
+        // What the household will be asked, in the approval screen's
+        // words: the registry's listing check copies these into the
+        // pull request's summary.
+        let grants = niles_plugins::permissions::grants(manifest, None);
+        if grants.is_empty() {
+            println!("  may      nothing beyond keeping its own settings and data");
+        }
+        for grant in grants {
+            println!("  may      {}", grant.text);
+        }
+        println!("  needs    Niles {} or newer", manifest.min_niles);
     }
     for problem in &report.problems {
         println!("  PROBLEM  {problem}");
@@ -1050,6 +1082,11 @@ impl niles_api::plugins::Plugins for AppPlugins {
         tag: Option<&str>,
     ) -> Result<serde_json::Value, PluginFailure> {
         as_json(self.0.preview(repo, tag).await.map_err(refused)?)
+    }
+
+    async fn library(&self) -> Result<Vec<u8>, PluginFailure> {
+        let shelf = self.0.library().await.map_err(refused)?;
+        serde_json::to_vec(&*shelf).map_err(|e| PluginFailure::Unavailable(e.to_string()))
     }
 
     async fn install(

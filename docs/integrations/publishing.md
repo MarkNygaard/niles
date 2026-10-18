@@ -2,10 +2,13 @@
 
 > Interface 0.2, and 0.1. `niles plugin check` and installing, updating and
 > rolling back from GitHub releases are built (Niles 0.2.0), as described
-> here.
+> here. The add-on library (Browse) and install counts are built (Niles
+> 0.5.0).
 
-A plugin is published as a **GitHub release** on a public repo. There is no
-registry to sign up for: anyone with the repo's URL can install it.
+A plugin is published as a **GitHub release** on a public repo. Anyone with
+the repo's URL can install it, and once the repo has the topic `niles-addon`
+people also find it in the app, under Add-ons → **Browse** (see [the add-on
+library](#the-add-on-library)).
 
 ## Release layout
 
@@ -19,11 +22,13 @@ include:
 | `niles-integration.toml` | yes | The [manifest](manifest.md), at most 64 KiB. Its `version` is the release tag, with or without a `v`. |
 | `integration.wasm` | yes | The component, at most 64 MiB. |
 | `logo.svg` | if the manifest names one | The logo, at most 32 KiB. The asset is found by the file name of the manifest's `logo`, so `logo = "assets/logo.svg"` is the asset `logo.svg`. |
+| `niles-installed` | to be listed | A few bytes, at most 1 KiB, any content. Niles downloads it once per house after a fresh install, so its download count is your number of installs. |
 
 Each cap holds whatever GitHub reports as the asset's size: a download is cut
 off at it.
 
-Other assets are ignored. The release notes (the release's body) are shown to
+Other assets are ignored by the install. The release notes (the release's
+body) are shown to
 the household when they are offered the update, so write them for people:
 what changed for them, not the commit log.
 
@@ -67,7 +72,11 @@ jobs:
         run: cargo build --release --target wasm32-wasip2
 
       - name: Collect
-        run: cp "target/wasm32-wasip2/release/$CRATE.wasm" integration.wasm
+        run: |
+          cp "target/wasm32-wasip2/release/$CRATE.wasm" integration.wasm
+          # Niles downloads this once per house after a fresh install:
+          # its download count is your install count.
+          printf 'Niles counts installs of this add-on by this file.\n' > niles-installed
 
       - name: Release
         env:
@@ -76,11 +85,12 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
-            integration.wasm niles-integration.toml logo.svg
+            integration.wasm niles-integration.toml logo.svg niles-installed
 ```
 
 Once `niles` publishes release binaries, a `niles plugin check .` step before
-`Release` is worth adding.
+`Release` is worth adding. `niles plugin check --listing you/your-repo`
+checks a published release as the add-on library's listing check does.
 
 For JavaScript, Python or Go, replace the toolchain and build steps with
 `jco componentize`, `componentize-py` or `tinygo build`, and keep the rest.
@@ -123,6 +133,52 @@ the old one, with none of its settings, secrets or storage.
 Storage and settings carry across updates. If your stored data's shape
 changes, read the old shape too, or keep a version number in storage and
 migrate in `init`.
+
+## The add-on library
+
+The app lists what other people published under Add-ons → **Browse**, from
+one file the registry repo (`MarkNygaard/niles-addons`) builds from GitHub's
+public data. You don't upload anything; your repo's releases are the truth.
+
+### Being found
+
+Give the repo the topic `niles-addon`, under the repo's About → Topics, or
+with `gh repo edit --add-topic niles-addon`. The library picks it up within
+six hours, as **Unreviewed**.
+
+### Getting listed
+
+Open a pull request on `MarkNygaard/niles-addons` adding your repo to
+`addons.toml`:
+
+```toml
+[[addon]]
+repo = "you/your-repo"
+```
+
+The check runs `niles plugin check --listing you/your-repo` on your latest
+release (everything an install checks, plus `niles-installed`), and puts the
+permissions your add-on asks for in its summary. Mark reads them and merges;
+then it is **Listed**.
+
+Listed means it passed the checks and someone read what it asks for. It
+isn't an audit of your code, later releases aren't reviewed again, and every
+household still approves its permissions on install.
+
+### Install counts
+
+The library shows your installs: GitHub's download count of `niles-installed`,
+summed over your releases. A preview, an update or installing the same
+add-on again doesn't count, and nothing about the household is sent. It's a
+total, not active installs: removals aren't counted. Without
+`niles-installed` the library shows your component's downloads instead,
+labelled as downloads, which counts previews and updates.
+
+### Leaving the library
+
+Remove the topic, or open a pull request removing your entry. An add-on taken
+off the list keeps working where it's installed, and its panel says it is no
+longer listed.
 
 ## Pinning: why a release cannot change under people
 
@@ -207,5 +263,5 @@ The older interfaces are kept, frozen, as
 Not yet. Installing from a private repo needs a GitHub token in Niles,
 which is planned but not specified. Without a token GitHub allows 60 API
 requests an hour from one address: a preview takes one or two, an update check
-one per plugin. When the limit is reached Niles says so, with the time it
-resets.
+one per plugin. Browsing the library takes none of them. When the limit is
+reached Niles says so, with the time it resets.

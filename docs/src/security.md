@@ -151,7 +151,7 @@ its authors or anyone else. These are the outside services it does use:
 | Open-Meteo | The house's location, for the weather |
 | OpenStreetMap | Map tiles and the address search under **Settings → Home** |
 | Apple, Google or Mozilla push | Phone notifications |
-| GitHub | Signing in, and your profile picture |
+| GitHub | Signing in and your profile picture; add-ons: their downloads and update checks, the add-on library's list, and one download of an add-on's `niles-installed` after you install it, which is how the library counts installs |
 
 Speaking the replies (Piper), recognising voices and the fixed phrasings
 all run on your own Niles.

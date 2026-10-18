@@ -6,8 +6,8 @@
 use async_trait::async_trait;
 use niles_core::{Device, DeviceClass, DeviceId, DeviceRegistry, DeviceState, Event, EventBus};
 use niles_plugins::{
-    GitHub, House, Installer, Leftovers, Limits, MemoryStore, Options, PluginStore, Refusal,
-    Runtime, Status,
+    GitHub, House, Installer, Leftovers, Library, Limits, MemoryStore, Options, PluginStore,
+    Refusal, Runtime, Status,
 };
 use niles_tools::DynamicTools;
 use serde_json::json;
@@ -88,6 +88,12 @@ fn plugin_assets(manifest: &str) -> Vec<Asset> {
     assets
 }
 
+/// The release assets plus the marker the add-on library counts by.
+fn with_marker(mut assets: Vec<Asset>) -> Vec<Asset> {
+    assets.push(asset("niles-installed", "Counts installs.\n"));
+    assets
+}
+
 /// A stand-in GitHub with one repo, `jane/hello`.
 struct Hub {
     server: MockServer,
@@ -156,6 +162,31 @@ impl Hub {
 
     fn github(&self) -> GitHub {
         GitHub::at(&self.server.uri()).unwrap()
+    }
+
+    /// How many times a file called `name` was downloaded, from any
+    /// release.
+    async fn downloads_of(&self, name: &str) -> usize {
+        self.server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|r| r.url.path().ends_with(&format!("/{name}")))
+            .count()
+    }
+
+    /// Wait until `name` has been downloaded `n` times: the install
+    /// counts in the background, after it has answered.
+    async fn downloads_reach(&self, name: &str, n: usize) {
+        let until = Instant::now() + Duration::from_secs(10);
+        while self.downloads_of(name).await < n {
+            assert!(
+                Instant::now() < until,
+                "{name} was downloaded fewer than {n} times"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 }
 
@@ -660,7 +691,8 @@ impl niles_tools::Tool for Named {
 /// `jane/hello` at 0.1.0, with 0.2.0 (which also wants button presses),
 /// two 0.3.0 pre-releases, and an older 0.0.9 released after it.
 async fn released_versions(hub: &Hub) {
-    hub.latest("v0.1.0", plugin_assets(MANIFEST)).await;
+    hub.latest("v0.1.0", with_marker(plugin_assets(MANIFEST)))
+        .await;
     let two = manifest("0.2.0").replace(
         "events = [\"device_state\", \"presence\"]",
         "events = [\"device_state\", \"presence\", \"device_action\"]",
@@ -669,19 +701,25 @@ async fn released_versions(hub: &Hub) {
         hub.release(
             "v0.3.0-beta.2",
             true,
-            plugin_assets(&manifest("0.3.0-beta.2")),
+            with_marker(plugin_assets(&manifest("0.3.0-beta.2"))),
         )
         .await,
         hub.release(
             "v0.3.0-beta.1",
             true,
-            plugin_assets(&manifest("0.3.0-beta.1")),
+            with_marker(plugin_assets(&manifest("0.3.0-beta.1"))),
         )
         .await,
-        hub.release("v0.0.9", false, plugin_assets(&manifest("0.0.9")))
+        hub.release(
+            "v0.0.9",
+            false,
+            with_marker(plugin_assets(&manifest("0.0.9"))),
+        )
+        .await,
+        hub.release("v0.2.0", false, with_marker(plugin_assets(&two)))
             .await,
-        hub.release("v0.2.0", false, plugin_assets(&two)).await,
-        hub.release("v0.1.0", false, plugin_assets(MANIFEST)).await,
+        hub.release("v0.1.0", false, with_marker(plugin_assets(MANIFEST)))
+            .await,
     ];
     for release in &releases {
         let tag = release["tag_name"].as_str().unwrap();
@@ -964,4 +1002,187 @@ async fn declared_secrets_are_listed_under_the_plugins_key() {
             "Hello: Token".to_string()
         )]
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fresh_install_downloads_the_marker_once_and_a_preview_never_does() {
+    let hub = Hub::new().await;
+    hub.latest("v0.1.0", with_marker(plugin_assets(MANIFEST)))
+        .await;
+    let home = Home::new(&hub, options()).await;
+    let first = home.installer.preview("jane/hello", None).await.unwrap();
+    let second = home.installer.preview("jane/hello", None).await.unwrap();
+    assert_eq!(
+        hub.downloads_of("niles-installed").await,
+        0,
+        "a preview never downloads the marker"
+    );
+    home.installer
+        .install(&second.token, Some(&second.sha256))
+        .await
+        .unwrap();
+    hub.downloads_reach("niles-installed", 1).await;
+    assert_eq!(
+        hub.downloads_of("niles-installed").await,
+        1,
+        "a fresh install counts once"
+    );
+    drop(first);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_install_answers_before_the_marker_has_downloaded() {
+    let hub = Hub::new().await;
+    hub.latest("v0.1.0", with_marker(plugin_assets(MANIFEST)))
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/download/v0.1.0/niles-installed"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes("Counts installs.\n")
+                .set_delay(Duration::from_secs(60)),
+        )
+        .with_priority(1)
+        .mount(&hub.server)
+        .await;
+    let home = Home::new(&hub, options()).await;
+    let preview = home.installer.preview("jane/hello", None).await.unwrap();
+    let listed = tokio::time::timeout(
+        Duration::from_secs(5),
+        home.installer
+            .install(&preview.token, Some(&preview.sha256)),
+    )
+    .await
+    .expect("the install does not wait on the marker")
+    .unwrap();
+    assert_eq!(listed.id, "hello");
+    hub.downloads_reach("niles-installed", 1).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_update_does_not_download_the_marker() {
+    let hub = Hub::new().await;
+    let home = updated(&hub).await;
+    hub.downloads_reach("niles-installed", 1).await;
+    assert_eq!(
+        hub.downloads_of("niles-installed").await,
+        1,
+        "the one download was the first install; the update to v0.2.0 made none"
+    );
+    drop(home);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn installing_again_after_a_removal_is_not_counted_again() {
+    let hub = Hub::new().await;
+    hub.latest("v0.1.0", with_marker(plugin_assets(MANIFEST)))
+        .await;
+    let home = Home::new(&hub, options()).await;
+    home.install_latest().await;
+    hub.downloads_reach("niles-installed", 1).await;
+    home.installer.remove("hello").await.unwrap();
+    home.install_latest().await;
+    assert_eq!(
+        hub.downloads_of("niles-installed").await,
+        1,
+        "installing it again is not counted again"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_release_without_a_marker_installs_and_counts_nothing() {
+    let hub = Hub::new().await;
+    hub.latest("v0.1.0", plugin_assets(MANIFEST)).await;
+    let home = Home::new(&hub, options()).await;
+    home.install_latest().await;
+    assert_eq!(hub.downloads_of("niles-installed").await, 0);
+    assert!(
+        home.store.count_install("jane/hello").await.unwrap(),
+        "nothing was claimed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_marker_that_fails_does_not_fail_the_install() {
+    let hub = Hub::new().await;
+    hub.latest("v0.1.0", with_marker(plugin_assets(MANIFEST)))
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/download/v0.1.0/niles-installed"))
+        .respond_with(ResponseTemplate::new(500))
+        .with_priority(1)
+        .mount(&hub.server)
+        .await;
+    let home = Home::new(&hub, options()).await;
+    home.install_latest().await;
+    hub.downloads_reach("niles-installed", 1).await;
+    assert!(
+        !home.store.count_install("jane/hello").await.unwrap(),
+        "claimed before the download, at most once"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_oversized_marker_is_never_downloaded() {
+    let hub = Hub::new().await;
+    let mut assets = plugin_assets(MANIFEST);
+    assets.push(Asset {
+        name: "niles-installed",
+        body: b"x".to_vec(),
+        size: Some(10 * 1024),
+        digest: None,
+    });
+    hub.latest("v0.1.0", assets).await;
+    let home = Home::new(&hub, options()).await;
+    home.install_latest().await;
+    assert_eq!(
+        hub.downloads_of("niles-installed").await,
+        0,
+        "a marker over 1 KiB is never downloaded"
+    );
+    assert!(
+        home.store.count_install("jane/hello").await.unwrap(),
+        "not claimed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn browsing_the_library_asks_github_nothing() {
+    let hub = Hub::new().await;
+    hub.answer(
+        "/addons/index.json",
+        200,
+        json!({
+            "version": 1,
+            "addons": [{
+                "repo": "jane/hello",
+                "standing": "listed",
+                "release": {"tag": "v0.1.0", "manifest": MANIFEST},
+            }],
+        }),
+    )
+    .await;
+    let home = Home::build(&hub, options(), |i| {
+        i.with_library(Library::at(&format!("{}/addons/index.json", hub.server.uri())).unwrap())
+    })
+    .await;
+    let first = home.installer.library().await.unwrap();
+    let second = home.installer.library().await.unwrap();
+    assert_eq!(first.addons.len(), 1);
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "the copy kept is served, not fetched again"
+    );
+    let requests = hub.server.received_requests().await.unwrap();
+    assert_eq!(
+        requests.len(),
+        1,
+        "browsing makes one request, for the index: {}",
+        requests
+            .iter()
+            .map(|r| r.url.path().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    assert_eq!(requests[0].url.path(), "/addons/index.json");
 }

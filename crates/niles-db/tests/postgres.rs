@@ -307,6 +307,24 @@ async fn a_plugin_is_installed_its_storage_holds_its_quota_and_removal_takes_its
 
 #[tokio::test]
 #[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn an_install_is_counted_once() {
+    let Some(backend) = backend() else {
+        return;
+    };
+    let plugins = niles_db::PostgresPlugins::new(backend.pool(), "test".into());
+    let repo = format!("test/counted-{}", chrono::Utc::now().timestamp_micros());
+    assert!(
+        plugins.count_install(&repo).await.expect("first claim"),
+        "the first install from a repo is counted"
+    );
+    assert!(
+        !plugins.count_install(&repo).await.expect("second claim"),
+        "ever after, even once the plugin is removed, it is not"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
 async fn training_saved_twice_is_saved_once() {
     use niles_training::TrainingStore;
     let Some(backend) = backend() else {

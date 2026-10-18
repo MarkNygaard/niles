@@ -140,6 +140,7 @@ pub fn router(state: AppState) -> Router {
             post(crate::tool_servers::refresh),
         )
         .route("/plugins", get(crate::plugins::list))
+        .route("/plugins/install/library", get(crate::plugins::library))
         .route("/plugins/install/preview", post(crate::plugins::preview))
         .route("/plugins/install", post(crate::plugins::install))
         .route("/plugins/{id}", delete(crate::plugins::remove))
