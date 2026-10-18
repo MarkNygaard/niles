@@ -80,7 +80,13 @@ Rulesets protect both branches: no direct pushes, no force-pushes, no deletion, 
 
 ## Linear
 
-Issues go in the `niles` team, project *Niles software*. The *Satellite v2 PCB* project and `hardware/` are Mark's; leave them alone. An agent reaches Linear through Linear's MCP server (`https://mcp.linear.app/mcp`), signed in as the person running it, so what it files is theirs.
+Issues go in the `niles` team, in one of three projects:
+
+- ***Niles software*:** everything outside `firmware/` and `hardware/`. Open to anyone working on Niles.
+- ***Satellite firmware*:** `firmware/`. The current XIAO firmware (`firmware/xiao-wyoming/satellite-idf/`) is open to anyone working on Niles. The port to the satellite v2 mainboard is Mark's until his boards work. A firmware change is tested by flashing a real satellite before it merges, because CI doesn't build the firmware; say in the PR what was tried on which satellite.
+- ***Satellite v2 PCB*:** `hardware/`, the case and the ordering. Mark's alone; leave it alone.
+
+An agent reaches Linear through Linear's MCP server (`https://mcp.linear.app/mcp`), signed in as the person running it, so what it files is theirs.
 
 - **Filing.** Anyone but Mark files a new issue into Triage. Only Mark moves an issue to Todo, and only he hands one to the ai-harness. An agent never triggers the harness. A good issue says what exists today (with file paths), the decision already made, and when it is done.
 - **Before filing, search.** Look through the issues in Triage, Backlog, Todo and the started states (In Progress through Ready for merge) for the same thing. If one already covers it, add what you know as a comment there instead of filing a new one. If one is close but doesn't cover it, file the new issue and mark it *related to* that one, saying in the description how the two differ.
