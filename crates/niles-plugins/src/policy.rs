@@ -1,4 +1,4 @@
-//! Where a plugin may send HTTP requests.
+//! Where a plugin may send HTTP and WebSocket requests.
 //!
 //! Pure functions over the manifest and IP addresses, so each rule has a
 //! test of its own; [`crate::http`] does the I/O around them. Two checks,
@@ -668,6 +668,32 @@ mod tests {
         let ok = p.admit(&url("http://[::ffff:192.168.1.50]/")).unwrap();
         assert!(p.allows(&ok, ip("::ffff:192.168.1.50")).is_ok());
         assert!(p.allows(&ok, ip("::ffff:192.168.1.51")).is_err());
+    }
+
+    #[test]
+    fn websocket_targets_follow_public_and_local_network_boundaries() {
+        for denied in [
+            "127.0.0.1",
+            "::1",
+            "::ffff:127.0.0.1",
+            "169.254.169.254",
+            "fd00:ec2::254",
+        ] {
+            assert!(
+                ws_address_allowed(ip(denied), false, false).is_err(),
+                "{denied}"
+            );
+            assert!(
+                ws_address_allowed(ip(denied), true, false).is_err(),
+                "{denied}"
+            );
+        }
+        assert!(ws_address_allowed(ip("93.184.216.34"), false, false).is_ok());
+        assert!(ws_address_allowed(ip("192.168.1.50"), false, false).is_err());
+        assert!(ws_address_allowed(ip("192.168.1.50"), true, false).is_ok());
+        assert!(ws_address_allowed(ip("93.184.216.34"), true, false).is_err());
+        assert!(ws_address_allowed(ip("127.0.0.1"), true, true).is_ok());
+        assert!(ws_address_allowed(ip("169.254.169.254"), true, true).is_err());
     }
 
     #[test]

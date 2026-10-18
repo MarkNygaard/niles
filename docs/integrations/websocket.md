@@ -8,7 +8,7 @@ Add a named grant under `[permissions]`. Its `host` is an exact hostname or IP, 
 
 ```toml
 interface = "0.4"
-min_niles = "0.4.0"
+min_niles = "<first Niles release with WebSocket support>"
 
 [permissions]
 websocket = [{ name = "feed", host = "stream.example.com", tls = true }]
@@ -30,15 +30,9 @@ Handshake headers are optional. At most 32 headers and 8 KiB total name/value by
 
 `message` is either `text(string)` or `binary(list<u8>)`. Call `websocket.send(conn, message)` to queue one message; it returns `unavailable` while not connected and `limit` when a message or queue exceeds bounds. It does not mean the peer received the frame. `websocket.close(conn)` is idempotent; closing an unknown id has no effect.
 
-```rust
-// Illustrative Rust-shaped pseudocode; exact generated names depend on bindings.
-let conn = websocket::connect("feed", "wss://stream.example.com/events", &[
-    ("authorization".into(), format!("Bearer {token}")),
-])?;
-// on_websocket_status(conn, Connected) marks the stream ready.
-// on_websocket_message(conn, Message::Text(text)) parses a complete message.
-// Only send after Connected; otherwise send returns unavailable.
-```
+The maintained runnable component example is [`tests/fixtures/websocket`](../../crates/niles-plugins/tests/fixtures/websocket/): its `src/lib.rs` implements initialization, connect, status/message callbacks, send/echo and close using the generated interface bindings. Install the target with `rustup target add wasm32-wasip2`. From the repository root, build and copy the component into the host test fixture with `env -u CARGO_TARGET_DIR sh crates/niles-plugins/tests/fixtures/websocket/build.sh`. Run the host integration test with `cargo test -p niles-plugins --test interface interface_0_4_websocket_round_trip -- --exact` from the repository root.
+
+The host integration test uses a synthetic WebSocket server bound to `127.0.0.1` and explicitly enables loopback for that test. This is test-only wiring, not production address policy or a production endpoint recommendation. The example intentionally reuses the maintained fixture rather than duplicating sample component code here.
 
 Keep callbacks short and avoid blocking host calls. Callbacks are delivered serially to the plugin. Reconnect establishes a new generation; stale queued events from older generations are discarded. On reconnection, the host reports `connected` again. The host does not promise replay of messages missed while offline.
 
@@ -62,4 +56,4 @@ Handshake HTTP 401/403 responses are terminal authentication failures. HTTP 408/
 
 ## Compatibility
 
-The manifest uses `interface = "0.4"`; build against the 0.4 WIT package. This feature is not yet released: the `min_niles = "0.4.0"` example matches this development checkout, not a claim that released Niles 0.4.0 includes WebSockets. Set `min_niles` to the first release that actually includes this feature before publishing. Niles continues to run the frozen 0.1, 0.2 and 0.3 worlds; those worlds do not import WebSockets. Do not copy the current schema while claiming an older interface.
+The manifest uses `interface = "0.4"`; build against the 0.4 WIT package. This feature is not yet released, and its minimum Niles release number has not been assigned. Set `min_niles` to the first release that includes this feature before publishing. Niles continues to run the frozen 0.1, 0.2 and 0.3 worlds; those worlds do not import WebSockets. Do not copy the current schema while claiming an older interface.

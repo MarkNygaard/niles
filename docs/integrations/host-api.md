@@ -421,15 +421,7 @@ provides them, empty. What works: the wall clock and monotonic clock
 What does not: files (no directories exist), environment variables (none),
 sockets and DNS (refused), `std::process`, threads.
 
-## Coming later
+## Outside the host API
 
-Not yet:
-
-
-- **Local TCP and UDP**: one request, one reply, to an address under
-  `local_network`, for devices that speak something other than HTTP.
-- **`wasi:http/outgoing-handler`**, so that `fetch` and other native clients
-  work under the same checks.
-- **A page of your own**: your static HTML in a sandboxed iframe, under a
-  separate permission.
-- **Reading other devices' state on demand**, not only through events.
+Raw TCP and UDP, `wasi:http/outgoing-handler`, plugin-owned HTML pages, and
+on-demand reads of other devices' state are not provided by this host API.

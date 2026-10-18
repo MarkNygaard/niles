@@ -377,6 +377,84 @@ fn classify_handshake_error(error: tokio_tungstenite::tungstenite::Error) -> (bo
     }
 }
 
+async fn connect_pinned(addresses: &[SocketAddr]) -> Result<tokio::net::TcpStream, (bool, String)> {
+    for address in addresses {
+        match tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio::net::TcpStream::connect(address),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => return Ok(stream),
+            Ok(Err(_)) => {}
+            Err(_) => return Err((false, "connection timed out".into())),
+        }
+    }
+    Err((false, "connection failed".into()))
+}
+
+fn checked_addresses(
+    ips: impl IntoIterator<Item = IpAddr>,
+    port: u16,
+    allows: impl Fn(IpAddr) -> Result<(), String>,
+) -> Result<Vec<SocketAddr>, (bool, String)> {
+    ips.into_iter()
+        .map(|ip| {
+            allows(ip).map_err(|_| (true, "policy denied resolved address".into()))?;
+            Ok(SocketAddr::new(ip, port))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod pinned_address_tests {
+    use super::*;
+
+    #[test]
+    fn all_resolved_addresses_are_checked_before_any_are_returned() {
+        let ips = ["127.0.0.1", "192.0.2.1"].map(|ip| ip.parse().unwrap());
+        let checked = checked_addresses(ips, 8123, |ip| {
+            if ip.is_loopback() {
+                Ok(())
+            } else {
+                Err("denied".into())
+            }
+        });
+        assert_eq!(
+            checked,
+            Err((true, "policy denied resolved address".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_falls_back_to_the_next_prechecked_socket_address() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let accepted = listener.local_addr().unwrap();
+        let unused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let refused = unused.local_addr().unwrap();
+        drop(unused);
+        let server = tokio::spawn(async move { listener.accept().await.unwrap() });
+        let stream = connect_pinned(&[refused, accepted]).await.unwrap();
+        assert_eq!(stream.peer_addr().unwrap(), accepted);
+        let (_, peer) = server.await.unwrap();
+        assert_eq!(peer, stream.local_addr().unwrap());
+    }
+
+    #[test]
+    fn websocket_request_keeps_the_uri_host_and_nondefault_port() {
+        let request = "ws://device.example.test:8088/socket?token=x"
+            .into_client_request()
+            .unwrap();
+        assert_eq!(request.uri().host(), Some("device.example.test"));
+        assert_eq!(request.uri().port_u16(), Some(8088));
+        assert_eq!(request.headers()["host"], "device.example.test:8088");
+        assert_eq!(
+            request.uri().path_and_query().unwrap().as_str(),
+            "/socket?token=x"
+        );
+    }
+}
+
 #[test]
 fn handshake_http_classification_does_not_leak_body() {
     use tokio_tungstenite::tungstenite::{Error, http::Response};
@@ -545,26 +623,16 @@ impl Task {
             .map(|a| a.ip())
             .collect()
         };
-        let mut selected = None;
-        for ip in ips {
-            if self.target.allows(ip).is_ok() {
-                selected = Some(ip);
-                break;
-            }
+        let addresses = checked_addresses(ips, port, |ip| self.target.allows(ip))?;
+        if addresses.is_empty() {
+            return Err((false, "DNS lookup returned no addresses".into()));
         }
-        let ip = selected.ok_or((true, "policy denied resolved address".into()))?;
-        let address = SocketAddr::new(ip, port);
-        let tcp = tokio::time::timeout(
-            Duration::from_secs(10),
-            tokio::net::TcpStream::connect(address),
-        )
-        .await
-        .map_err(|_| (false, "connection timed out".into()))?
-        .map_err(|_| (false, "connection failed".into()))?;
+        let tcp = connect_pinned(&addresses).await?;
         let mut request = self
             .target_url()
             .into_client_request()
             .map_err(|_| (true, "invalid WebSocket request".into()))?;
+
         for (name, value) in &self.headers {
             let n = reqwest::header::HeaderName::from_bytes(name.as_bytes())
                 .map_err(|_| (true, "invalid handshake header".into()))?;

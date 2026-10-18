@@ -122,8 +122,8 @@ hides and moves them in Settings → Menu like the built-in ones. People find
 | Be called by a service that pushes | `inbound.hook-url` → export `on-webhook` | `webhook = true` (0.3) | [accounts](accounts.md#the-webhook) |
 | Log | `log.log` | none | [host API](host-api.md#log) |
 
-Not yet: raw TCP or UDP, and a page that runs your own HTML.
-See [host API](host-api.md#coming-later).
+Raw TCP or UDP and a page that runs your own HTML are not provided.
+See [host API](host-api.md#outside-the-host-api).
 
 ## The guide
 

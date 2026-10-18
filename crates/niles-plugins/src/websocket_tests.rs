@@ -190,3 +190,40 @@ fn endpoint_and_header_validation_rejects_authority_changes() {
     assert!(check_headers(&[("Authorization".into(), "value\r\nInjected: yes".into())]).is_err());
     assert!(check_headers(&[("Authorization".into(), "Bearer synthetic".into())]).is_ok());
 }
+
+#[test]
+fn address_policy_rejects_loopback_metadata_and_addresses_outside_grant_kind() {
+    let public = WsTarget {
+        host: "stream.example.com".into(),
+        port: 443,
+        tls: true,
+        local: false,
+        loopback: false,
+    };
+    for ip in ["127.0.0.1", "::1", "169.254.169.254", "fd00:ec2::254"] {
+        assert!(public.allows(ip.parse().unwrap()).is_err(), "{ip}");
+    }
+    assert!(public.allows("192.168.1.8".parse().unwrap()).is_err());
+    assert!(public.allows("93.184.216.34".parse().unwrap()).is_ok());
+
+    let local = WsTarget {
+        host: "192.168.1.50".into(),
+        port: 80,
+        tls: false,
+        local: true,
+        loopback: false,
+    };
+    assert!(local.allows("192.168.1.50".parse().unwrap()).is_ok());
+    assert!(local.allows("93.184.216.34".parse().unwrap()).is_err());
+
+    let dev_loopback = WsTarget {
+        loopback: true,
+        ..local
+    };
+    assert!(dev_loopback.allows("127.0.0.1".parse().unwrap()).is_ok());
+    assert!(
+        dev_loopback
+            .allows("169.254.169.254".parse().unwrap())
+            .is_err()
+    );
+}
