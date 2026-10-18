@@ -516,6 +516,7 @@ pub async fn patch(
                     summary: None,
                     page: PageChange::Keep,
                 },
+                None,
             )
             .await
             .map_err(storage)?
@@ -1349,6 +1350,7 @@ allowed = [
                     summary: None,
                     page: PageChange::Keep,
                 },
+                None,
             )
             .await
             .unwrap();
@@ -1806,6 +1808,7 @@ allowed = [
                     summary: None,
                     page: PageChange::Keep,
                 },
+                None,
             )
             .await
             .unwrap();

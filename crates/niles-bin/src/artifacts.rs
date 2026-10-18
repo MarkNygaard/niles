@@ -18,8 +18,13 @@
 //!
 //! An artifact keeps pictures too, Niles's own copies of ones found on
 //! the web ([`pictures`]), which its content and its page name by id.
+//! A change is said as edits, not the whole artifact again ([`edit`]);
+//! one too big for a chat answer, or one a chat turn runs out of time
+//! on, is a change job ([`change`]).
 
+mod change;
 mod coach;
+mod edit;
 mod pictures;
 mod podcast;
 
@@ -303,11 +308,46 @@ impl Conversations for crate::chat_log::ChatLog {
 /// What a job may use besides its own artifact: web search, the date.
 pub(crate) type Extras = Box<dyn Fn(&mut ToolRegistry) + Send + Sync>;
 
-/// An artifact a turn made or changed, until the turn is kept.
+/// An artifact a turn made, changed or read, remembered for an hour.
 struct Touch {
     person: String,
     id: i64,
     at: Instant,
+    turn: Option<Instant>,
+}
+
+fn note(list: &Mutex<Vec<Touch>>, person: &str, id: i64) {
+    let now = Instant::now();
+    let turn = crate::assistant::turn();
+    let mut list = list.lock().unwrap_or_else(|e| e.into_inner());
+    list.retain(|t| now.duration_since(t.at) < TOUCHED_FOR);
+    list.retain(|t| !(t.person == person && t.id == id && t.turn == turn));
+    list.push(Touch {
+        person: person.to_string(),
+        id,
+        at: now,
+        turn,
+    });
+}
+
+fn noted_since(list: &Mutex<Vec<Touch>>, person: &str, since: Instant) -> Vec<i64> {
+    let mut seen = HashSet::new();
+    list.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|t| t.person == person && t.at >= since)
+        .map(|t| t.id)
+        .filter(|id| seen.insert(*id))
+        .collect()
+}
+
+fn noted_in_turn(list: &Mutex<Vec<Touch>>, person: &str, turn: Instant) -> Vec<i64> {
+    list.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|t| t.person == person && t.turn == Some(turn))
+        .map(|t| t.id)
+        .collect()
 }
 
 pub(crate) struct Artifacts {
@@ -326,6 +366,9 @@ pub(crate) struct Artifacts {
     reviewing: Arc<Mutex<HashSet<i64>>>,
     /// Artifacts a page is being made for: one at a time each.
     paging: Arc<Mutex<HashSet<i64>>>,
+    /// Artifacts a change is being made to in the background: one at a
+    /// time each.
+    changing: Arc<Mutex<HashSet<i64>>>,
     /// Where pictures are found and fetched from; none, no pictures.
     pictures: Option<Pictures>,
     /// A podcast's studio and Sonos handle; none, no podcasts.
@@ -333,6 +376,10 @@ pub(crate) struct Artifacts {
     /// Jobs going, per person.
     running: Arc<Mutex<HashMap<String, usize>>>,
     touched: Mutex<Vec<Touch>>,
+    /// What chat turns read that their asker may change, for a turn
+    /// that runs out of time in the middle of changing it
+    /// ([`Artifacts::carry_on`]).
+    read: Mutex<Vec<Touch>>,
     /// When this run began: a job that last moved before it was the
     /// last run's.
     started: chrono::DateTime<chrono::Utc>,
@@ -519,10 +566,12 @@ impl Artifacts {
             tz: chrono_tz::UTC,
             reviewing: Arc::default(),
             paging: Arc::default(),
+            changing: Arc::default(),
             pictures: None,
             podcasts: None,
             running: Arc::default(),
             touched: Mutex::default(),
+            read: Mutex::default(),
             started: chrono::Utc::now(),
             household: None,
             voices: std::sync::OnceLock::new(),
@@ -639,19 +688,32 @@ impl Artifacts {
     pub(crate) fn tools(self: &Arc<Self>) -> ToolRegistry {
         let mut reg = ToolRegistry::new();
         reg.register(Box::new(List(self.clone())));
-        reg.register(Box::new(Get(self.clone())));
+        reg.register(Box::new(Get {
+            artifacts: self.clone(),
+            turn: true,
+        }));
         reg.register(Box::new(Create(self.clone())));
         reg.register(Box::new(Update {
             artifacts: self.clone(),
             only: None,
             keep_past: None,
         }));
+        reg.register(Box::new(edit::Edit(Update {
+            artifacts: self.clone(),
+            only: None,
+            keep_past: None,
+        })));
         reg.register(Box::new(SetPage {
+            artifacts: self.clone(),
+            only: None,
+        }));
+        reg.register(Box::new(edit::EditPage {
             artifacts: self.clone(),
             only: None,
         }));
         reg.register(Box::new(StartJob(self.clone())));
         reg.register(Box::new(StartPage(self.clone())));
+        reg.register(Box::new(change::StartChange(self.clone())));
         reg.register(Box::new(ShareTool(self.clone())));
         reg.register(Box::new(People(self.clone())));
         pictures::register(self, &mut reg, None);
@@ -660,11 +722,11 @@ impl Artifacts {
     }
 
     /// What a job's run may use: its person's artifacts to read, its own
-    /// to write, and what writing needs: for a training plan, their
-    /// workouts; for a document or a trip, pictures. Not the house. A
-    /// review of a plan saves only what leaves the days before
-    /// `keep_past` as they were, and leaves its page alone: it has no
-    /// way to set one.
+    /// to write, whole or by edits, and what writing needs: for a
+    /// training plan, their workouts; for a document or a trip,
+    /// pictures. Not the house. A review of a plan saves only what
+    /// leaves the days before `keep_past` as they were, and leaves its
+    /// page alone: it has no way to set one.
     fn job_tools(
         self: &Arc<Self>,
         id: i64,
@@ -673,14 +735,26 @@ impl Artifacts {
     ) -> ToolRegistry {
         let mut reg = ToolRegistry::new();
         reg.register(Box::new(List(self.clone())));
-        reg.register(Box::new(Get(self.clone())));
+        reg.register(Box::new(Get {
+            artifacts: self.clone(),
+            turn: false,
+        }));
         reg.register(Box::new(Update {
             artifacts: self.clone(),
             only: Some(id),
             keep_past,
         }));
+        reg.register(Box::new(edit::Edit(Update {
+            artifacts: self.clone(),
+            only: Some(id),
+            keep_past,
+        })));
         if keep_past.is_none() {
             reg.register(Box::new(SetPage {
+                artifacts: self.clone(),
+                only: Some(id),
+            }));
+            reg.register(Box::new(edit::EditPage {
                 artifacts: self.clone(),
                 only: Some(id),
             }));
@@ -696,12 +770,20 @@ impl Artifacts {
     }
 
     /// What a page's run may use: the person's artifacts to read, and
-    /// this one's page and pictures to set. No web search: a page draws
-    /// the data, and its pictures are found with `image_search`.
+    /// this one's page to set or edit, and pictures to set. No web
+    /// search: a page draws the data, and its pictures are found with
+    /// `image_search`.
     fn page_tools(self: &Arc<Self>, id: i64) -> ToolRegistry {
         let mut reg = ToolRegistry::new();
-        reg.register(Box::new(Get(self.clone())));
+        reg.register(Box::new(Get {
+            artifacts: self.clone(),
+            turn: false,
+        }));
         reg.register(Box::new(SetPage {
+            artifacts: self.clone(),
+            only: Some(id),
+        }));
+        reg.register(Box::new(edit::EditPage {
             artifacts: self.clone(),
             only: Some(id),
         }));
@@ -726,25 +808,23 @@ impl Artifacts {
     }
 
     fn touch(&self, person: &str, id: i64) {
-        let now = Instant::now();
-        let mut touched = self.touched.lock().unwrap_or_else(|e| e.into_inner());
-        touched.retain(|t| now.duration_since(t.at) < TOUCHED_FOR);
-        touched.retain(|t| !(t.person == person && t.id == id));
-        touched.push(Touch {
-            person: person.to_string(),
-            id,
-            at: now,
-        });
+        note(&self.touched, person, id);
     }
 
     fn touched_since(&self, person: &str, since: Instant) -> Vec<i64> {
-        self.touched
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|t| t.person == person && t.at >= since)
-            .map(|t| t.id)
-            .collect()
+        noted_since(&self.touched, person, since)
+    }
+
+    fn note_read(&self, person: &str, id: i64) {
+        note(&self.read, person, id);
+    }
+
+    fn read_in_turn(&self, person: &str, turn: Instant) -> Vec<i64> {
+        noted_in_turn(&self.read, person, turn)
+    }
+
+    fn touched_in_turn(&self, person: &str, turn: Instant) -> Vec<i64> {
+        noted_in_turn(&self.touched, person, turn)
     }
 
     /// The cards for what a turn of `person`'s that began at `since`
@@ -1180,6 +1260,7 @@ impl Artifacts {
                     summary: None,
                     page: niles_artifacts::PageChange::Keep,
                 },
+                None,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -1360,7 +1441,9 @@ fn page_prompts(artifact: &Artifact, brief: &str, searching: Searching) -> (Stri
          and ask nothing, because nobody will answer. Read it first with artifact_get on \
          artifact {id}, with with_page: true. Then write the page and save it with \
          artifact_set_page on artifact {id}, with a short reason; if it is refused, the \
-         answer says what to fix, so fix that and save again. Then finish with one short \
+         answer says what to fix, so fix that and save again. If it has a page and the \
+         brief asks for a change to it rather than a new one, make the change with \
+         artifact_edit_page instead, replacing only what changes. Then finish with one short \
          sentence saying what you made.\n\nThe data it draws is {help}\n\n{}\n\n{DESIGN} \
          The pictures it keeps are listed by artifact_get; if the brief asks for pictures it \
          does not have, {}\n\nWrite any words on the page in the language of the {label}.",
@@ -1454,10 +1537,16 @@ pub(crate) fn spoken_prompt() -> &'static str {
 
 const PROMPT: &str = "\n\n# Saved for the person\n\nWhat the person will want to \
     keep, such as a list, a plan or notes, you can save for them: artifact_create, which they \
-    find under Saved in the app, with a card in the chat. Change one with artifact_update. \
-    For anything big (research, several sections, more than a minute of writing), call \
-    start_artifact_job and answer in one sentence that you are putting it together and they \
-    will find it under Saved. Do not write it out in the chat as well.\n\nA training plan \
+    find under Saved in the app, with a card in the chat. For anything big (research, \
+    several sections, more than a minute of writing), call start_artifact_job and answer in \
+    one sentence that you are putting it together and they will find it under Saved. Do not \
+    write it out in the chat as well.\n\nTo change one, read it with artifact_get, then save \
+    only what changes with artifact_edit: writing a whole artifact out again takes minutes, \
+    longer than a chat answer has. artifact_update, with the whole content, is for a short \
+    one written anew. A change that rewrites much of one (a trip a week longer, a plan \
+    rebuilt around a new race date, a document reorganised) is start_change_job's: call it \
+    with the artifact's id and a brief of the change, and answer in one sentence that you \
+    are making the change and will tell them when it is done.\n\nA training plan \
     toward a race is kind training_plan, never a document: start_artifact_job, whose run \
     reads their Strava itself. Ask first for the race and its date if you do not know them; \
     the rest (a target time, which days they can run) the run can assume, and put in the \
@@ -1467,14 +1556,17 @@ const PROMPT: &str = "\n\n# Saved for the person\n\nWhat the person will want to
     never a document: start_artifact_job, whose run researches it. Ask first for the dates and \
     roughly where they want to go if you do not know them; put in the brief who is going, \
     what they have booked already, and what they said about pace, budget and what they \
-    like.\n\nAn artifact can have a page as well: HTML you write once that draws its data, \
-    shown in place of its kind's own view. Only for when the look matters: they ask for it \
-    to look nicer or different, or want something to show. The kind's own view is good \
-    otherwise, so make no page unasked. For a page, call start_page_job with the \
-    artifact's id and a brief of what they want, and answer in one sentence that it is \
-    being made; a small change to a page there is (a colour, a heading) you can make \
-    yourself with artifact_set_page. The page draws the data, so a change to the data \
-    needs no new page.\n\nSomeone else in the household can share an artifact with \
+    like.\n\nAn artifact can have a page as well: HTML that draws its data, shown in place \
+    of its kind's own view. Only for when the look matters: they ask for it to look nicer or \
+    different, or want something to show. The kind's own view is good otherwise, so make no \
+    page unasked. For a page, or anything that rebuilds the page there is (a new layout, a \
+    calendar instead of a list), call start_page_job with the artifact's id and a brief of \
+    what they want, and answer in one sentence that it is being made. A small change to a \
+    page there is (a colour, a heading, a label) you make yourself: read it with \
+    artifact_get with with_page: true, then replace only what changes with \
+    artifact_edit_page. To take a page away when they ask, artifact_set_page with remove: \
+    true. The page draws the data, so a change to the data needs no new page.\n\nSomeone \
+    else in the household can share an artifact with \
     the person: artifact_list has those too, with access edit (change it as you would their \
     own) or view (read only; say so if they ask for a change). When the person asks to share \
     one of their own (\"share the Thailand trip with Majse so she can edit it\", \"let Majse \
@@ -1551,7 +1643,13 @@ impl Tool for List {
     }
 }
 
-struct Get(Arc<Artifacts>);
+struct Get {
+    artifacts: Arc<Artifacts>,
+    /// A chat turn's: what it reads that the asker may change is noted,
+    /// for a turn that runs out of time in the middle of changing it. A
+    /// job's reads are its own business.
+    turn: bool,
+}
 
 #[async_trait]
 impl Tool for Get {
@@ -1561,7 +1659,8 @@ impl Tool for Get {
             description: "One of the asking person's saved artifacts, or one shared with them, \
                 with its whole current content and access (owner, edit or view). Read it \
                 before changing it: they may have ticked items since. page says whether it \
-                has a page; with_page: true gives the page's HTML as well."
+                has a page; with_page: true gives the page's HTML as well, to change with \
+                artifact_edit_page."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -1578,11 +1677,14 @@ impl Tool for Get {
         const TOOL: &str = "artifact_get";
         let asker = asker(TOOL)?;
         let id = id_arg(TOOL, &args)?;
-        let store = &self.0.store;
+        let store = &self.artifacts.store;
         let opened = self
-            .0
+            .artifacts
             .opened(TOOL, &asker.person, id, Operation::Read)
             .await?;
+        if self.turn && opened.allows(Operation::Edit) {
+            self.artifacts.note_read(&asker.person, id);
+        }
         let (a, owner) = (&opened.artifact, opened.owner());
         let content = match a.current_revision {
             0 => None,
@@ -1594,7 +1696,7 @@ impl Tool for Get {
         };
         let owner_name = match opened.access {
             Access::Owner => None,
-            _ => Some(self.0.name_of(owner).await),
+            _ => Some(self.artifacts.name_of(owner).await),
         };
         let mut out = view_as(&opened, owner_name.as_deref());
         out["content"] = content.unwrap_or(Value::Null);
@@ -1710,74 +1812,64 @@ struct Update {
     keep_past: Option<chrono::NaiveDate>,
 }
 
-#[async_trait]
-impl Tool for Update {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor {
-            name: "artifact_update".into(),
-            description: "Save a new version of one of the asking person's artifacts, or of \
-                one shared with them to edit: the whole new content (not a change to it), and \
-                a short reason for the list of versions (\"Added the ferry to Koh Tao\"). Read \
-                it with artifact_get first, and keep what they ticked. summary, if it should \
-                change, is one line."
-                .into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "id": { "type": "integer" },
-                    "content": { "type": "object", "description": "The whole content, as its kind has it" },
-                    "summary": { "type": "string" },
-                    "reason": { "type": "string" }
-                },
-                "required": ["id", "content", "reason"]
-            }),
-        }
-    }
-
-    async fn execute(&self, args: Value) -> Result<Value> {
-        const TOOL: &str = "artifact_update";
-        let asker = asker(TOOL)?;
-        let id = id_arg(TOOL, &args)?;
+impl Update {
+    fn may_write(&self, tool: &str, id: i64) -> Result<()> {
         if self.only.is_some_and(|only| only != id) {
             return Err(invalid(
-                TOOL,
+                tool,
                 format!(
                     "this job writes artifact {}, and only that one",
                     self.only.unwrap_or(id)
                 ),
             ));
         }
-        let store = &self.artifacts.store;
-        let opened = self
-            .artifacts
-            .opened(TOOL, &asker.person, id, Operation::Edit)
-            .await?;
+        Ok(())
+    }
+
+    fn may_change(&self, tool: &str, artifact: &Artifact) -> Result<()> {
         // From the chat a podcast is kept as it was made; its own job
         // saves the script it is to record.
-        if opened.artifact.kind == PODCAST && self.only.is_none() {
+        if artifact.kind == PODCAST && self.only.is_none() {
             return Err(invalid(
-                TOOL,
+                tool,
                 "a podcast is recorded from its script and kept as it was made; to change it, \
                  make a new episode with start_artifact_job",
             ));
         }
+        Ok(())
+    }
+
+    /// `content` saved as the next version of `opened`'s artifact,
+    /// checked as every version is (its kind's rules, and in a review
+    /// the days gone), with `args`' reason and summary: what
+    /// artifact_update and artifact_edit both end with.
+    async fn save(
+        &self,
+        tool: &str,
+        asker: &Asker,
+        opened: Opened,
+        content: &Value,
+        args: &Value,
+        expected: Option<i32>,
+    ) -> Result<Value> {
+        let store = &self.artifacts.store;
         let (a, owner) = (&opened.artifact, opened.owner());
-        let content = kinds::validate(&a.kind, args.get("content").unwrap_or(&Value::Null))
-            .map_err(|e| refused(TOOL, e))?;
+        let id = a.id;
+        let content = kinds::validate(&a.kind, content).map_err(|e| refused(tool, e))?;
         if let Some(today) = self.keep_past {
             let current = store
                 .revision(owner, id, a.current_revision)
                 .await
-                .map_err(|e| refused(TOOL, e))?
-                .ok_or_else(|| invalid(TOOL, format!("artifact {id} has nothing to change yet")))?;
+                .map_err(|e| refused(tool, e))?
+                .ok_or_else(|| invalid(tool, format!("artifact {id} has nothing to change yet")))?;
             niles_artifacts::tracking::keeps_the_past(&current.content, &content, today)
-                .map_err(|e| refused(TOOL, e))?;
+                .map_err(|e| refused(tool, e))?;
         }
-        let reason = niles_artifacts::summary(str_arg(&args, "reason").unwrap_or("Changed"));
+        let reason = niles_artifacts::summary(str_arg(args, "reason").unwrap_or("Changed"));
         let kept = store
             .images(owner, id)
             .await
-            .map_err(|e| refused(TOOL, e))?;
+            .map_err(|e| refused(tool, e))?;
         let note = pictures::missing(&content, &kept);
         let a = store
             .revise(
@@ -1788,13 +1880,14 @@ impl Tool for Update {
                     reason,
                     author: author(crate::assistant::via()),
                     by: Some(asker.person.clone()),
-                    summary: str_arg(&args, "summary").map(niles_artifacts::summary),
+                    summary: str_arg(args, "summary").map(niles_artifacts::summary),
                     page: niles_artifacts::PageChange::Keep,
                 },
+                expected,
             )
             .await
-            .map_err(|e| refused(TOOL, e))?
-            .ok_or_else(|| invalid(TOOL, format!("there is no artifact {id}")))?;
+            .map_err(|e| refused(tool, e))?
+            .ok_or_else(|| invalid(tool, format!("there is no artifact {id}")))?;
         // A job's saves are its own; its end is what the person hears.
         if self.only.is_none() {
             self.artifacts.touch(&asker.person, a.id);
@@ -1814,6 +1907,53 @@ impl Tool for Update {
     }
 }
 
+#[async_trait]
+impl Tool for Update {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: "artifact_update".into(),
+            description: "Save a new version of one of the asking person's artifacts, or of \
+                one shared with them to edit: the whole new content (not a change to it), and \
+                a short reason for the list of versions (\"Added the ferry to Koh Tao\"). Read \
+                it with artifact_get first, and keep what they ticked. summary, if it should \
+                change, is one line. For a small change, artifact_edit is quicker: it writes \
+                only what changes."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer" },
+                    "content": { "type": "object", "description": "The whole content, as its kind has it" },
+                    "summary": { "type": "string" },
+                    "reason": { "type": "string" }
+                },
+                "required": ["id", "content", "reason"]
+            }),
+        }
+    }
+
+    async fn execute(&self, args: Value) -> Result<Value> {
+        const TOOL: &str = "artifact_update";
+        let asker = asker(TOOL)?;
+        let id = id_arg(TOOL, &args)?;
+        self.may_write(TOOL, id)?;
+        let opened = self
+            .artifacts
+            .opened(TOOL, &asker.person, id, Operation::Edit)
+            .await?;
+        self.may_change(TOOL, &opened.artifact)?;
+        self.save(
+            TOOL,
+            &asker,
+            opened,
+            args.get("content").unwrap_or(&Value::Null),
+            &args,
+            None,
+        )
+        .await
+    }
+}
+
 struct SetPage {
     artifacts: Arc<Artifacts>,
     /// In a job, the one artifact it may give a page.
@@ -1823,6 +1963,26 @@ struct SetPage {
 #[async_trait]
 impl Tool for SetPage {
     fn descriptor(&self) -> ToolDescriptor {
+        if self.only.is_none() {
+            return ToolDescriptor {
+                name: "artifact_set_page".into(),
+                description: "Take the page away from one of the asking person's artifacts, or \
+                    one shared with them to edit, when they ask for that: the app shows the \
+                    kind's own view again. The data is kept as it is, and it is a new version, \
+                    so it can be undone. A page is changed with artifact_edit_page, and a new \
+                    one made with start_page_job."
+                    .into(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "integer" },
+                        "remove": { "type": "boolean", "description": "true" },
+                        "reason": { "type": "string" }
+                    },
+                    "required": ["id", "remove"]
+                }),
+            };
+        }
         ToolDescriptor {
             name: "artifact_set_page".into(),
             description: format!(
@@ -1865,6 +2025,13 @@ impl Tool for SetPage {
             .opened(TOOL, &asker.person, id, Operation::Edit)
             .await?;
         let remove = args.get("remove").and_then(Value::as_bool).unwrap_or(false);
+        if !remove && self.only.is_none() {
+            return Err(invalid(
+                TOOL,
+                "a whole page is written in the background, not in a chat: change the page \
+                 with artifact_edit_page, or make a new one with start_page_job",
+            ));
+        }
         let (change, fallback) = if remove {
             (PageChange::Remove, "Took the page away")
         } else {
@@ -1907,8 +2074,8 @@ impl Tool for StartPage {
             name: "start_page_job".into(),
             description: "Make a page for one of the asking person's artifacts, or one shared \
                 with them to edit, in the background: when they ask for it to look nicer or \
-                different, or for something \
-                to show. A page is HTML that draws the artifact's data, shown in place of its \
+                different, for something to show, or for a new layout of the page it has. A \
+                page is HTML that draws the artifact's data, shown in place of its \
                 kind's own view; the data stays as it is. It returns at once; another run of \
                 you makes the page, and the person is told when it is there. brief is what \
                 they want it to look like, in their own words, because that run will not see \
@@ -2185,7 +2352,8 @@ impl Tool for StartJob {
                  asked for in their own words. status_text is what they see meanwhile, such \
                  as \"Writing your Thailand travel plan\". Then answer in one sentence that \
                  you are putting it together and they will find it under Saved. {MAX_JOBS} \
-                 can be written at a time for one person. Kinds: {}",
+                 can be written at a time for one person. To change one they have, use \
+                 artifact_edit, or start_change_job for a big change. Kinds: {}",
                 kind_ids().join(", ")
             ),
             parameters: json!({
@@ -2211,6 +2379,7 @@ impl Tool for StartJob {
         let title = niles_artifacts::title(str_arg(&args, "title").unwrap_or_default())
             .map_err(|e| refused(TOOL, e))?;
         let brief = str_arg(&args, "brief")
+            .filter(|brief| !brief.is_empty())
             .ok_or_else(|| invalid(TOOL, "brief is what the run is to make, and it is empty"))?
             .to_string();
         let status_text = match str_arg(&args, "status_text") {
@@ -2297,6 +2466,8 @@ mod tests {
         /// Saves this markdown through the job's own tool, as a real run
         /// would.
         Saves(&'static str),
+        /// Saves this markdown, then fails with this reason.
+        SavesThenFails(&'static str, &'static str),
         /// Saves this content (any kind's) through the job's own tool.
         SavesContent(Value),
         /// Saves nothing, and answers this.
@@ -2390,6 +2561,10 @@ mod tests {
                 Does::Saves(markdown) => {
                     save(&tools, asker, id, markdown).await?;
                     Ok((self.via, "Wrote it.".into()))
+                }
+                Does::SavesThenFails(markdown, why) => {
+                    save(&tools, asker, id, markdown).await?;
+                    Err(why.into())
                 }
                 Does::SavesContent(content) => {
                     crate::assistant::tests_support::as_assistant(
@@ -2929,21 +3104,37 @@ mod tests {
         let f = fixture(FakeRunner::doing(vec![]));
         let other = create(&f, MARK, "Packing list").await;
         let tools = f.artifacts.job_tools(other + 100, "document", None);
-        let e = approvals::ASKER
-            .scope(
-                asking(MARK, None),
-                tools.execute(&niles_llm::ToolCall {
-                    id: String::new(),
-                    name: "artifact_update".into(),
-                    arguments: json!({ "id": other, "content": "x", "reason": "y" }),
-                }),
-            )
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("only that one"), "{e}");
+        for (name, arguments) in [
+            (
+                "artifact_update",
+                json!({ "id": other, "content": "x", "reason": "y" }),
+            ),
+            (
+                "artifact_edit",
+                json!({ "id": other, "edits": [{ "old": "a", "new": "b" }], "reason": "y" }),
+            ),
+            (
+                "artifact_edit_page",
+                json!({ "id": other, "edits": [{ "old": "a", "new": "b" }], "reason": "y" }),
+            ),
+        ] {
+            let e = approvals::ASKER
+                .scope(
+                    asking(MARK, None),
+                    tools.execute(&niles_llm::ToolCall {
+                        id: String::new(),
+                        name: name.into(),
+                        arguments,
+                    }),
+                )
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("only that one"), "{name}: {e}");
+        }
         assert!(!tools.has("start_artifact_job"));
         assert!(!tools.has("artifact_create"));
+        assert!(!tools.has("start_change_job"));
     }
 
     #[tokio::test]
@@ -3242,14 +3433,18 @@ mod tests {
     async fn a_page_is_set_read_back_kept_through_an_update_and_taken_away() {
         let f = fixture(FakeRunner::doing(vec![]));
         let id = create(&f, MARK, "Packing list").await;
-        let set = call(
-            &f,
-            asking(MARK, None),
-            "artifact_set_page",
-            json!({ "id": id, "html": PAGE, "reason": "A page with a list" }),
-        )
-        .await
-        .unwrap();
+        let tools = f.artifacts.page_tools(id);
+        let set = approvals::ASKER
+            .scope(
+                asking(MARK, None),
+                tools.execute(&niles_llm::ToolCall {
+                    id: String::new(),
+                    name: "artifact_set_page".into(),
+                    arguments: json!({ "id": id, "html": PAGE, "reason": "A page with a list" }),
+                }),
+            )
+            .await
+            .unwrap();
         assert_eq!(set["page"], true);
         assert_eq!(set["version"], 2);
         let r = f.store.revision(MARK, id, 2).await.unwrap().unwrap();
@@ -3300,12 +3495,17 @@ mod tests {
         let f = fixture(FakeRunner::doing(vec![]));
         let id = create(&f, MARK, "Packing list").await;
         let set = |html: String, person: &'static str| {
-            call(
-                &f,
-                asking(person, None),
-                "artifact_set_page",
-                json!({ "id": id, "html": html, "reason": "x" }),
-            )
+            let tools = f.artifacts.page_tools(id);
+            let call = niles_llm::ToolCall {
+                id: String::new(),
+                name: "artifact_set_page".into(),
+                arguments: json!({ "id": id, "html": html, "reason": "x" }),
+            };
+            async move {
+                approvals::ASKER
+                    .scope(asking(person, None), tools.execute(&call))
+                    .await
+            }
         };
         let e = set(
             "<script src=\"https://cdn.example/x.js\"></script>".into(),
@@ -3321,15 +3521,18 @@ mod tests {
             .to_string();
         assert!(e.contains("200 KB"), "{e}");
         assert!(set(PAGE.into(), MAJSE).await.is_err());
-        let e = call(
-            &f,
-            asking(MARK, None),
-            "artifact_set_page",
-            json!({ "id": id, "reason": "x" }),
-        )
-        .await
-        .unwrap_err()
-        .to_string();
+        let e = approvals::ASKER
+            .scope(
+                asking(MARK, None),
+                f.artifacts.page_tools(id).execute(&niles_llm::ToolCall {
+                    id: String::new(),
+                    name: "artifact_set_page".into(),
+                    arguments: json!({ "id": id, "reason": "x" }),
+                }),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("remove: true"), "{e}");
         let still = f.store.get(MARK, id).await.unwrap().unwrap();
         assert_eq!((still.current_revision, still.page), (1, None));
@@ -3368,6 +3571,37 @@ mod tests {
         panic!("a page was still being made for {id}");
     }
 
+    /// Until no change is being made to `id`, or two seconds pass.
+    async fn changed(f: &Fixture, id: i64) {
+        for _ in 0..200 {
+            if !f.artifacts.changing.lock().unwrap().contains(&id) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("a change was still being made to {id}");
+    }
+
+    /// `id`, with a page kept for it.
+    async fn with_page(f: &Fixture, id: i64) {
+        f.store
+            .set_page(
+                MARK,
+                id,
+                PageChange::New(PAGE.into()),
+                "A page".into(),
+                Author::Claude,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    /// A chat turn's error when its assistant gave no answer in its time.
+    fn timed_out() -> anyhow::Error {
+        anyhow::Error::new(crate::assistant::TimedOut(Duration::from_secs(120)))
+    }
+
     async fn start_page(f: &Fixture, person: &str, id: i64) -> Result<Value> {
         call(
             f,
@@ -3376,6 +3610,867 @@ mod tests {
             json!({ "id": id, "brief": "A clean list with big boxes" }),
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn the_chat_writes_no_whole_page_but_takes_one_away() {
+        let f = fixture(FakeRunner::doing(vec![]));
+        let id = create(&f, MARK, "Packing list").await;
+        with_page(&f, id).await;
+        let e = call(
+            &f,
+            asking(MARK, None),
+            "artifact_set_page",
+            json!({ "id": id, "html": PAGE, "reason": "A page" }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("artifact_edit_page"), "{e}");
+        let still = f.store.get(MARK, id).await.unwrap().unwrap();
+        assert_eq!((still.current_revision, still.page), (2, Some(1)));
+        let removed = call(
+            &f,
+            asking(MARK, None),
+            "artifact_set_page",
+            json!({ "id": id, "remove": true, "reason": "No page" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(removed["page"], false);
+
+        let tools = f.artifacts.tools();
+        assert!(tools.has("artifact_edit"));
+        assert!(tools.has("artifact_edit_page"));
+        assert!(tools.has("start_change_job"));
+        assert!(tools.has("artifact_set_page"));
+        let pages = f.artifacts.page_tools(id);
+        assert!(pages.has("artifact_edit_page"));
+        assert!(!pages.has("artifact_edit"));
+        let job = f.artifacts.job_tools(id, "document", None);
+        assert!(job.has("artifact_edit"));
+        assert!(job.has("artifact_edit_page"));
+        assert!(!job.has("start_change_job"));
+    }
+
+    #[tokio::test]
+    async fn an_edit_to_a_page_is_a_new_version_with_the_data_as_it_was() {
+        let f = fixture(FakeRunner::doing(vec![]));
+        let id = create(&f, MARK, "Packing list").await;
+        with_page(&f, id).await;
+        let out = crate::assistant::tests_support::as_assistant(
+            "claude",
+            call(
+                &f,
+                asking(MARK, None),
+                "artifact_edit_page",
+                json!({
+                    "id": id,
+                    "edits": [{
+                        "old": "l.textContent=d.markdown",
+                        "new": "l.textContent=d.markdown.trim()"
+                    }],
+                    "reason": "Trimmed text",
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!((&out["version"], &out["page"]), (&json!(3), &json!(true)));
+        let a = f.store.get(MARK, id).await.unwrap().unwrap();
+        let html = f
+            .store
+            .page(MARK, id, a.page.unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            html,
+            PAGE.replacen(
+                "l.textContent=d.markdown",
+                "l.textContent=d.markdown.trim()",
+                1
+            )
+        );
+        let r = f.store.revision(MARK, id, 3).await.unwrap().unwrap();
+        assert_eq!(r.content["markdown"], "- [ ] passport\n- [ ] charger");
+        assert_eq!(r.reason, "Trimmed text");
+        assert_eq!((r.author, r.by.as_deref()), (Author::Claude, Some(MARK)));
+    }
+
+    #[tokio::test]
+    async fn a_page_edit_not_found_or_repeated_saves_nothing_and_says_why() {
+        let f = fixture(FakeRunner::doing(vec![]));
+        let id = create(&f, MARK, "Packing list").await;
+        with_page(&f, id).await;
+        let args = |edits: Value| json!({ "id": id, "edits": edits, "reason": "A change" });
+        let e = call(
+            &f,
+            asking(MARK, None),
+            "artifact_edit_page",
+            args(json!([{ "old": "<h1>Nope</h1>", "new": "x" }])),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("not found"), "{e}");
+        let e = call(
+            &f,
+            asking(MARK, None),
+            "artifact_edit_page",
+            args(json!([{ "old": "d", "new": "x" }])),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("times") && e.contains("include more"), "{e}");
+        let e = call(
+            &f,
+            asking(MARK, None),
+            "artifact_edit_page",
+            args(json!([
+                { "old": "id=l", "new": "id=list" },
+                { "old": "not there at all", "new": "x" }
+            ])),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("not found"), "{e}");
+        let a = f.store.get(MARK, id).await.unwrap().unwrap();
+        assert_eq!(a.current_revision, 2, "no new version");
+        let html = f
+            .store
+            .page(MARK, id, a.page.unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(html, PAGE, "nothing was applied");
+    }
+
+    #[tokio::test]
+    async fn a_page_edit_that_breaks_the_page_or_its_size_is_refused() {
+        let f = fixture(FakeRunner::doing(vec![]));
+        let id = create(&f, MARK, "Packing list").await;
+        with_page(&f, id).await;
+        let e = call(
+            &f,
+            asking(MARK, None),
+            "artifact_edit_page",
+            json!({
+                "id": id,
+                "edits": [{
+                    "old": PAGE,
+                    "new": "<script src=\"https://cdn.example/x.js\"></script>"
+                }],
+                "reason": "A script",
+            }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("frame blocks"), "{e}");
+        let e = call(
+            &f,
+            asking(MARK, None),
+            "artifact_edit_page",
+            json!({
+                "id": id,
+                "edits": [{ "old": "id=l", "new": format!("id=l{}", "x".repeat(page::MAX_BYTES)) }],
+                "reason": "Huge",
+            }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("200 KB"), "{e}");
+        let a = f.store.get(MARK, id).await.unwrap().unwrap();
+        assert_eq!(a.current_revision, 2, "nothing was saved");
+    }
+
+    #[tokio::test]
+    async fn a_page_edit_needs_a_page_and_none_being_made() {
+        let f = fixture(FakeRunner::doing(vec![]));
+        let id = create(&f, MARK, "Packing list").await;
+        let args = json!({
+            "id": id,
+            "edits": [{ "old": "id=l", "new": "id=list" }],
+            "reason": "A change",
+        });
+        let e = call(&f, asking(MARK, None), "artifact_edit_page", args.clone())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("start_page_job"), "{e}");
+        with_page(&f, id).await;
+        f.artifacts.paging.lock().unwrap().insert(id);
+        let e = call(&f, asking(MARK, None), "artifact_edit_page", args.clone())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("being made for it now"), "{e}");
+        f.artifacts.paging.lock().unwrap().remove(&id);
+        let e = call(
+            &f,
+            asking(MARK, None),
+            "artifact_edit_page",
+            json!({
+                "id": id,
+                "edits": [{ "old": "id=l", "new": "id=l" }],
+                "reason": "No change",
+            }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("nothing to save"), "{e}");
+    }
+
+    /// A two-day trip Mark made, with one thing packed.
+    async fn a_trip(f: &Fixture) -> i64 {
+        call(
+            f,
+            asking(MARK, None),
+            "artifact_create",
+            json!({
+                "kind": "trip",
+                "title": "Thailand trip",
+                "summary": "Two weeks",
+                "content": {
+                    "destination": "Thailand",
+                    "start": "2027-01-03",
+                    "end": "2027-01-04",
+                    "days": [
+                        { "date": "2027-01-03", "place": "Bangkok", "items": [] },
+                        { "date": "2027-01-04", "place": "Chiang Mai", "items": [] }
+                    ],
+                    "packing": [{ "item": "Passport" }]
+                },
+            }),
+        )
+        .await
+        .unwrap()["id"]
+            .as_i64()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_document_is_changed_by_its_text_and_a_trip_by_place() {
+        let f = fixture(FakeRunner::doing(vec![]));
+        let doc = create(&f, MARK, "Packing list").await;
+        let out = call(
+            &f,
+            asking(MARK, None),
+            "artifact_edit",
+            json!({
+                "id": doc,
+                "edits": [{ "old": "- [ ] charger", "new": "- [ ] charger\n- [ ] sunscreen" }],
+                "reason": "Added sunscreen",
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["version"], 2);
+        let r = f.store.revision(MARK, doc, 2).await.unwrap().unwrap();
+        assert_eq!(
+            r.content["markdown"],
+            "- [ ] passport\n- [ ] charger\n- [ ] sunscreen"
+        );
+
+        let trip = a_trip(&f).await;
+        let out = call(
+            &f,
+            asking(MARK, None),
+            "artifact_edit",
+            json!({
+                "id": trip,
+                "edits": [
+                    { "op": "insert", "path": "/packing/-", "value": { "item": "Sunscreen" } },
+                    { "op": "set", "path": "/days/0/title", "value": "Arrive" }
+                ],
+                "reason": "Sunscreen and a title",
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["version"], 2);
+        let r = f.store.revision(MARK, trip, 2).await.unwrap().unwrap();
+        assert_eq!(
+            r.content["packing"],
+            json!([
+                { "item": "Passport", "packed": false },
+                { "item": "Sunscreen", "packed": false }
+            ])
+        );
+        assert_eq!(r.content["days"][0]["title"], "Arrive");
+
+        let e = call(
+            &f,
+            asking(MARK, None),
+            "artifact_edit",
+            json!({
+                "id": trip,
+                "edits": [{ "op": "set", "path": "/days/0/colour", "value": "blue" }],
+                "reason": "A colour",
+            }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("colour"), "{e}");
+        let a = f.store.get(MARK, trip).await.unwrap().unwrap();
+        assert_eq!(
+            a.current_revision, 2,
+            "the validator's no is saved by nothing"
+        );
+
+        let e = call(
+            &f,
+            asking(MARK, None),
+            "artifact_edit",
+            json!({
+                "id": trip,
+                "edits": [{ "old": "Bangkok", "new": "BKK" }],
+                "reason": "A text edit",
+            }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("by place"), "{e}");
+        let e = call(
+            &f,
+            asking(MARK, None),
+            "artifact_edit",
+            json!({
+                "id": doc,
+                "edits": [{ "op": "set", "path": "/markdown", "value": "x" }],
+                "reason": "A place edit",
+            }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("by its text"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn a_job_with_an_empty_brief_is_refused_before_the_id_is_looked_up() {
+        let f = fixture(FakeRunner::doing(vec![]));
+        for (tool, args) in [
+            (
+                "start_artifact_job",
+                json!({
+                    "kind": "document",
+                    "title": "A list",
+                    "summary": "A list",
+                    "brief": " ",
+                }),
+            ),
+            ("start_change_job", json!({ "id": 999, "brief": "" })),
+        ] {
+            let e = call(&f, asking(MARK, None), tool, args)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("it is empty"), "{tool}: {e}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_change_job_changes_it_and_says_so_in_its_chat() {
+        let f = fixture(FakeRunner::doing(vec![Does::Saves(
+            "- [ ] passport\n- [ ] sunscreen",
+        )]));
+        let id = create(&f, MARK, "Packing list").await;
+        let out = call(
+            &f,
+            asking(MARK, Some(9)),
+            "start_change_job",
+            json!({ "id": id, "brief": "Person: add sunscreen" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["status"], "ready", "the artifact is not marked working");
+        assert!(
+            out["note"].as_str().unwrap().contains("being made"),
+            "{}",
+            out["note"]
+        );
+        changed(&f, id).await;
+        let r = f.store.revision(MARK, id, 2).await.unwrap().unwrap();
+        assert_eq!(r.by.as_deref(), Some(MARK));
+        let chats = f.chats.0.lock().unwrap();
+        let (person, conversation, turn) = &chats[0];
+        assert_eq!((person.as_str(), *conversation), (MARK, 9));
+        assert_eq!(turn.reply, "Wrote it.");
+        assert_eq!(turn.artifacts[0].id, id);
+        assert_eq!(*f.told.0.lock().unwrap(), vec![(id, Status::Ready)]);
+        assert_eq!(*f.told.2.lock().unwrap(), vec![MARK]);
+    }
+
+    #[tokio::test]
+    async fn a_change_job_that_changes_nothing_or_fails_says_why_and_pushes_nothing() {
+        let f = fixture(FakeRunner::doing(vec![
+            Does::Answers("It has sunscreen already."),
+            Does::Fails("no"),
+        ]));
+        let id = create(&f, MARK, "Packing list").await;
+        for (does, reply) in [
+            ("It has sunscreen already.", "It has sunscreen already."),
+            ("no", "The change to Packing list didn't get made: no"),
+        ] {
+            call(
+                &f,
+                asking(MARK, Some(9)),
+                "start_change_job",
+                json!({ "id": id, "brief": "Person: add sunscreen" }),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{does}: {e}"));
+            changed(&f, id).await;
+            let chats = f.chats.0.lock().unwrap();
+            let turn = chats.last().expect("a card").2.clone();
+            assert_eq!(turn.reply, reply);
+        }
+        let a = f.store.get(MARK, id).await.unwrap().unwrap();
+        assert_eq!(a.current_revision, 1, "no new version");
+        assert!(f.told.0.lock().unwrap().is_empty(), "no push");
+    }
+
+    #[tokio::test]
+    async fn a_change_job_that_saves_part_then_fails_says_so_and_pushes_nothing() {
+        let f = fixture(FakeRunner::doing(vec![Does::SavesThenFails(
+            "- [ ] passport\n- [ ] sunscreen",
+            "connection lost",
+        )]));
+        let id = create(&f, MARK, "Packing list").await;
+        let mut events = f.bus.subscribe();
+        call(
+            &f,
+            asking(MARK, Some(9)),
+            "start_change_job",
+            json!({ "id": id, "brief": "Person: add sunscreen and a hat" }),
+        )
+        .await
+        .unwrap();
+        changed(&f, id).await;
+        assert_eq!(
+            f.store
+                .get(MARK, id)
+                .await
+                .unwrap()
+                .unwrap()
+                .current_revision,
+            2
+        );
+        let turn = f.chats.0.lock().unwrap().last().expect("a card").2.clone();
+        assert_eq!(
+            turn.reply,
+            "Part of the change to Packing list is saved, but the rest didn't get made: \
+             connection lost"
+        );
+        assert!(
+            matches!(
+                events.try_recv(),
+                Ok(Event::ArtifactChanged { id: changed, .. }) if changed == id
+            ),
+            "the app hears of what was saved"
+        );
+        assert!(f.told.0.lock().unwrap().is_empty(), "no push");
+    }
+
+    #[tokio::test]
+    async fn one_change_at_a_time_and_none_for_what_is_being_written_or_a_podcast() {
+        let (first, second) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+        let runner = FakeRunner::doing(vec![
+            Does::Waits(first.clone()),
+            Does::Waits(second.clone()),
+        ]);
+        let f = fixture(runner);
+        let id = create(&f, MARK, "Packing list").await;
+        let change = |brief: &str| {
+            call(
+                &f,
+                asking(MARK, Some(9)),
+                "start_change_job",
+                json!({ "id": id, "brief": brief }),
+            )
+        };
+        change("Person: add sunscreen").await.unwrap();
+        let e = change("Person: add more").await.unwrap_err().to_string();
+        assert!(e.contains("being made to it already"), "{e}");
+
+        let writing = start(&f, MARK, None).await.unwrap()["id"].as_i64().unwrap();
+        let e = call(
+            &f,
+            asking(MARK, Some(9)),
+            "start_change_job",
+            json!({ "id": writing, "brief": "Change it" }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("still being written"), "{e}");
+
+        let cast = f
+            .store
+            .create(
+                MARK,
+                NewArtifact {
+                    kind: PODCAST.into(),
+                    title: "An episode".into(),
+                    summary: "About bridges".into(),
+                    notify: true,
+                    status: Status::Ready,
+                    status_text: None,
+                    job_id: None,
+                    brief: None,
+                    conversation_id: None,
+                    first: Some(NewRevision {
+                        content: script_content(),
+                        reason: "First version".into(),
+                        author: Author::Claude,
+                        by: Some(MARK.into()),
+                        summary: None,
+                        page: PageChange::Keep,
+                    }),
+                },
+            )
+            .await
+            .unwrap()
+            .id;
+        let e = call(
+            &f,
+            asking(MARK, Some(9)),
+            "start_change_job",
+            json!({ "id": cast, "brief": "Re-cut it" }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("new episode"), "{e}");
+
+        first.notify_one();
+        second.notify_one();
+        changed(&f, id).await;
+        settled(&f, MARK, writing).await;
+    }
+
+    #[test]
+    fn a_change_job_is_told_to_read_it_first_and_keep_what_was_ticked() {
+        let mut ready = working("document");
+        ready.status = Status::Ready;
+        ready.current_revision = 1;
+        ready.page = None;
+        let (system, prompt) =
+            change::change_prompts(&ready, "Person: add sunscreen", Searching::Niles);
+        assert!(system.contains("artifact_get on artifact 7"), "{system}");
+        assert!(system.contains("artifact_edit"), "{system}");
+        assert!(system.contains("keeping what they ticked"), "{system}");
+        assert!(!system.contains("niles.onData"), "{system}");
+        let mut paged = ready.clone();
+        paged.page = Some(1);
+        let (system, _) = change::change_prompts(&paged, "Person: add sunscreen", Searching::Niles);
+        assert!(system.contains("artifact_edit_page"), "{system}");
+        assert!(system.contains("niles.onData"), "{system}");
+        assert!(prompt.contains("Person: add sunscreen"), "{prompt}");
+    }
+
+    async fn call_in_turn(
+        f: &Fixture,
+        asker: Asker,
+        started: Instant,
+        tool: &str,
+        args: Value,
+    ) -> Result<Value> {
+        crate::assistant::TURN
+            .scope(Some(started), call(f, asker, tool, args))
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_timeout_does_not_resume_another_overlapping_turns_artifact() {
+        let runner = FakeRunner::doing(vec![Does::Answers("No change.")]);
+        let f = fixture(runner.clone());
+        let id = create(&f, MARK, "Another conversation's list").await;
+        let started = Instant::now();
+        call_in_turn(
+            &f,
+            asking(MARK, Some(10)),
+            started + Duration::from_nanos(1),
+            "artifact_get",
+            json!({ "id": id }),
+        )
+        .await
+        .unwrap();
+        falls_back(&f, &runner, &asking(MARK, Some(9)), started).await;
+    }
+
+    #[tokio::test]
+    async fn overlapping_reads_and_writes_do_not_hide_this_turns_change() {
+        let f = fixture(FakeRunner::doing(vec![Does::Saves("Changed this one.")]));
+        let id = create(&f, MARK, "This list").await;
+        let other = create(&f, MARK, "The other list").await;
+        let started = Instant::now();
+        let asker = asking(MARK, Some(9));
+        call_in_turn(
+            &f,
+            asker.clone(),
+            started,
+            "artifact_get",
+            json!({ "id": id }),
+        )
+        .await
+        .unwrap();
+        let overlapping = started + Duration::from_nanos(1);
+        for read in [id, other] {
+            call_in_turn(
+                &f,
+                asker.clone(),
+                overlapping,
+                "artifact_get",
+                json!({ "id": read }),
+            )
+            .await
+            .unwrap();
+        }
+        call_in_turn(
+            &f,
+            asker.clone(),
+            overlapping,
+            "artifact_edit",
+            json!({
+                "id": other,
+                "edits": [{ "old": "passport", "new": "Passport" }],
+                "reason": "Capitalised",
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            f.artifacts
+                .carry_on(&timed_out(), &asker, started, "Change this list")
+                .await,
+            Some(change::STILL_WORKING.into())
+        );
+        changed(&f, id).await;
+        assert_eq!(
+            f.store
+                .revision(MARK, id, 2)
+                .await
+                .unwrap()
+                .unwrap()
+                .content["markdown"],
+            "Changed this one."
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chat_turn_that_runs_out_of_time_changing_one_goes_on_as_a_job() {
+        let f = fixture(FakeRunner::doing(vec![Does::Saves(
+            "- [ ] passport\n- [ ] sunscreen",
+        )]));
+        let id = create(&f, MARK, "Packing list").await;
+        let asker = asking(MARK, Some(9));
+        let started = Instant::now();
+        let turn = async {
+            call_in_turn(
+                &f,
+                asker.clone(),
+                started,
+                "artifact_get",
+                json!({ "id": id }),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Ok::<String, anyhow::Error>("Done.".into())
+        };
+        let e = crate::assistant::within(Duration::from_millis(200), turn)
+            .await
+            .unwrap_err();
+        assert!(e.downcast_ref::<crate::assistant::TimedOut>().is_some());
+        assert_eq!(
+            f.artifacts
+                .carry_on(
+                    &e,
+                    &asker,
+                    started,
+                    "Person: add sunscreen to my packing list"
+                )
+                .await
+                .as_deref(),
+            Some(change::STILL_WORKING)
+        );
+        let cards = f.artifacts.for_turn(MARK, started).await;
+        assert_eq!(cards.len(), 1, "the turn's card");
+        assert_eq!(cards[0].id, id);
+        changed(&f, id).await;
+        let r = f.store.revision(MARK, id, 2).await.unwrap().unwrap();
+        assert_eq!(r.content["markdown"], "- [ ] passport\n- [ ] sunscreen");
+        let chats = f.chats.0.lock().unwrap();
+        assert_eq!(chats[0].1, 9);
+        drop(chats);
+        assert_eq!(*f.told.0.lock().unwrap(), vec![(id, Status::Ready)]);
+    }
+
+    /// A timed-out turn that may not go on as a job falls back, and no
+    /// job is started: the fake runner's queue is unconsumed.
+    async fn falls_back(f: &Fixture, runner: &Arc<FakeRunner>, asker: &Asker, since: Instant) {
+        let e = timed_out();
+        assert_eq!(
+            f.artifacts
+                .carry_on(&e, asker, since, "Person: add sunscreen")
+                .await,
+            None
+        );
+        assert_eq!(runner.jobs.lock().unwrap().len(), 1, "no job ran");
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "six carry-on fallback scenarios, each with its own fixture; splitting them scatters the shared falls_back helper's cases"
+    )]
+    async fn a_turn_that_fails_otherwise_or_was_not_changing_one_artifact_falls_back() {
+        // Not a timeout, after an editable read.
+        let runner = FakeRunner::doing(vec![Does::Saves("x\ny\nz")]);
+        let f = fixture(runner.clone());
+        let id = create(&f, MARK, "Packing list").await;
+        let asker = asking(MARK, Some(9));
+        let started = Instant::now();
+        call_in_turn(
+            &f,
+            asker.clone(),
+            started,
+            "artifact_get",
+            json!({ "id": id }),
+        )
+        .await
+        .unwrap();
+        let e = anyhow::anyhow!("claude exited with 1");
+        assert_eq!(
+            f.artifacts
+                .carry_on(&e, &asker, started, "Person: add sunscreen")
+                .await,
+            None
+        );
+        assert_eq!(runner.jobs.lock().unwrap().len(), 1, "no job ran");
+
+        // A timeout with nothing read.
+        let runner = FakeRunner::doing(vec![Does::Saves("x\ny\nz")]);
+        let f = fixture(runner.clone());
+        let asker = asking(MARK, Some(9));
+        falls_back(&f, &runner, &asker, Instant::now()).await;
+
+        // A timeout after reading a view-only shared artifact: nothing
+        // editable was read.
+        let runner = FakeRunner::doing(vec![Does::Saves("x\ny\nz")]);
+        let f = fixture(runner.clone());
+        let id = his_shared(&f, niles_artifacts::Level::View).await;
+        let asker = asking(MAJSE, Some(9));
+        let started = Instant::now();
+        call_in_turn(
+            &f,
+            asker.clone(),
+            started,
+            "artifact_get",
+            json!({ "id": id }),
+        )
+        .await
+        .unwrap();
+        falls_back(&f, &runner, &asker, started).await;
+
+        // A timeout after reading two of Mark's artifacts: which was
+        // being changed is not known.
+        let runner = FakeRunner::doing(vec![Does::Saves("x\ny\nz")]);
+        let f = fixture(runner.clone());
+        let asker = asking(MARK, Some(9));
+        let started = Instant::now();
+        for title in ["One", "Two"] {
+            let id = create(&f, MARK, title).await;
+            call_in_turn(
+                &f,
+                asker.clone(),
+                started,
+                "artifact_get",
+                json!({ "id": id }),
+            )
+            .await
+            .unwrap();
+        }
+        falls_back(&f, &runner, &asker, started).await;
+
+        // A timeout after reading one and making another: the turn was
+        // not only changing the one it read.
+        let runner = FakeRunner::doing(vec![Does::Saves("x\ny\nz")]);
+        let f = fixture(runner.clone());
+        let id = create(&f, MARK, "One").await;
+        let asker = asking(MARK, Some(9));
+        let started = Instant::now();
+        call_in_turn(
+            &f,
+            asker.clone(),
+            started,
+            "artifact_get",
+            json!({ "id": id }),
+        )
+        .await
+        .unwrap();
+        call_in_turn(
+            &f,
+            asker.clone(),
+            started,
+            "artifact_create",
+            json!({
+                "kind": "document",
+                "title": "Two",
+                "summary": "Another",
+                "content": { "markdown": "- [ ] x" },
+            }),
+        )
+        .await
+        .unwrap();
+        falls_back(&f, &runner, &asker, started).await;
+
+        // A timeout after a read through a job's tools: a job's reads are
+        // not the chat's.
+        let runner = FakeRunner::doing(vec![Does::Saves("x\ny\nz")]);
+        let f = fixture(runner.clone());
+        let id = create(&f, MARK, "Packing list").await;
+        let asker = asking(MARK, Some(9));
+        let started = Instant::now();
+        let tools = f.artifacts.job_tools(id, "document", None);
+        crate::assistant::TURN
+            .scope(
+                Some(started),
+                approvals::ASKER.scope(
+                    asker.clone(),
+                    tools.execute(&niles_llm::ToolCall {
+                        id: String::new(),
+                        name: "artifact_get".into(),
+                        arguments: json!({ "id": id }),
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+        falls_back(&f, &runner, &asker, started).await;
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_handed_it_to_a_page_job_does_not_go_on_as_a_change_too() {
+        let runner = FakeRunner::doing(vec![Does::Saves("x\ny\nz")]);
+        let f = fixture(runner.clone());
+        let id = create(&f, MARK, "Packing list").await;
+        let asker = asking(MARK, Some(9));
+        let started = Instant::now();
+        call(&f, asker.clone(), "artifact_get", json!({ "id": id }))
+            .await
+            .unwrap();
+        f.artifacts.paging.lock().unwrap().insert(id);
+        falls_back(&f, &runner, &asker, started).await;
     }
 
     #[tokio::test]
@@ -3635,6 +4730,15 @@ mod tests {
                 json!({ "id": id, "remove": true, "reason": "No page" }),
             ),
             ("start_page_job", json!({ "id": id, "brief": "Nicer" })),
+            (
+                "artifact_edit",
+                json!({ "id": id, "edits": [{ "old": "passport", "new": "Passport" }], "reason": "x" }),
+            ),
+            (
+                "artifact_edit_page",
+                json!({ "id": id, "edits": [{ "old": "a", "new": "b" }], "reason": "x" }),
+            ),
+            ("start_change_job", json!({ "id": id, "brief": "Nicer" })),
         ] {
             let e = call(&f, hers.clone(), tool, args)
                 .await
@@ -3677,6 +4781,34 @@ mod tests {
         let r = f.store.revision(MARK, id, 2).await.unwrap().unwrap();
         assert_eq!((r.author, r.by.as_deref()), (Author::Claude, Some(MAJSE)));
         assert_eq!(heard(&mut events), vec![MAJSE, MARK]);
+        let cards = f.artifacts.for_turn(MAJSE, before).await;
+        assert_eq!(cards.len(), 1, "her turn's card");
+        assert_eq!(cards[0].id, id);
+    }
+
+    #[tokio::test]
+    async fn shared_to_edit_her_edits_are_hers() {
+        let f = fixture(FakeRunner::doing(vec![]));
+        let id = his_shared(&f, niles_artifacts::Level::Edit).await;
+        let before = Instant::now();
+        let out = crate::assistant::tests_support::as_assistant(
+            "claude",
+            call(
+                &f,
+                asking(MAJSE, None),
+                "artifact_edit",
+                json!({
+                    "id": id,
+                    "edits": [{ "old": "passport", "new": "Passport" }],
+                    "reason": "Capitalised",
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(&out["version"], &json!(2));
+        let r = f.store.revision(MARK, id, 2).await.unwrap().unwrap();
+        assert_eq!((r.author, r.by.as_deref()), (Author::Claude, Some(MAJSE)));
         let cards = f.artifacts.for_turn(MAJSE, before).await;
         assert_eq!(cards.len(), 1, "her turn's card");
         assert_eq!(cards[0].id, id);
@@ -3926,6 +5058,10 @@ mod tests {
             }
             "artifact_set_page" => json!({ "id": id, "html": PAGE, "reason": "x" }),
             "start_page_job" => json!({ "id": id, "brief": "x" }),
+            "artifact_edit" | "artifact_edit_page" => {
+                json!({ "id": id, "edits": [{ "old": "x", "new": "y" }], "reason": "x" })
+            }
+            "start_change_job" => json!({ "id": id, "brief": "x" }),
             "artifact_share" => json!({ "id": id, "person": "Majse", "level": "view" }),
             _ => json!({ "id": id }),
         };
@@ -3949,6 +5085,9 @@ mod tests {
             "start_page_job",
             "artifact_share",
             "artifact_people",
+            "artifact_edit",
+            "artifact_edit_page",
+            "start_change_job",
         ] {
             assert_eq!(
                 answer(&f, ANNA, tool, his).await,
@@ -3981,6 +5120,11 @@ mod tests {
                 json!({ "id": id, "person": "Anna", "level": "view" }),
             ),
             ("artifact_people", json!({})),
+            (
+                "artifact_edit",
+                json!({ "id": id, "edits": [{ "old": "a", "new": "b" }], "reason": "x" }),
+            ),
+            ("start_change_job", json!({ "id": id, "brief": "Nicer" })),
         ] {
             let e = call(&f, stranger.clone(), tool, args)
                 .await
@@ -4416,6 +5560,20 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("make a new episode"), "unexpected: {error}");
+        let error = call(
+            &f,
+            asking(MARK, None),
+            "artifact_edit",
+            json!({
+                "id": id,
+                "edits": [{ "op": "set", "path": "/topic", "value": "Another bridge" }],
+                "reason": "a change",
+            }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("make a new episode"), "unexpected: {error}");
     }
 
     #[tokio::test]
@@ -4447,5 +5605,99 @@ mod tests {
             system.contains("a woman's voice with an American accent"),
             "{system}"
         );
+    }
+
+    #[test]
+    fn the_chat_edits_small_changes_and_hands_big_ones_to_a_job() {
+        for phrase in [
+            "artifact_edit",
+            "artifact_edit_page",
+            "start_change_job",
+            "start_page_job",
+            "with_page: true",
+        ] {
+            assert!(PROMPT.contains(phrase), "PROMPT has no {phrase}");
+        }
+        assert!(
+            !PROMPT.contains("yourself with artifact_set_page"),
+            "{PROMPT}"
+        );
+        let (system, _) = page_prompts(&working("trip"), "x", Searching::Niles);
+        assert!(system.contains("artifact_edit_page"), "{system}");
+    }
+
+    struct GatedChat {
+        chats: Arc<Chats>,
+        entered: Notify,
+        persist: Notify,
+    }
+
+    #[async_trait]
+    impl Conversations for GatedChat {
+        async fn append(
+            &self,
+            person: &str,
+            conversation: i64,
+            turn: &Turn,
+        ) -> std::result::Result<(), String> {
+            self.entered.notify_one();
+            self.persist.notified().await;
+            self.chats.append(person, conversation, turn).await
+        }
+    }
+
+    #[tokio::test]
+    async fn every_change_completion_refreshes_the_chat_only_after_its_reply_is_kept() {
+        for does in [
+            Does::Saves("- [ ] passport\n- [ ] sunscreen"),
+            Does::Answers("It has sunscreen already."),
+            Does::Fails("connection lost"),
+            Does::SavesThenFails("- [ ] passport\n- [ ] sunscreen", "connection lost"),
+        ] {
+            let mut f = fixture(FakeRunner::doing(vec![does]));
+            let chat = Arc::new(GatedChat {
+                chats: f.chats.clone(),
+                entered: Notify::new(),
+                persist: Notify::new(),
+            });
+            Arc::get_mut(&mut f.artifacts).unwrap().conversations = Some(chat.clone());
+            let id = create(&f, MARK, "Packing list").await;
+            let mut events = f.bus.subscribe();
+            call(
+                &f,
+                asking(MARK, Some(9)),
+                "start_change_job",
+                json!({ "id": id, "brief": "Add sunscreen" }),
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), chat.entered.notified())
+                .await
+                .expect("the completion reaches the chat");
+            assert!(
+                matches!(
+                    events.try_recv(),
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                ),
+                "refreshing before the chat is persisted loses the completion"
+            );
+            chat.persist.notify_one();
+            let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+                .await
+                .expect("the completed chat is refreshed")
+                .unwrap();
+            assert!(matches!(
+                event,
+                Event::ArtifactChanged { person, id: changed, .. }
+                    if person == MARK && changed == id
+            ));
+            {
+                let chats = f.chats.0.lock().unwrap_or_else(|e| e.into_inner());
+                let (person, conversation, turn) = chats.last().expect("the reply is kept");
+                assert_eq!((person.as_str(), *conversation), (MARK, 9));
+                assert_eq!(turn.artifacts[0].id, id);
+            }
+            changed(&f, id).await;
+        }
     }
 }

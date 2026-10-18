@@ -55,6 +55,20 @@ hour. If one fails, its card says it did not finish. Open it to see why,
 and press **Try again**. A restart of Niles stops anything being written,
 and it shows as failed.
 
+## Changing one
+
+Ask for a change the same way: "move the ferry to Koh Tao to 9:30", "add
+sunscreen to the packing list", "make the headings on the Thailand page
+green". The assistant reads the item and saves only what changes, so a
+small change is made in the chat while you wait, as a new version.
+
+A change that rewrites much of an item, such as a trip a week longer or a
+plan rebuilt around a new race date, is made in the background, and the
+chat says when it is done. So is a change that turns out to take longer
+than a chat answer has. Niles then says "This is taking longer than a chat
+answer. I'm still working on it and will let you know when it's done.",
+finishes it in the background, and tells you as it does for a new item.
+
 ## Being told when it is ready
 
 Under the newest card of an item still being written, Niles offers
@@ -154,8 +168,10 @@ A shared training plan still follows its owner's runs only.
 
 Ask Niles to "make it look nicer" and the assistant writes a page for
 the item, with its own layout drawn from the same content. The content
-stays the real thing, and when it changes, the page shows the change. Small changes
-to the page itself can be asked for too.
+stays the real thing, and when it changes, the page shows the change.
+Small changes to the page itself, a colour or a heading, are made in the
+chat. A new layout, such as a timeline instead of a list, is made in the
+background like the first page.
 
 A page runs walled off from the app:
 

@@ -78,6 +78,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | --- | --- | --- |
 | `approval-log` | Every approval logged when asked and answered, lapses included; one summary line, never the arguments | [#455](https://github.com/MarkNygaard/niles/pull/455) |
 | `artifacts-documents` | Claude or ChatGPT saves documents for you, with versions, and writes a big one in the background | [#429](https://github.com/MarkNygaard/niles/pull/429) |
+| `artifacts-edits` | Small changes to a saved item or its page made in the chat as edits; big or slow ones finish in the background | [#474](https://github.com/MarkNygaard/niles/pull/474) |
 | `artifacts-pages` | Ask Claude or ChatGPT for a page for any saved artifact: HTML that draws its data, and draws again as the data changes | [#440](https://github.com/MarkNygaard/niles/pull/440) |
 | `artifacts-pictures` | Pictures in a document, a trip or a page, found with the house's search and kept as Niles's own clean copies | [#442](https://github.com/MarkNygaard/niles/pull/442) |
 | `artifacts-sharing` | Share a saved artifact with someone in the house, to read or to edit; an editor's own Claude or ChatGPT can change it | [#452](https://github.com/MarkNygaard/niles/pull/452) |
@@ -117,6 +118,12 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 - write a packing list for the cabin
 - make a travel plan for our Thailand trip
 - add sunscreen to my packing list
+
+### `artifacts-edits` — example phrasings
+
+- make the headings on the Thailand page green
+- move the ferry to Koh Tao to 9:30
+- make our trip a week longer
 
 ### `artifacts-pages` — example phrasings
 

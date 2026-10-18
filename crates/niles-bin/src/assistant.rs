@@ -32,6 +32,7 @@ use std::sync::{Arc, Mutex};
 /// — the only tools it may see. `None` is the whole registry.
 #[derive(Clone)]
 struct Grant {
+    turn: Option<std::time::Instant>,
     speaker: Option<String>,
     tools: Option<Arc<ToolRegistry>>,
     /// Whose turn this run answers, so a tool that waits for a yes holds
@@ -45,11 +46,43 @@ struct Grant {
 tokio::task_local! {
     /// The assistant whose tool call this is, for the length of the call.
     static VIA: &'static str;
+    /// The originating chat turn, carried across its MCP requests.
+    pub(crate) static TURN: Option<std::time::Instant>;
 }
 
 /// The assistant making the tool call this runs in, if one is.
 pub(crate) fn via() -> Option<&'static str> {
     VIA.try_with(|v| *v).ok()
+}
+
+pub(crate) fn turn() -> Option<std::time::Instant> {
+    TURN.try_with(|turn| *turn).ok().flatten()
+}
+
+/// A run that gave no answer in its time, and was ended. Its own type, so
+/// a chat turn that ran out of time in the middle of a change can go on
+/// as a job ([`crate::artifacts::Artifacts::carry_on`]) where any other
+/// failure falls back.
+#[derive(Debug)]
+pub(crate) struct TimedOut(pub(crate) std::time::Duration);
+
+impl std::fmt::Display for TimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no answer within {}s", self.0.as_secs())
+    }
+}
+
+impl std::error::Error for TimedOut {}
+
+/// `run`, given `limit` to answer in. Past it, a [`TimedOut`], and `run`
+/// is dropped, which ends its process (`kill_on_drop`).
+pub(crate) async fn within<T>(
+    limit: std::time::Duration,
+    run: impl Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    tokio::time::timeout(limit, run)
+        .await
+        .map_err(|_| anyhow::Error::new(TimedOut(limit)))?
 }
 
 #[cfg(test)]
@@ -296,6 +329,7 @@ impl Assistant {
         let turn = TurnToken::issue(
             &self.turns,
             Grant {
+                turn: turn(),
                 speaker,
                 tools: None,
                 asker: crate::approvals::asker(),
@@ -358,6 +392,7 @@ impl Assistant {
         let turn = TurnToken::issue(
             &self.turns,
             Grant {
+                turn: None,
                 speaker: for_whom.as_ref().and_then(|a| a.slug.clone()),
                 tools: Some(Arc::new(tools)),
                 asker: for_whom,
@@ -444,6 +479,15 @@ async fn serve_mcp(
     let Some(grant) = grant else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    // So a turn that runs out of time shows where its time went; never
+    // the arguments, which are the person's.
+    let logged = if grant.tools.is_none() {
+        called(&message, &state.own)
+    } else {
+        None
+    };
+    let person = grant.asker.as_ref().map(|a| a.person.clone());
+    let started = std::time::Instant::now();
     // A background job lists and calls only its own tools: asking for
     // `set_device` by name finds nothing.
     let registries: Vec<Arc<ToolRegistry>> = match grant.tools {
@@ -464,15 +508,53 @@ async fn serve_mcp(
             }
         }),
     );
-    match handled.await {
+    let reply = TURN.scope(grant.turn, handled).await;
+    if let Some((tool, artifact)) = logged {
+        let refused = reply
+            .as_ref()
+            .is_some_and(|r| r["result"]["isError"] == true || r.get("error").is_some());
+        let who = person.map(|p| format!("{p}: ")).unwrap_or_default();
+        let on = artifact
+            .map(|id| format!(" on artifact {id}"))
+            .unwrap_or_default();
+        tracing::info!(
+            "[assistant] {who}{tool}{on} took {}ms{}",
+            started.elapsed().as_millis(),
+            if refused { ", refused" } else { "" }
+        );
+    }
+    match reply {
         Some(reply) => Json(reply).into_response(),
         None => StatusCode::ACCEPTED.into_response(),
     }
 }
 
+/// The tool a `tools/call` message calls, and the artifact it names when
+/// it is one of the assistant's own (`own`, the artifacts'): nothing else
+/// of the call, so its arguments never reach the log.
+fn called(message: &Value, own: &ToolRegistry) -> Option<(String, Option<i64>)> {
+    if message.get("method").and_then(Value::as_str) != Some("tools/call") {
+        return None;
+    }
+    let params = message.get("params")?;
+    let name = params.get("name")?.as_str()?;
+    if !own.has(name) {
+        return Some((name.to_string(), None));
+    }
+    let id = params
+        .get("arguments")
+        .and_then(|a| a.get("id"))
+        .and_then(|id| match id {
+            Value::Number(n) => n.as_i64(),
+            Value::String(s) => s.trim().parse().ok(),
+            _ => None,
+        });
+    Some((name.to_string(), id))
+}
+
 /// The conversation so far and the new message, as one prompt: each run
 /// starts fresh, so the history has to travel with it.
-fn transcript(history: &[Message], text: &str) -> String {
+pub(crate) fn transcript(history: &[Message], text: &str) -> String {
     let mut out = String::new();
     for message in history {
         match message {
@@ -570,6 +652,8 @@ pub(crate) fn attachments_section(attachments: &[Attached]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use niles_tools::{Tool, ToolDescriptor};
     use serde_json::json;
 
     fn claude() -> Candidate {
@@ -792,6 +876,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let token = TurnToken::issue(
             &turns,
             Grant {
+                turn: None,
                 speaker: Some("mark".into()),
                 tools: None,
                 asker: None,
@@ -831,6 +916,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let token = TurnToken::issue(
             &assistant.turns,
             Grant {
+                turn: None,
                 speaker: None,
                 tools: None,
                 asker: None,
@@ -901,6 +987,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let token = TurnToken::issue(
             &assistant.turns,
             Grant {
+                turn: None,
                 speaker: None,
                 tools: Some(Arc::new(review_tools())),
                 asker: None,
@@ -927,6 +1014,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let turn = TurnToken::issue(
             &assistant.turns,
             Grant {
+                turn: None,
                 speaker: None,
                 tools: None,
                 asker: None,
@@ -940,6 +1028,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let job = TurnToken::issue(
             &assistant.turns,
             Grant {
+                turn: None,
                 speaker: None,
                 tools: Some(Arc::new(ToolRegistry::new())),
                 asker: None,
@@ -965,6 +1054,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let token = TurnToken::issue(
             &assistant.turns,
             Grant {
+                turn: None,
                 speaker: None,
                 tools: Some(Arc::new(review_tools())),
                 asker: None,
@@ -1072,5 +1162,204 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         // It goes on the system prompt, so the person's words stay
         // exactly what they typed: nothing synthetic in the transcript.
         assert!(!section.contains("The person now says"), "{section}");
+    }
+
+    /// A tracing writer that keeps every line, for log assertions.
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+        type Writer = Captured;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// The own registry with one stub tool standing in for the
+    /// artifacts', beside the house's. The returned token keeps the
+    /// chat grant alive: dropping it withdraws the grant.
+    fn stub_state() -> (McpState, HeaderMap, TurnToken) {
+        struct Opens;
+        #[async_trait]
+        impl Tool for Opens {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor {
+                    name: "artifact_get".into(),
+                    description: "A stub standing in for the artifacts' own tool.".into(),
+                    parameters: json!({ "type": "object", "properties": {} }),
+                }
+            }
+            async fn execute(&self, _args: Value) -> niles_tools::Result<Value> {
+                Ok(json!({ "title": "Koh Samui" }))
+            }
+        }
+        let mut own = ToolRegistry::new();
+        own.register(Box::new(Opens));
+        let state = McpState {
+            tools: Arc::new(house()),
+            own: Arc::new(own),
+            turns: Turns::default(),
+        };
+        let token = TurnToken::issue(
+            &state.turns,
+            Grant {
+                turn: None,
+                speaker: None,
+                tools: None,
+                asker: Some(crate::approvals::Asker {
+                    person: "person:mark".into(),
+                    slug: Some("mark".into()),
+                    satellite: None,
+                    conversation: None,
+                }),
+                via: "claude",
+            },
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {}", token.0).parse().unwrap(),
+        );
+        (state, headers, token)
+    }
+
+    async fn post(state: &McpState, headers: &HeaderMap, message: Value) -> StatusCode {
+        serve_mcp(State(state.clone()), headers.clone(), Json(message))
+            .await
+            .status()
+    }
+
+    #[tokio::test]
+    async fn a_run_that_runs_out_of_time_says_so_in_its_own_type() {
+        let e = within(std::time::Duration::from_millis(20), async {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            Ok(())
+        })
+        .await
+        .unwrap_err();
+        assert!(e.downcast_ref::<TimedOut>().is_some());
+        assert!(e.to_string().starts_with("no answer within"), "{e}");
+
+        let e = within(std::time::Duration::from_secs(1), async {
+            Err::<(), _>(anyhow::anyhow!("exited"))
+        })
+        .await
+        .unwrap_err();
+        assert!(e.downcast_ref::<TimedOut>().is_none());
+
+        assert_eq!(
+            within(std::time::Duration::from_secs(1), async { Ok(5) })
+                .await
+                .unwrap(),
+            5
+        );
+    }
+
+    /// Each tool call of a chat turn is logged with its name, the
+    /// artifact it names, and its time — never its arguments.
+    #[tokio::test]
+    async fn a_chat_turn_s_tool_calls_are_logged_with_their_time_and_never_their_arguments() {
+        let captured = Captured::default();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(captured.clone())
+                .with_ansi(false)
+                .with_max_level(tracing::Level::INFO)
+                .finish(),
+        );
+        let (state, headers, _token) = stub_state();
+        let ask = |message: Value| {
+            let state = state.clone();
+            let headers = headers.clone();
+            async move { post(&state, &headers, message).await }
+        };
+        let answered = ask(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "artifact_get",
+                "arguments": { "id": 12, "with_page": true, "note": "the ferry to Koh Tao" }
+            }
+        }))
+        .await;
+        assert_eq!(answered, StatusCode::OK);
+        let answered = ask(json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "read_grocery_list", "arguments": {} }
+        }))
+        .await;
+        assert_eq!(answered, StatusCode::OK);
+
+        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            log.contains("person:mark: artifact_get on artifact 12 took "),
+            "{log}"
+        );
+        let grocery = log
+            .lines()
+            .find(|l| l.contains("read_grocery_list"))
+            .expect("the house tool's line");
+        assert!(grocery.contains("took "), "{grocery}");
+        assert!(!grocery.contains("on artifact"), "{grocery}");
+        assert!(!log.contains("Koh Tao"), "{log}");
+        assert!(!log.contains("with_page"), "{log}");
+    }
+
+    /// A background job's calls are not a chat turn's: nothing is
+    /// logged for them.
+    #[tokio::test]
+    async fn a_background_job_s_tool_calls_are_not_logged() {
+        let captured = Captured::default();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(captured.clone())
+                .with_ansi(false)
+                .with_max_level(tracing::Level::INFO)
+                .finish(),
+        );
+        let (state, _, _token) = stub_state();
+        let job = TurnToken::issue(
+            &state.turns,
+            Grant {
+                turn: None,
+                speaker: None,
+                tools: Some(Arc::new(ToolRegistry::new())),
+                asker: None,
+                via: "claude",
+            },
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {}", job.0).parse().unwrap(),
+        );
+        let refused = post(
+            &state,
+            &headers,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": { "name": "artifact_get", "arguments": { "id": 12 } }
+            }),
+        )
+        .await;
+        assert_eq!(refused, StatusCode::OK);
+
+        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(!log.lines().any(|l| l.contains("[assistant]")), "{log}");
     }
 }
