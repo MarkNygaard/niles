@@ -2357,6 +2357,7 @@ impl Tool for StartJob {
         let title = niles_artifacts::title(str_arg(&args, "title").unwrap_or_default())
             .map_err(|e| refused(TOOL, e))?;
         let brief = str_arg(&args, "brief")
+            .filter(|brief| !brief.is_empty())
             .ok_or_else(|| invalid(TOOL, "brief is what the run is to make, and it is empty"))?
             .to_string();
         let status_text = match str_arg(&args, "status_text") {
@@ -3923,6 +3924,29 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(e.contains("by its text"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn a_job_with_an_empty_brief_is_refused_before_the_id_is_looked_up() {
+        let f = fixture(FakeRunner::doing(vec![]));
+        for (tool, args) in [
+            (
+                "start_artifact_job",
+                json!({
+                    "kind": "document",
+                    "title": "A list",
+                    "summary": "A list",
+                    "brief": " ",
+                }),
+            ),
+            ("start_change_job", json!({ "id": 999, "brief": "" })),
+        ] {
+            let e = call(&f, asking(MARK, None), tool, args)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("it is empty"), "{tool}: {e}");
+        }
     }
 
     #[tokio::test]

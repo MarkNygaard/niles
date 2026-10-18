@@ -56,6 +56,7 @@ impl Tool for StartChange {
         let id = id_arg(TOOL, &args)?;
         // Before opened, so a bad call reveals nothing about the id.
         let brief = str_arg(&args, "brief")
+            .filter(|brief| !brief.is_empty())
             .ok_or_else(|| invalid(TOOL, "brief is the change to make, and it is empty"))?
             .to_string();
         let opened = self
