@@ -151,50 +151,50 @@ impl Artifacts {
             }
         };
         let conversation = conversation.or(now.conversation_id.filter(|_| person == owner));
-        match outcome {
+        // A run that failed may have saved part of the change first.
+        let saved = self
+            .changed_by(&now, artifact.current_revision, &person)
+            .await;
+        let (reply, via) = match outcome {
             Err(why) => {
                 tracing::warn!(
-                    "[artifacts] {person}: {:?} was not changed: {why}",
+                    "[artifacts] {person}: the change to {:?} did not finish: {why}",
                     now.title
                 );
-                self.say(
-                    &person,
-                    &now,
-                    conversation,
-                    format!("The change to {} didn't get made: {why}", now.title),
-                    None,
-                )
-                .await;
+                let reply = if saved {
+                    format!(
+                        "Part of the change to {} is saved, but the rest didn't get made: {why}",
+                        now.title
+                    )
+                } else {
+                    format!("The change to {} didn't get made: {why}", now.title)
+                };
+                (reply, None)
             }
             Ok((via, answer)) => {
                 let answer = answer.trim();
-                if self
-                    .changed_by(&now, artifact.current_revision, &person)
-                    .await
-                {
+                let reply = if !answer.is_empty() {
+                    answer.to_string()
+                } else if saved {
+                    format!("The change to {} is made.", now.title)
+                } else {
+                    format!("Nothing in {} needed changing.", now.title)
+                };
+                if saved {
                     tracing::info!("[artifacts] {person}: {:?} was changed", now.title);
-                    self.announce(&now);
-                    let reply = if answer.is_empty() {
-                        format!("The change to {} is made.", now.title)
-                    } else {
-                        answer.to_string()
-                    };
-                    self.say(&person, &now, conversation, reply, Some(via))
-                        .await;
-                    if now.notify {
-                        self.notifier.finished(&person, &now).await;
-                    }
                 } else {
                     tracing::info!("[artifacts] {person}: nothing changed in {:?}", now.title);
-                    let reply = if answer.is_empty() {
-                        format!("Nothing in {} needed changing.", now.title)
-                    } else {
-                        answer.to_string()
-                    };
-                    self.say(&person, &now, conversation, reply, Some(via))
-                        .await;
                 }
+                (reply, Some(via))
             }
+        };
+        let finished = saved && via.is_some();
+        // The card first: the app fetches the chat again when it hears
+        // of the artifact, and would miss a card not kept yet.
+        self.say(&person, &now, conversation, reply, via).await;
+        self.announce(&now);
+        if finished && now.notify {
+            self.notifier.finished(&person, &now).await;
         }
     }
 
@@ -243,6 +243,20 @@ impl Artifacts {
             tracing::info!(
                 "[artifacts] {person}: the chat made or started something else as well, so \
                  nothing goes on as a job"
+            );
+            return None;
+        }
+        // The turn may have handed it to a page job already, which a
+        // change job beside it would race to write the page.
+        if self
+            .paging
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&id)
+        {
+            tracing::info!(
+                "[artifacts] {person}: a page is being made for artifact {id}, so no change \
+                 goes on as a job as well"
             );
             return None;
         }

@@ -2444,6 +2444,8 @@ mod tests {
         /// Saves this markdown through the job's own tool, as a real run
         /// would.
         Saves(&'static str),
+        /// Saves this markdown, then fails with this reason.
+        SavesThenFails(&'static str, &'static str),
         /// Saves this content (any kind's) through the job's own tool.
         SavesContent(Value),
         /// Saves nothing, and answers this.
@@ -2537,6 +2539,10 @@ mod tests {
                 Does::Saves(markdown) => {
                     save(&tools, asker, id, markdown).await?;
                     Ok((self.via, "Wrote it.".into()))
+                }
+                Does::SavesThenFails(markdown, why) => {
+                    save(&tools, asker, id, markdown).await?;
+                    Err(why.into())
                 }
                 Does::SavesContent(content) => {
                     crate::assistant::tests_support::as_assistant(
@@ -4011,6 +4017,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_change_job_that_saves_part_then_fails_says_so_and_pushes_nothing() {
+        let f = fixture(FakeRunner::doing(vec![Does::SavesThenFails(
+            "- [ ] passport\n- [ ] sunscreen",
+            "connection lost",
+        )]));
+        let id = create(&f, MARK, "Packing list").await;
+        let mut events = f.bus.subscribe();
+        call(
+            &f,
+            asking(MARK, Some(9)),
+            "start_change_job",
+            json!({ "id": id, "brief": "Person: add sunscreen and a hat" }),
+        )
+        .await
+        .unwrap();
+        changed(&f, id).await;
+        assert_eq!(
+            f.store
+                .get(MARK, id)
+                .await
+                .unwrap()
+                .unwrap()
+                .current_revision,
+            2
+        );
+        let turn = f.chats.0.lock().unwrap().last().expect("a card").2.clone();
+        assert_eq!(
+            turn.reply,
+            "Part of the change to Packing list is saved, but the rest didn't get made: \
+             connection lost"
+        );
+        assert!(
+            matches!(
+                events.try_recv(),
+                Ok(Event::ArtifactChanged { id: changed, .. }) if changed == id
+            ),
+            "the app hears of what was saved"
+        );
+        assert!(f.told.0.lock().unwrap().is_empty(), "no push");
+    }
+
+    #[tokio::test]
     async fn one_change_at_a_time_and_none_for_what_is_being_written_or_a_podcast() {
         let (first, second) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
         let runner = FakeRunner::doing(vec![
@@ -4259,6 +4307,20 @@ mod tests {
             )
             .await
             .unwrap();
+        falls_back(&f, &runner, &asker, started).await;
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_handed_it_to_a_page_job_does_not_go_on_as_a_change_too() {
+        let runner = FakeRunner::doing(vec![Does::Saves("x\ny\nz")]);
+        let f = fixture(runner.clone());
+        let id = create(&f, MARK, "Packing list").await;
+        let asker = asking(MARK, Some(9));
+        let started = Instant::now();
+        call(&f, asker.clone(), "artifact_get", json!({ "id": id }))
+            .await
+            .unwrap();
+        f.artifacts.paging.lock().unwrap().insert(id);
         falls_back(&f, &runner, &asker, started).await;
     }
 
