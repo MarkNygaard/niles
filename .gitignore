@@ -40,9 +40,6 @@ desktop.ini
 # Personal config file (copy from examples/niles.example.toml)
 /niles.toml
 
-# mdBook output
-/docs/book
-
 # Logs
 *.log
 

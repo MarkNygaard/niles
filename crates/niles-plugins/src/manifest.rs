@@ -1,7 +1,7 @@
 //! `niles-integration.toml`: what a plugin is, what it may reach, and
 //! what its setup panel asks for.
 //!
-//! The rules are those of `docs/integrations/manifest.md`. Parsing is
+//! The rules are those of `site/content/docs/writing-add-ons/manifest.mdx`. Parsing is
 //! strict about the shape — an unknown key is an error, because a typo
 //! in `[permissions]` would otherwise quietly take a permission away —
 //! and [`Manifest::problems`] then lists everything else wrong, all at

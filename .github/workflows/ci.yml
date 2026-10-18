@@ -52,14 +52,6 @@ jobs:
         if: github.event_name == 'push'
         run: cargo build --workspace --release
 
-      - name: Install mdBook
-        uses: peaceiris/actions-mdbook@v2
-        with:
-          mdbook-version: '0.4.52'
-
-      - name: Build docs site
-        run: mdbook build docs
-
   web:
     name: web ui (typecheck + build)
     runs-on: ubuntu-latest
@@ -95,3 +87,27 @@ jobs:
         run: |
           cargo test -p niles-api --features ui
           cargo check -p niles-bin --features ui
+
+  site:
+    name: site (typecheck + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install site dependencies
+        working-directory: site
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: site
+        run: bun run typecheck
+
+      # Needs no network: without the add-on index the build still passes,
+      # and the add-ons page loads the index in the browser instead.
+      - name: Build
+        working-directory: site
+        run: bun run build

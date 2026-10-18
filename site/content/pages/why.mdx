@@ -1,0 +1,129 @@
+---
+title: "Why Niles"
+description: "Who Niles is for, who should stay on Home Assistant, the ideas it is built on, and what leaves the house."
+---
+
+Niles replaces Home Assistant for one kind of household. It has a focused
+set of devices, mostly Zigbee through Zigbee2MQTT and a few Wi-Fi ones. It
+wants a spoken command answered in well under a second. It would rather name
+its devices once than click through setup screens, and it wants a language
+model built in. Somebody in the house runs a Kubernetes cluster.
+
+Home Assistant solves a different problem, the widest device coverage for
+people who don't run infrastructure, and that makes it heavy and led by its UI.
+Niles makes the opposite trade. It supports fewer devices and assumes more
+of the person who installs it.
+
+## Who should stay on Home Assistant
+
+- A house with lots of vendor Wi-Fi devices, Z-Wave or Matter.
+- A family that needs a polished setup UI.
+- Anyone who doesn't want to run a cluster, a Postgres database and an MQTT
+  broker.
+
+Niles is also young. Its releases are 0.x, and breaking changes are
+expected.
+
+## What Niles is not
+
+- **A design or planning tool.** Voice is a poor medium for code, design or
+  long plans. Niles files the task, a Linear issue for example, and tells you
+  when something is ready. The thinking happens at a computer.
+- **A voice OS.** Niles is the server. Satellites are dedicated hardware that
+  talk to it.
+- **An LLM training framework.** It uses models. It doesn't train them.
+
+## How it stays fast
+
+A spoken command never waits on something it doesn't need: a plugin, a
+second model or a cloud call.
+
+**The wake word is heard on the satellite.** A model trained for "Niles" runs
+on the satellite's ESP32-S3, so nothing streams until the word is said. The
+satellite then streams raw 16 kHz audio to Niles over TCP.
+
+**Tiers by trigger.** Fixed phrasings for lights, blinds, scenes, music, the
+TV, timers, heating, the weather and the clock are matched by regex and carried
+out with no model at all. A fast model (Cerebras by default) takes the rest,
+with only the tools that request is likely to need. The assistant, Claude Code
+or ChatGPT on the household's own subscription, is slower and better at
+writing. By voice it gets only the turns that need it, such as making a rule.
+In the app's chat it answers whatever the fixed phrasings don't, and it is the
+only one that reads attached files and writes documents.
+
+**Tools, not search, for state.** The model asks the device registry for what
+is on through tool calls, instead of searching a pile of text about the house.
+
+**The answer comes from the satellite.** The room's Sonos is turned down while
+Niles listens and speaks. It is something the model can play music on, never
+where the answer comes from.
+
+See [the voice loop](/docs/architecture/voice-loop) for each step.
+
+## The house is described upstream
+
+Rooms and devices are the names you give them in Zigbee2MQTT, as
+`room/device`: `kitchen/ceiling`, `living_room/floor_lamp`. Niles keeps no
+device database of its own, and no screen in the app creates a room. The app
+changes values and presses switches. Name things well once and every new
+device turns up in the right room. See
+[Naming your devices](/docs/setting-up/naming).
+
+## One house, several people
+
+The house has one state: one set of devices, one lighting curve, one set of
+scenes. Two people can't both own the curve.
+
+People get personal references instead. "My calendar" and "wake me up" mean
+the speaker's own calendar and alarm, found from the voice Niles recognised or
+the person signed in to the app. A voice Niles doesn't know reaches nobody's
+calendar, mail or notes. Voice prints stay in the house's own database, and
+only people who enrolled are recognised.
+
+## The model approves nothing
+
+The model never decides an approval. When it wants to send a mail or use a
+tool set to ask first, Niles holds the exact call and shows it to you. What
+runs after your yes is what you saw. A mail is never sent without a press in
+the app: never by voice, and no setting turns that off.
+
+What a web page, a file, a tool result or an add-on says is information to
+the model, never an instruction. A PDF that says "ignore your rules" is read,
+not obeyed.
+
+## What leaves the house
+
+There is no telemetry. Niles sends nothing about you or your use of it to its
+authors or anyone else. The services it does use, by default:
+
+| Service | What goes there |
+| --- | --- |
+| Speech to text (ElevenLabs Scribe, or any OpenAI-compatible server) | The audio of each command after the wake word |
+| The fast model (Cerebras, or any OpenAI-compatible server) | The words of a command no fixed phrasing caught |
+| Claude or ChatGPT, if switched on | Chat messages, attached files, rules to work out, and the background review |
+| The add-ons you connect | What each one needs to answer |
+| GitHub | Signing in, and add-on downloads and update checks |
+
+Speaking the replies (Piper), recognising voices and the fixed phrasings all
+run on your own Niles. The full list is on
+[Security and privacy](/docs/using/security#what-leaves-the-house).
+
+## Extending it
+
+Built-in integrations (Sonos, LG TVs, tado°, calendars, Strava and the rest)
+are crates in the repository, held to its tests. A remote MCP tool server,
+such as Linear's, brings a service's own tools. For the rest there are
+[add-ons](/add-ons): WebAssembly components installed from a GitHub release.
+
+An add-on reaches only what its manifest declares and the household approved.
+It gets no undeclared hosts, no other add-on's secrets, no database, no
+conversations and no code in the app. That limits what an add-on can reach. It
+does not make one trustworthy, so the approval screen says plainly what is
+granted, and an update that asks for more is approved again.
+
+## Open source
+
+Niles is open source under the MIT or Apache-2.0 license, at your option. The
+crate map, the house rules every change keeps, and the decisions behind them
+are in
+[ARCHITECTURE.md](https://github.com/MarkNygaard/niles/blob/main/ARCHITECTURE.md).

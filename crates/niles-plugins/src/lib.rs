@@ -13,7 +13,7 @@
 //! already has: the [`Runtime`] is a `niles_mqtt::DeviceCommander` for
 //! `x_*` devices, and its tools are in a `niles_tools::DynamicTools`.
 //!
-//! Spec: the author guide in `docs/integrations/`. What other people
+//! Spec: the author guide in `site/content/docs/writing-add-ons/`. What other people
 //! published, for Add-ons → Browse, is the [`library`]: one index file,
 //! read as a stranger's.
 

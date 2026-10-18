@@ -11,12 +11,12 @@ Niles is an open-source, AI-first home automation system in Rust. It replaces Ho
 - `ARCHITECTURE.md` is the map: the crates, how a turn flows, the 27 house rules and the big decisions. Every change keeps the house rules.
 - `features.toml`, and the `MANIFEST.md` generated from it, say what exists.
 - A crate's doc comments say how it works and why.
-- `docs/src/` is the user guide (an mdBook); `docs/integrations/` is the plugin author guide.
+- `site/` is getniles.app, a Next.js and Fumadocs site: the landing page, the add-on library, and the docs in `site/content/docs/`. Those are the user guide and, in `site/content/docs/writing-add-ons/`, the plugin author guide.
 - Planned work and feature specs are Linear issues in the *Niles software* project.
 
 A new or ambiguous feature gets a Linear issue with the decision written down before any code. A change to a house rule, the crate map or a big decision updates `ARCHITECTURE.md` in the same PR.
 
-The repo is one Cargo workspace (`crates/`, with `niles-bin` the only binary) beside `web/` (the React app), `firmware/xiao-wyoming/satellite-idf/`, `hardware/satellite-v2/`, `schemas/` (the plugin WIT), `deploy/` (Kustomize), `examples/` and `scripts/`.
+The repo is one Cargo workspace (`crates/`, with `niles-bin` the only binary) beside `web/` (the React app), `site/` (the website and the docs), `firmware/xiao-wyoming/satellite-idf/`, `hardware/satellite-v2/`, `schemas/` (the plugin WIT), `deploy/` (Kustomize), `examples/` and `scripts/`.
 
 ## Commands
 
@@ -31,7 +31,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-When `web/` changed, also run, in `web/`: `bun install` (only if dependencies changed), `npm run build` (tsc and vite) and `npm test` (vitest). When a skill changed, run `python scripts/check-skills.py`.
+When `web/` changed, also run, in `web/`: `bun install` (only if dependencies changed), `npm run build` (tsc and vite) and `npm test` (vitest). When `site/` changed (a docs page included), run `cd site; bun install; bun run typecheck; bun run build`, and `bun run dev` to look at it on http://localhost:4000. When a skill changed, run `python scripts/check-skills.py`.
 
 One crate at a time: `cargo test -p niles-core`, `cargo run -p niles-bin -- --help`.
 
@@ -43,6 +43,7 @@ One crate at a time: `cargo test -p niles-core`, `cargo run -p niles-bin -- --he
 - **Units.** Brightness is a `u8` in `0..=100`, colour temperature a `u16` in Kelvin. The source crate translates (Z2M's 0-254, WLED's 0-255, mireds).
 - **Comments** explain why. Never restate the code; the default is no comment.
 - **features.toml.** A user-visible feature adds or updates its `[[feature]]` entry (`id`, `category`, `summary`, `phrasings`, `since_pr` set to the PR's number). Then `cargo run -p niles-bin -- generate-manifest` rewrites `MANIFEST.md`; the test `committed_manifest_matches_features_toml` fails when the two disagree.
+- **The docs.** A user-visible change updates its page under `site/content/docs/` in the same PR: the user guide for what a household sees, `writing-add-ons/` for what a plugin author sees. Pages are MDX, so a bare `{` or `<` in prose is escaped (`\{`, `\<`); links between pages are `/docs/...` routes, and links to repository files are GitHub URLs on `main`.
 
 ### File and function size
 

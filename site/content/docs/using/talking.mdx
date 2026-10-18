@@ -1,0 +1,186 @@
+---
+title: "Talking to Niles"
+description: "What you can say to a satellite or type in the chat, and which phrasings Niles answers without a language model."
+---
+
+Say "Niles" to a satellite, wait for the ring to light up white, and say
+what you want. The same sentences work typed into the app's chat.
+
+## How Niles answers
+
+Niles knows a set of fixed phrasings: lights, blinds, scenes, music, the
+TV, timers, heating, the weather and the clock. One of those is answered
+straight away, without a language model. Anything else goes to Niles's
+own model (Cerebras, unless you changed it under **Settings → Voice &
+AI**), which understands free speech and can use every tool Niles has. It
+is slower, a second or so, but you can say things your own way.
+
+A few things help the fixed phrasings catch more:
+
+- Politeness is fine. "Can you turn off the kitchen lights, please" is
+  the same as "turn off the kitchen lights".
+- Leaving out the room means the room the satellite stands in. "Lights
+  off" in the kitchen turns off the kitchen. This needs the satellite to
+  be in a room under **Settings → Satellites**.
+- In the chat there is no room, so name it: "turn off the kitchen lights".
+- A sentence with "when", "whenever", "every time", "as soon as", or one
+  that starts with "if" or "once", is never acted on at once. Niles
+  treats it as a rule to make. See [Automations](/docs/using/automations).
+
+When a reply ends in a question, the satellite listens again without the
+wake word, so you can answer "yes" or "the kitchen". It does this for the
+voice it asked, and for three questions in a row at most.
+
+If Niles heard only a word or two that do not look like a command, it
+says "Sorry?" and does nothing. Just after a restart it may say "Still
+waking up, try again in a moment." while it learns what devices there are.
+
+## Lights
+
+| What you want | Say |
+|---|---|
+| A room on or off | "turn off the kitchen lights", "turn on the lights in the bedroom", "office lights off" |
+| The room you are in | "lights off", "turn on the lights" |
+| The whole house | "turn off all the lights", "all lights on", "everything off", "lights off everywhere" |
+| One light | "turn on the floor lamp", "turn off the ceiling light in the bedroom" |
+| A level | "dim the kitchen lights to 30%", "set the desk lamp to 50 percent", "dim the lights to 20%" |
+| A step brighter or dimmer | "kitchen lights brighter", "make the bedroom dimmer", "brighter" |
+| Warmer or cooler | "make the living room warmer", "kitchen lights cooler", "warmer" |
+| A named white | "living room lights warm white", "cool white", "daylight" |
+| The last thing again | "turn it back on", "turn them off again" |
+| Back to the daily curve | "back to normal", "back to normal in the kitchen", "kitchen back to normal" |
+
+A step is 10% brighter or dimmer. Warmer and cooler move 200 K. Warm white
+is 2200 K, cool white 4000 K and daylight 5500 K.
+
+Colours by name ("make the kitchen lights blue") and WLED effects ("put
+the fire effect on the shelf strip") work too, through the model. A level,
+warmth, colour or effect set that way puts the light in manual mode, the
+same as the fixed phrasings do.
+
+"The lights" in a room includes lamps on smart plugs that you have marked
+as lamps under **Settings → Lighting → Lamps on plugs**. Other plugs are
+switched only when you name them.
+
+[Lighting and scenes](/docs/using/lighting) explains the daily curve and what
+"back to normal" undoes.
+
+## Blinds
+
+- "close the living room blinds", "open the blinds in the office"
+- "open the blinds halfway", "fully open the blinds"
+- "set the office blind to 40%"
+- "close all the blinds"
+
+Curtains, shades and shutters work the same way. A plain "open" takes a
+blind to its normal level, set under **Settings → Lighting → Blinds**.
+Saying "open" again when it is already there opens it all the way.
+
+## Scenes
+
+- "save the living room as cosy", "save this as cosy in the living room",
+  "save this as movie night"
+- "cosy scene", "apply cosy", "turn on cosy", "apply cosy in the living room"
+- "list my scenes", "delete the cosy scene"
+
+See [Lighting and scenes](/docs/using/lighting#scenes).
+
+## Music and speakers
+
+This needs Sonos, and Spotify for anything beyond radio and Sonos
+favourites. Both are under **Settings → Add-ons**.
+
+| What you want | Say |
+|---|---|
+| Something to play | "play John Mayer in the kitchen", "play Gravity on Spotify", "play Abbey Road" |
+| The radio | "play the radio", "play P1 on the radio in the bedroom" |
+| More rooms | "play it in the kitchen too", "play it everywhere" |
+| Pause or carry on | "pause the kitchen", "stop the music", "resume music in the living room" |
+| Skip | "next song", "skip", "previous", "kitchen next" |
+| Volume | "set the kitchen volume to 30%", "volume up in the kitchen", "living room volume down" |
+
+Volume steps are 10. "Play the radio" with no station plays what that
+room had last. With no room, music plays where you said it. Playing in a
+room replaces what was on there, the TV's sound included.
+
+## The TV
+
+This needs the LG TV add-on, paired once from **Settings → Add-ons**.
+
+- "turn on the TV", "TV off"
+- "put on Netflix on the TV", "open YouTube on the TV"
+- "switch the TV to HDMI 2"
+- "pause the TV", "play the TV"
+- "set the TV volume to 20", "turn the TV up", "TV volume down"
+- "mute the TV", "unmute the TV"
+
+"Television" and "telly" work as well. In a room with a Sonos, the TV's
+sound plays through it. "Stop the music" never turns off the TV.
+
+## Timers
+
+- "set a timer for 10 minutes", "timer for 30 seconds", "5 minute timer"
+- "20 minute timer called pasta"
+- "how long is left", "how much longer"
+- "list my timers", "what timers do I have"
+- "cancel the pasta timer", "cancel the timer"
+- "stop"
+
+Units are seconds, minutes and hours, in whole numbers. A finished timer
+rings with a chime every few seconds in the room it was set from, until
+you say "Niles, stop". If nobody answers it gives up after 10 minutes.
+
+"Stop" stops a ringing timer first. With none ringing it cancels the next
+timer still counting down, and with no timers at all it stops the music.
+
+Timers ring on the satellite you set them from. A timer typed in the
+chat has no room to ring in, so for now set timers by voice.
+
+Timers are not reminders: "remind me at five" has no clock time to go
+on. An automation can do something when a timer finishes.
+
+## Heating
+
+This needs tado°, under **Settings → Add-ons**.
+
+- "set the heating to 21", "set the bedroom to 19 degrees"
+- "heat the office to 20.5 degrees", "set the bedroom heating to 21 and a half"
+- "turn the heating up", "turn down the bedroom heating"
+- "turn off the heating", "put the heating back on the schedule"
+- "what's the temperature in the bedroom", "how warm is it in here"
+- add "everywhere" for every zone
+
+A set temperature holds until you put the heating back on its schedule.
+"Turn the heating on" means back to the schedule. tado° accepts 5 to 25 °C.
+
+## Weather, time and date
+
+- "what's the weather", "what's the weather tomorrow", "will it rain today"
+- "do I need an umbrella", "how cold is it outside"
+- "what time is it", "what day is it", "what's the date"
+
+The weather is for the house, so its location under **Settings → Home**
+must be set. "The weather in Paris" goes to the model, which looks the
+place up.
+
+## Everything else
+
+These go to the model. Say them however you like:
+
+- Shopping: "we're out of milk and eggs", "what's on the shopping list",
+  "when are my groceries coming"
+- Your calendar and mail: "what's on my calendar tomorrow", "any mail from
+  the school". See [Add-ons and accounts](/docs/using/add-ons).
+- Training: "how was my week", "what's my run today". See
+  [Training and Strava](/docs/using/training).
+- Memory: "remember that the bins go out on Tuesdays", "remember I take my
+  coffee black", "what do you know about me".
+- Who is home: "is anyone home". You can also tell Niles the house is
+  empty or occupied. That holds until you tell it to go back to automatic.
+- Announcements: "what just happened" lists what Niles announced lately,
+  including before its last restart.
+- Devices: "when did the kitchen light turn off", "why is the bedroom
+  light at 30%".
+
+Your calendar, mail and notes are yours only, so Niles has to know your
+voice first. See [People and voices](/docs/using/people).

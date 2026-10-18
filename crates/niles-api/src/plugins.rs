@@ -26,7 +26,7 @@
 //! ```
 //!
 //! The last five are interface 0.3's accounts and webhooks;
-//! `docs/integrations/accounts.md` has the rules. Niles owns the sign-in round trip (`state`, the cookie
+//! `site/content/docs/writing-add-ons/accounts.mdx` has the rules. Niles owns the sign-in round trip (`state`, the cookie
 //! binding it to the browser, the person) and the webhook's token and
 //! limits; the plugin builds the service's address, exchanges the code,
 //! and answers the webhook.
