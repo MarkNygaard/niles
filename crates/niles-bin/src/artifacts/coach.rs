@@ -838,6 +838,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_coach_s_edits_keep_the_past_too() {
+        let f = fixture(FakeCoach::doing(vec![]));
+        let plan = made(&f, TRAINING_PLAN, plan()).await;
+        let tools = f
+            .artifacts
+            .job_tools(plan.id, TRAINING_PLAN, Some(day("2026-10-15")));
+        assert!(tools.has("artifact_edit"));
+        assert!(!tools.has("artifact_edit_page"));
+        let asker = Asker {
+            person: MAJSE.into(),
+            slug: Some("majse".into()),
+            satellite: None,
+            conversation: None,
+        };
+        let e = call(
+            &tools,
+            &asker,
+            "artifact_edit",
+            json!({
+                "id": plan.id,
+                "edits": [{ "op": "set", "path": "/weeks/0/sessions/0/distance_km", "value": 8 }],
+                "reason": "Longer",
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(e.contains("before today"), "{e}");
+        call(
+            &tools,
+            &asker,
+            "artifact_edit",
+            json!({
+                "id": plan.id,
+                "edits": [{ "op": "set", "path": "/weeks/0/sessions/2/distance_km", "value": 8 }],
+                "reason": "Longer",
+            }),
+        )
+        .await
+        .unwrap();
+        let a = f.store.get(MAJSE, plan.id).await.unwrap().unwrap();
+        assert_eq!(a.current_revision, 2, "the planned session changed");
+    }
+
+    #[tokio::test]
     async fn a_look_that_changes_what_is_coming_tells_her_with_its_note() {
         let f = fixture(FakeCoach::doing(vec![Does::Saves(|p| {
             p["weeks"][1]["sessions"][0]["distance_km"] = json!(4);
@@ -898,6 +942,12 @@ mod tests {
             !f.artifacts
                 .job_tools(plan.id, TRAINING_PLAN, Some(day("2026-10-13")))
                 .has("artifact_set_page"),
+            "the coach has no way to touch the page"
+        );
+        assert!(
+            !f.artifacts
+                .job_tools(plan.id, TRAINING_PLAN, Some(day("2026-10-13")))
+                .has("artifact_edit_page"),
             "the coach has no way to touch the page"
         );
         f.artifacts

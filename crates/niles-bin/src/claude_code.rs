@@ -20,7 +20,7 @@
 //! away only the tools that run code, and `WebFetch`, and leaves it be
 //! when `--tools` names it.
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, bail};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -114,10 +114,13 @@ pub(crate) async fn run(
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);
 
-    let output = tokio::time::timeout(run.timeout, command.output())
-        .await
-        .map_err(|_| anyhow!("no answer within {}s", run.timeout.as_secs()))?
-        .context("starting `claude` — is Claude Code installed in this image?")?;
+    let output = crate::assistant::within(run.timeout, async {
+        command
+            .output()
+            .await
+            .context("starting `claude` — is Claude Code installed in this image?")
+    })
+    .await?;
     // `staged` drops here, after the run has ended, taking the
     // directory and its files with it.
 
