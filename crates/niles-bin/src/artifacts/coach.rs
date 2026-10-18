@@ -132,6 +132,7 @@ impl Artifacts {
                     summary: None,
                     page: niles_artifacts::PageChange::Keep,
                 },
+                None,
             )
             .await
             .map_err(storage)?

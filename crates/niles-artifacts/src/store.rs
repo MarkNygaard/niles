@@ -31,12 +31,15 @@ pub trait ArtifactStore: Send + Sync {
     async fn revision(&self, person: &str, id: i64, n: i32) -> Result<Option<Revision>>;
     /// Newest first.
     async fn revisions(&self, person: &str, id: i64) -> Result<Vec<RevisionMeta>>;
-    /// A new version, which becomes the current one.
+    /// A new version, which becomes the current one. When `expected` is
+    /// given, refuse unless it is still current, checked under the write
+    /// lock. Partial edits use the version they read; whole saves use None.
     async fn revise(
         &self,
         person: &str,
         id: i64,
         revision: NewRevision,
+        expected: Option<i32>,
     ) -> Result<Option<Artifact>>;
     /// A new version with the content as it is now and `page` for its
     /// page. As it is when this is kept, not when the page was begun: a
@@ -139,6 +142,7 @@ pub async fn restore(
                 summary: None,
                 page: old.page.map_or(PageChange::Remove, PageChange::Use),
             },
+            None,
         )
         .await
 }
@@ -199,7 +203,13 @@ impl Inner {
         match change {
             PageChange::Keep => Ok(current),
             PageChange::Remove => Ok(None),
-            PageChange::New(html) => {
+            PageChange::Edit { from, .. } if current != Some(*from) => Err(Error::Invalid {
+                kind: "edit",
+                reason:
+                    "the page changed while these edits were being made; read it again and retry"
+                        .into(),
+            }),
+            PageChange::New(html) | PageChange::Edit { html, .. } => {
                 self.next_page += 1;
                 self.pages.insert(self.next_page, (id, html.clone()));
                 Ok(Some(self.next_page))
@@ -387,8 +397,19 @@ impl ArtifactStore for MemoryArtifacts {
         person: &str,
         id: i64,
         revision: NewRevision,
+        expected: Option<i32>,
     ) -> Result<Option<Artifact>> {
         let mut inner = self.lock();
+        let Some(current) = inner.find(person, id).map(|a| a.current_revision) else {
+            return Ok(None);
+        };
+        if expected.is_some_and(|n| n != current) {
+            return Err(Error::Invalid {
+                kind: "edit",
+                reason: "the artifact changed while these edits were being made; read it again and retry"
+                    .into(),
+            });
+        }
         let Some(mut artifact) = inner.keep(
             person,
             id,
@@ -731,6 +752,155 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_content_edits_cannot_discard_another_edit() {
+        let store = MemoryArtifacts::new();
+        let mut new = document("Plan");
+        new.first = Some(version("alpha beta", Author::Claude));
+        let a = store.create("person:mark", new).await.unwrap();
+        let base = store
+            .revision("person:mark", a.id, a.current_revision)
+            .await
+            .unwrap()
+            .unwrap();
+        let edit = |old, new| {
+            let mut revision = version("", Author::Claude);
+            revision.content = crate::edit::content(
+                "document",
+                &base.content,
+                &json!([{ "old": old, "new": new }]),
+            )
+            .unwrap();
+            revision
+        };
+        let first = edit("alpha", "ALPHA");
+        let second = edit("beta", "BETA");
+        let kept = store
+            .revise("person:mark", a.id, first, Some(base.n))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            store
+                .revise("person:mark", a.id, second.clone(), Some(base.n))
+                .await
+                .is_err()
+        );
+        let now = store.get("person:mark", a.id).await.unwrap().unwrap();
+        assert_eq!(now.current_revision, kept.current_revision);
+        let current = store
+            .revision("person:mark", a.id, now.current_revision)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.content["markdown"], "ALPHA beta");
+        let replaced = store
+            .revise("person:mark", a.id, second, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let current = store
+            .revision("person:mark", a.id, replaced.current_revision)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.content["markdown"], "alpha BETA");
+    }
+
+    #[tokio::test]
+    async fn stale_page_edits_cannot_discard_another_edit() {
+        let store = MemoryArtifacts::new();
+        let a = with_page(&store, "<p>alpha beta</p>").await;
+        let from = a.page.unwrap();
+        let base = store
+            .page("person:mark", a.id, from)
+            .await
+            .unwrap()
+            .unwrap();
+        let edit = |old, new| PageChange::Edit {
+            from,
+            html: crate::edit::text(&base, &json!([{ "old": old, "new": new }])).unwrap(),
+        };
+        let first = edit("alpha", "ALPHA");
+        let second = edit("beta", "BETA");
+        // A content change does not stale a page edit, and must survive it.
+        store
+            .revise("person:mark", a.id, version("marked", Author::Niles), None)
+            .await
+            .unwrap();
+        let kept = store
+            .set_page(
+                "person:mark",
+                a.id,
+                first,
+                "Edit".into(),
+                Author::Claude,
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            store
+                .set_page(
+                    "person:mark",
+                    a.id,
+                    second,
+                    "Edit".into(),
+                    Author::Claude,
+                    None
+                )
+                .await
+                .is_err()
+        );
+        let now = store.get("person:mark", a.id).await.unwrap().unwrap();
+        assert_eq!(now.current_revision, kept.current_revision);
+        assert_eq!(
+            store
+                .page("person:mark", a.id, now.page.unwrap())
+                .await
+                .unwrap()
+                .unwrap(),
+            "<p>ALPHA beta</p>"
+        );
+        let current = store
+            .revision("person:mark", a.id, now.current_revision)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.content["markdown"], "marked");
+        store
+            .set_page(
+                "person:mark",
+                a.id,
+                PageChange::Remove,
+                "Remove".into(),
+                Author::Person,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            store
+                .set_page(
+                    "person:mark",
+                    a.id,
+                    PageChange::Edit {
+                        from: kept.page.unwrap(),
+                        html: "<p>new</p>".into()
+                    },
+                    "Edit".into(),
+                    Author::Claude,
+                    None,
+                )
+                .await
+                .is_err()
+        );
+        let now = store.get("person:mark", a.id).await.unwrap().unwrap();
+        assert_eq!(now.page, None);
+        assert_eq!(now.current_revision, kept.current_revision + 1);
+    }
+
+    #[tokio::test]
     async fn made_before_finds_only_that_kind_made_before_then_whoever_s() {
         let store = MemoryArtifacts::new();
         let mark = store
@@ -793,6 +963,7 @@ mod tests {
                     "person:mark",
                     a.id,
                     version(&format!("v{i}"), Author::Claude),
+                    None,
                 )
                 .await
                 .unwrap();
@@ -817,7 +988,7 @@ mod tests {
         let store = MemoryArtifacts::new();
         let a = store.create("person:mark", document("Plan")).await.unwrap();
         store
-            .revise("person:mark", a.id, version("second", Author::Claude))
+            .revise("person:mark", a.id, version("second", Author::Claude), None)
             .await
             .unwrap();
         let restored = restore(&store, "person:mark", a.id, 1, "person:mark")
@@ -852,7 +1023,7 @@ mod tests {
         assert!(store.revisions(her, a.id).await.unwrap().is_empty());
         assert!(
             store
-                .revise(her, a.id, version("mine now", Author::Person))
+                .revise(her, a.id, version("mine now", Author::Person), None)
                 .await
                 .unwrap()
                 .is_none()
@@ -1012,6 +1183,7 @@ mod tests {
                     "person:mark",
                     a.id,
                     version(&format!("v{i}"), Author::Niles),
+                    None,
                 )
                 .await
                 .unwrap()
@@ -1034,7 +1206,7 @@ mod tests {
         let a = store.create("person:mark", document("Plan")).await.unwrap();
         // A run marked while the page was being written.
         store
-            .revise("person:mark", a.id, version("marked", Author::Niles))
+            .revise("person:mark", a.id, version("marked", Author::Niles), None)
             .await
             .unwrap();
         let paged = store
@@ -1115,6 +1287,7 @@ mod tests {
                     "person:mark",
                     a.id,
                     version(&format!("v{i}"), Author::Niles),
+                    None,
                 )
                 .await
                 .unwrap();
@@ -1188,6 +1361,7 @@ mod tests {
                     page: PageChange::Use(page),
                     ..version("x", Author::Person)
                 },
+                None,
             )
             .await;
         assert!(e.is_err());

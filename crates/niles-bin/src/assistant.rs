@@ -32,6 +32,7 @@ use std::sync::{Arc, Mutex};
 /// — the only tools it may see. `None` is the whole registry.
 #[derive(Clone)]
 struct Grant {
+    turn: Option<std::time::Instant>,
     speaker: Option<String>,
     tools: Option<Arc<ToolRegistry>>,
     /// Whose turn this run answers, so a tool that waits for a yes holds
@@ -45,11 +46,17 @@ struct Grant {
 tokio::task_local! {
     /// The assistant whose tool call this is, for the length of the call.
     static VIA: &'static str;
+    /// The originating chat turn, carried across its MCP requests.
+    pub(crate) static TURN: Option<std::time::Instant>;
 }
 
 /// The assistant making the tool call this runs in, if one is.
 pub(crate) fn via() -> Option<&'static str> {
     VIA.try_with(|v| *v).ok()
+}
+
+pub(crate) fn turn() -> Option<std::time::Instant> {
+    TURN.try_with(|turn| *turn).ok().flatten()
 }
 
 /// A run that gave no answer in its time, and was ended. Its own type, so
@@ -322,6 +329,7 @@ impl Assistant {
         let turn = TurnToken::issue(
             &self.turns,
             Grant {
+                turn: turn(),
                 speaker,
                 tools: None,
                 asker: crate::approvals::asker(),
@@ -384,6 +392,7 @@ impl Assistant {
         let turn = TurnToken::issue(
             &self.turns,
             Grant {
+                turn: None,
                 speaker: for_whom.as_ref().and_then(|a| a.slug.clone()),
                 tools: Some(Arc::new(tools)),
                 asker: for_whom,
@@ -499,7 +508,7 @@ async fn serve_mcp(
             }
         }),
     );
-    let reply = handled.await;
+    let reply = TURN.scope(grant.turn, handled).await;
     if let Some((tool, artifact)) = logged {
         let refused = reply
             .as_ref()
@@ -867,6 +876,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let token = TurnToken::issue(
             &turns,
             Grant {
+                turn: None,
                 speaker: Some("mark".into()),
                 tools: None,
                 asker: None,
@@ -906,6 +916,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let token = TurnToken::issue(
             &assistant.turns,
             Grant {
+                turn: None,
                 speaker: None,
                 tools: None,
                 asker: None,
@@ -976,6 +987,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let token = TurnToken::issue(
             &assistant.turns,
             Grant {
+                turn: None,
                 speaker: None,
                 tools: Some(Arc::new(review_tools())),
                 asker: None,
@@ -1002,6 +1014,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let turn = TurnToken::issue(
             &assistant.turns,
             Grant {
+                turn: None,
                 speaker: None,
                 tools: None,
                 asker: None,
@@ -1015,6 +1028,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let job = TurnToken::issue(
             &assistant.turns,
             Grant {
+                turn: None,
                 speaker: None,
                 tools: Some(Arc::new(ToolRegistry::new())),
                 asker: None,
@@ -1040,6 +1054,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let token = TurnToken::issue(
             &assistant.turns,
             Grant {
+                turn: None,
                 speaker: None,
                 tools: Some(Arc::new(review_tools())),
                 asker: None,
@@ -1198,6 +1213,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let token = TurnToken::issue(
             &state.turns,
             Grant {
+                turn: None,
                 speaker: None,
                 tools: None,
                 asker: Some(crate::approvals::Asker {
@@ -1318,6 +1334,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let job = TurnToken::issue(
             &state.turns,
             Grant {
+                turn: None,
                 speaker: None,
                 tools: Some(Arc::new(ToolRegistry::new())),
                 asker: None,

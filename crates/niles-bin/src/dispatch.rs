@@ -607,8 +607,11 @@ pub(crate) async fn ask_assistant(
         system_prompt.push_str(artifacts::spoken_prompt());
     }
     system_prompt.push_str(&assistant::attachments_section(attachments));
-    match assistant
-        .answer(&chosen, &system_prompt, &history, text, slug, attachments)
+    match assistant::TURN
+        .scope(
+            Some(started),
+            assistant.answer(&chosen, &system_prompt, &history, text, slug, attachments),
+        )
         .await
     {
         Ok(reply) => {

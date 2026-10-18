@@ -313,25 +313,39 @@ struct Touch {
     person: String,
     id: i64,
     at: Instant,
+    turn: Option<Instant>,
 }
 
 fn note(list: &Mutex<Vec<Touch>>, person: &str, id: i64) {
     let now = Instant::now();
+    let turn = crate::assistant::turn();
     let mut list = list.lock().unwrap_or_else(|e| e.into_inner());
     list.retain(|t| now.duration_since(t.at) < TOUCHED_FOR);
-    list.retain(|t| !(t.person == person && t.id == id));
+    list.retain(|t| !(t.person == person && t.id == id && t.turn == turn));
     list.push(Touch {
         person: person.to_string(),
         id,
         at: now,
+        turn,
     });
 }
 
 fn noted_since(list: &Mutex<Vec<Touch>>, person: &str, since: Instant) -> Vec<i64> {
+    let mut seen = HashSet::new();
     list.lock()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
         .filter(|t| t.person == person && t.at >= since)
+        .map(|t| t.id)
+        .filter(|id| seen.insert(*id))
+        .collect()
+}
+
+fn noted_in_turn(list: &Mutex<Vec<Touch>>, person: &str, turn: Instant) -> Vec<i64> {
+    list.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|t| t.person == person && t.turn == Some(turn))
         .map(|t| t.id)
         .collect()
 }
@@ -805,8 +819,12 @@ impl Artifacts {
         note(&self.read, person, id);
     }
 
-    fn read_since(&self, person: &str, since: Instant) -> Vec<i64> {
-        noted_since(&self.read, person, since)
+    fn read_in_turn(&self, person: &str, turn: Instant) -> Vec<i64> {
+        noted_in_turn(&self.read, person, turn)
+    }
+
+    fn touched_in_turn(&self, person: &str, turn: Instant) -> Vec<i64> {
+        noted_in_turn(&self.touched, person, turn)
     }
 
     /// The cards for what a turn of `person`'s that began at `since`
@@ -1242,6 +1260,7 @@ impl Artifacts {
                     summary: None,
                     page: niles_artifacts::PageChange::Keep,
                 },
+                None,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -1831,6 +1850,7 @@ impl Update {
         opened: Opened,
         content: &Value,
         args: &Value,
+        expected: Option<i32>,
     ) -> Result<Value> {
         let store = &self.artifacts.store;
         let (a, owner) = (&opened.artifact, opened.owner());
@@ -1863,6 +1883,7 @@ impl Update {
                     summary: str_arg(args, "summary").map(niles_artifacts::summary),
                     page: niles_artifacts::PageChange::Keep,
                 },
+                expected,
             )
             .await
             .map_err(|e| refused(tool, e))?
@@ -1927,6 +1948,7 @@ impl Tool for Update {
             opened,
             args.get("content").unwrap_or(&Value::Null),
             &args,
+            None,
         )
         .await
     }
@@ -4155,6 +4177,95 @@ mod tests {
         assert!(prompt.contains("Person: add sunscreen"), "{prompt}");
     }
 
+    async fn call_in_turn(
+        f: &Fixture,
+        asker: Asker,
+        started: Instant,
+        tool: &str,
+        args: Value,
+    ) -> Result<Value> {
+        crate::assistant::TURN
+            .scope(Some(started), call(f, asker, tool, args))
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_timeout_does_not_resume_another_overlapping_turns_artifact() {
+        let runner = FakeRunner::doing(vec![Does::Answers("No change.")]);
+        let f = fixture(runner.clone());
+        let id = create(&f, MARK, "Another conversation's list").await;
+        let started = Instant::now();
+        call_in_turn(
+            &f,
+            asking(MARK, Some(10)),
+            started + Duration::from_nanos(1),
+            "artifact_get",
+            json!({ "id": id }),
+        )
+        .await
+        .unwrap();
+        falls_back(&f, &runner, &asking(MARK, Some(9)), started).await;
+    }
+
+    #[tokio::test]
+    async fn overlapping_reads_and_writes_do_not_hide_this_turns_change() {
+        let f = fixture(FakeRunner::doing(vec![Does::Saves("Changed this one.")]));
+        let id = create(&f, MARK, "This list").await;
+        let other = create(&f, MARK, "The other list").await;
+        let started = Instant::now();
+        let asker = asking(MARK, Some(9));
+        call_in_turn(
+            &f,
+            asker.clone(),
+            started,
+            "artifact_get",
+            json!({ "id": id }),
+        )
+        .await
+        .unwrap();
+        let overlapping = started + Duration::from_nanos(1);
+        for read in [id, other] {
+            call_in_turn(
+                &f,
+                asker.clone(),
+                overlapping,
+                "artifact_get",
+                json!({ "id": read }),
+            )
+            .await
+            .unwrap();
+        }
+        call_in_turn(
+            &f,
+            asker.clone(),
+            overlapping,
+            "artifact_edit",
+            json!({
+                "id": other,
+                "edits": [{ "old": "passport", "new": "Passport" }],
+                "reason": "Capitalised",
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            f.artifacts
+                .carry_on(&timed_out(), &asker, started, "Change this list")
+                .await,
+            Some(change::STILL_WORKING.into())
+        );
+        changed(&f, id).await;
+        assert_eq!(
+            f.store
+                .revision(MARK, id, 2)
+                .await
+                .unwrap()
+                .unwrap()
+                .content["markdown"],
+            "Changed this one."
+        );
+    }
+
     #[tokio::test]
     async fn a_chat_turn_that_runs_out_of_time_changing_one_goes_on_as_a_job() {
         let f = fixture(FakeRunner::doing(vec![Does::Saves(
@@ -4164,9 +4275,15 @@ mod tests {
         let asker = asking(MARK, Some(9));
         let started = Instant::now();
         let turn = async {
-            call(&f, asker.clone(), "artifact_get", json!({ "id": id }))
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            call_in_turn(
+                &f,
+                asker.clone(),
+                started,
+                "artifact_get",
+                json!({ "id": id }),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
             tokio::time::sleep(Duration::from_secs(30)).await;
             Ok::<String, anyhow::Error>("Done.".into())
         };
@@ -4212,6 +4329,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "six carry-on fallback scenarios, each with its own fixture; splitting them scatters the shared falls_back helper's cases"
+    )]
     async fn a_turn_that_fails_otherwise_or_was_not_changing_one_artifact_falls_back() {
         // Not a timeout, after an editable read.
         let runner = FakeRunner::doing(vec![Does::Saves("x\ny\nz")]);
@@ -4219,9 +4340,15 @@ mod tests {
         let id = create(&f, MARK, "Packing list").await;
         let asker = asking(MARK, Some(9));
         let started = Instant::now();
-        call(&f, asker.clone(), "artifact_get", json!({ "id": id }))
-            .await
-            .unwrap();
+        call_in_turn(
+            &f,
+            asker.clone(),
+            started,
+            "artifact_get",
+            json!({ "id": id }),
+        )
+        .await
+        .unwrap();
         let e = anyhow::anyhow!("claude exited with 1");
         assert_eq!(
             f.artifacts
@@ -4244,9 +4371,15 @@ mod tests {
         let id = his_shared(&f, niles_artifacts::Level::View).await;
         let asker = asking(MAJSE, Some(9));
         let started = Instant::now();
-        call(&f, asker.clone(), "artifact_get", json!({ "id": id }))
-            .await
-            .unwrap();
+        call_in_turn(
+            &f,
+            asker.clone(),
+            started,
+            "artifact_get",
+            json!({ "id": id }),
+        )
+        .await
+        .unwrap();
         falls_back(&f, &runner, &asker, started).await;
 
         // A timeout after reading two of Mark's artifacts: which was
@@ -4257,9 +4390,15 @@ mod tests {
         let started = Instant::now();
         for title in ["One", "Two"] {
             let id = create(&f, MARK, title).await;
-            call(&f, asker.clone(), "artifact_get", json!({ "id": id }))
-                .await
-                .unwrap();
+            call_in_turn(
+                &f,
+                asker.clone(),
+                started,
+                "artifact_get",
+                json!({ "id": id }),
+            )
+            .await
+            .unwrap();
         }
         falls_back(&f, &runner, &asker, started).await;
 
@@ -4270,12 +4409,19 @@ mod tests {
         let id = create(&f, MARK, "One").await;
         let asker = asking(MARK, Some(9));
         let started = Instant::now();
-        call(&f, asker.clone(), "artifact_get", json!({ "id": id }))
-            .await
-            .unwrap();
-        call(
+        call_in_turn(
             &f,
             asker.clone(),
+            started,
+            "artifact_get",
+            json!({ "id": id }),
+        )
+        .await
+        .unwrap();
+        call_in_turn(
+            &f,
+            asker.clone(),
+            started,
             "artifact_create",
             json!({
                 "kind": "document",
@@ -4296,14 +4442,17 @@ mod tests {
         let asker = asking(MARK, Some(9));
         let started = Instant::now();
         let tools = f.artifacts.job_tools(id, "document", None);
-        approvals::ASKER
+        crate::assistant::TURN
             .scope(
-                asker.clone(),
-                tools.execute(&niles_llm::ToolCall {
-                    id: String::new(),
-                    name: "artifact_get".into(),
-                    arguments: json!({ "id": id }),
-                }),
+                Some(started),
+                approvals::ASKER.scope(
+                    asker.clone(),
+                    tools.execute(&niles_llm::ToolCall {
+                        id: String::new(),
+                        name: "artifact_get".into(),
+                        arguments: json!({ "id": id }),
+                    }),
+                ),
             )
             .await
             .unwrap();
@@ -5475,5 +5624,80 @@ mod tests {
         );
         let (system, _) = page_prompts(&working("trip"), "x", Searching::Niles);
         assert!(system.contains("artifact_edit_page"), "{system}");
+    }
+
+    struct GatedChat {
+        chats: Arc<Chats>,
+        entered: Notify,
+        persist: Notify,
+    }
+
+    #[async_trait]
+    impl Conversations for GatedChat {
+        async fn append(
+            &self,
+            person: &str,
+            conversation: i64,
+            turn: &Turn,
+        ) -> std::result::Result<(), String> {
+            self.entered.notify_one();
+            self.persist.notified().await;
+            self.chats.append(person, conversation, turn).await
+        }
+    }
+
+    #[tokio::test]
+    async fn every_change_completion_refreshes_the_chat_only_after_its_reply_is_kept() {
+        for does in [
+            Does::Saves("- [ ] passport\n- [ ] sunscreen"),
+            Does::Answers("It has sunscreen already."),
+            Does::Fails("connection lost"),
+            Does::SavesThenFails("- [ ] passport\n- [ ] sunscreen", "connection lost"),
+        ] {
+            let mut f = fixture(FakeRunner::doing(vec![does]));
+            let chat = Arc::new(GatedChat {
+                chats: f.chats.clone(),
+                entered: Notify::new(),
+                persist: Notify::new(),
+            });
+            Arc::get_mut(&mut f.artifacts).unwrap().conversations = Some(chat.clone());
+            let id = create(&f, MARK, "Packing list").await;
+            let mut events = f.bus.subscribe();
+            call(
+                &f,
+                asking(MARK, Some(9)),
+                "start_change_job",
+                json!({ "id": id, "brief": "Add sunscreen" }),
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), chat.entered.notified())
+                .await
+                .expect("the completion reaches the chat");
+            assert!(
+                matches!(
+                    events.try_recv(),
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                ),
+                "refreshing before the chat is persisted loses the completion"
+            );
+            chat.persist.notify_one();
+            let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+                .await
+                .expect("the completed chat is refreshed")
+                .unwrap();
+            assert!(matches!(
+                event,
+                Event::ArtifactChanged { person, id: changed, .. }
+                    if person == MARK && changed == id
+            ));
+            {
+                let chats = f.chats.0.lock().unwrap_or_else(|e| e.into_inner());
+                let (person, conversation, turn) = chats.last().expect("the reply is kept");
+                assert_eq!((person.as_str(), *conversation), (MARK, 9));
+                assert_eq!(turn.artifacts[0].id, id);
+            }
+            changed(&f, id).await;
+        }
     }
 }

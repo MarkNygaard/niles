@@ -227,7 +227,7 @@ impl Artifacts {
     ) -> Option<String> {
         why.downcast_ref::<crate::assistant::TimedOut>()?;
         let person = &asker.person;
-        let read = self.read_since(person, since);
+        let read = self.read_in_turn(person, since);
         let [id] = read.as_slice() else {
             if read.len() > 1 {
                 tracing::info!(
@@ -239,7 +239,7 @@ impl Artifacts {
             return None;
         };
         let id = *id;
-        if self.touched_since(person, since).iter().any(|t| *t != id) {
+        if self.touched_in_turn(person, since).iter().any(|t| *t != id) {
             tracing::info!(
                 "[artifacts] {person}: the chat made or started something else as well, so \
                  nothing goes on as a job"

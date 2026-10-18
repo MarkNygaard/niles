@@ -106,7 +106,9 @@ impl Tool for Edit {
                 "these edits leave it as it is, so there is nothing to save",
             ));
         }
-        self.0.save(TOOL, &asker, opened, &checked, &args).await
+        self.0
+            .save(TOOL, &asker, opened, &checked, &args, Some(current.n))
+            .await
     }
 }
 
@@ -223,7 +225,10 @@ impl Tool for EditPage {
             .set_page(
                 &owner,
                 id,
-                PageChange::New(html),
+                PageChange::Edit {
+                    from: page_n.expect("read above"),
+                    html,
+                },
                 reason,
                 author(crate::assistant::via()),
                 Some(asker.person.clone()),
