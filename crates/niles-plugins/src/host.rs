@@ -56,8 +56,10 @@ pub(crate) struct HostState {
     settings: toml::Table,
     policy: HttpPolicy,
     mqtt_policy: MqttPolicy,
+    pub ws_policy: crate::websocket::WsPolicy,
     /// The instance's MQTT connections, by id. They close when it goes.
     pub connections: BTreeMap<u32, Connection>,
+    pub websocket_connections: BTreeMap<u32, crate::websocket::Connection>,
     /// When the call in progress has to be finished. Host calls that
     /// wait — HTTP, the database — never wait past it.
     pub deadline: Instant,
@@ -71,6 +73,7 @@ impl HostState {
         settings: toml::Table,
         policy: HttpPolicy,
         mqtt_policy: MqttPolicy,
+        ws_policy: crate::websocket::WsPolicy,
     ) -> Self {
         let mut wasi = wasmtime_wasi::WasiCtxBuilder::new();
         // No directories, no environment, no arguments: the builder's
@@ -99,7 +102,10 @@ impl HostState {
             settings,
             policy,
             mqtt_policy,
+            ws_policy,
             connections: BTreeMap::new(),
+
+            websocket_connections: BTreeMap::new(),
             deadline: Instant::now(),
             timers: BTreeMap::new(),
         }

@@ -6,7 +6,7 @@ word — the WIT package is `niles:integration`, the manifest
 `niles-integration.toml`, the component `integration.wasm` and this folder
 `docs/integrations/` — because plugins already built depend on them.
 
-> **v0.3 of the interface, built.** Niles 0.2.0 runs plugins (the sandbox,
+> **v0.4 of the interface, built.** Niles 0.2.0 runs plugins (the sandbox,
 > every host interface, devices, tools, timers, events, pages, MQTT, and from
 > Niles 0.3.0 accounts and webhooks) and installs
 > them: **Add-on from GitHub** with its approval screen, update checks, updates
@@ -18,8 +18,8 @@ word — the WIT package is `niles:integration`, the manifest
 > `niles plugin dev --live`, which would run a plugin on a running Niles, and
 > `--http`, which would serve its webhook locally. The interface
 > ([`schemas/niles-integration.wit`](../../schemas/niles-integration.wit)) is
-> v0.3: v0.1 plus MQTT (0.2), the house's time zone and lights kept out of
-> their room's (0.2.1), and connecting accounts and webhooks (0.3). Niles still
+> v0.4: v0.1 plus MQTT (0.2), the house's time zone and lights kept out of
+> their room's (0.2.1), connecting accounts and webhooks (0.3), and WebSockets (0.4). Niles still
 > runs plugins built for 0.2 and 0.1. See
 > [versioning](publishing.md#interface-versions) for what may change.
 
@@ -42,7 +42,7 @@ installs it by pasting your repo's URL into the app.
 - **WIT** (WebAssembly Interface Type) is the language those declarations are
   written in. Niles's is one file,
   [`niles-integration.wit`](../../schemas/niles-integration.wit): package
-  `niles:integration@0.3.0`, world `plugin`. A *world* is the full contract,
+  `niles:integration@0.4.0`, world `plugin`. A *world* is the full contract,
   what you import and what you export. You do not write WIT; you read it, and a
   bindings generator turns it into types and functions in your language.
 - **`cargo-component`** and **`wit-bindgen`** are the Rust tools that do that
@@ -116,12 +116,13 @@ hides and moves them in Settings → Menu like the built-in ones. People find
 | Speak through the satellites | `notify.say` | `notify = true` or `"urgent"` | [host API](host-api.md#notify) |
 | React to other devices or presence | `events.subscribe` → `on-event` | `events = [...]` | [host API](host-api.md#events) |
 | Talk to an MQTT device or broker | `mqtt.connect`, `subscribe`, `publish` → `on-mqtt-message`, `on-mqtt-status` | `mqtt = [{ name, host, tls }]` (0.2) | [MQTT](mqtt.md) |
+| Talk to a WebSocket endpoint | `websocket.connect`, `send`, `close` → WebSocket callbacks | `websocket = [{ name, host, tls }]` (0.4) | [WebSockets](websocket.md) |
 | Connect an account through its sign-in page | exports `authorize-url`, `on-callback` | `callback = true` (0.3) | [accounts](accounts.md) |
 | Keep a token you refreshed, encrypted | `secrets.get`, `set`, `delete` | none (0.3) | [host API](host-api.md#secrets) |
 | Be called by a service that pushes | `inbound.hook-url` → export `on-webhook` | `webhook = true` (0.3) | [accounts](accounts.md#the-webhook) |
 | Log | `log.log` | none | [host API](host-api.md#log) |
 
-Not yet: raw TCP or UDP, WebSockets, and a page that runs your own HTML.
+Not yet: raw TCP or UDP, and a page that runs your own HTML.
 See [host API](host-api.md#coming-later).
 
 ## The guide

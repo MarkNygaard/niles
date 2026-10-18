@@ -413,6 +413,13 @@ summary = "Run third-party integrations as sandboxed WebAssembly components; the
 since_pr = 388
 
 [[feature]]
+id = "plugins-websocket"
+category = "runtime.plugins"
+summary = "Add-ons connect to permission-scoped WebSocket endpoints through the host, with bounded queues and reconnect callbacks"
+phrasings = []
+since_pr = 470
+
+[[feature]]
 id = "plugins-dev-check"
 category = "runtime.plugins"
 summary = "`niles plugin check` validates a plugin as an install would; `niles plugin dev` runs one against a stand-in house"

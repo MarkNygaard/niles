@@ -117,12 +117,14 @@ mqtt = [                 # interface 0.2
 ]
 callback = true          # interface 0.3
 webhook = true           # interface 0.3
+websocket = [{ name = "feed", host = "stream.example.com", tls = true }] # 0.4
 ```
 
 All are optional; leave out what you do not use. `mqtt` needs
 `interface = "0.2"` or later; see [MQTT](mqtt.md#declaring-a-broker) for its
 fields. `callback` and `webhook` need `interface = "0.3"`; see
 [accounts and webhooks](accounts.md).
+WebSocket grants need `interface = "0.4"`; see [WebSockets](websocket.md).
 
 ## Settings
 

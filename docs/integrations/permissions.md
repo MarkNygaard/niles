@@ -31,7 +31,7 @@ Without asking, every plugin can log, read its own settings and secrets, keep
 No plugin, whatever it asks for, can read Niles's database, other
 add-ons' secrets, conversations, memory, voice data or the people in the
 house; open files, sockets or environment variables; or run code in the app.
-Its network is HTTP and MQTT, to what the manifest names.
+Its network is HTTP, MQTT and WebSockets, to what the manifest names.
 The approval screen always ends with that sentence: "It cannot see your
 conversations, the people in your house, other add-ons' passwords or
 Niles's database."
@@ -228,3 +228,10 @@ to any host it declared; a tool result can tell the model something untrue. The
 household's protections are the approval screen, your repo being public, the
 pinned component (what they approved cannot change under them), and re-approval
 when your permissions change.
+
+
+### `websocket` (interface 0.4)
+
+Named outbound endpoints restricted to their declared host, port and TLS
+mode. A grant may use a declared string setting as its host. See the
+[WebSocket author guide](websocket.md) for declaration and behavior.

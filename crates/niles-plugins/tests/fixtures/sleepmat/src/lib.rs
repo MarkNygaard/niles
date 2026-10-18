@@ -10,7 +10,7 @@
 
 wit_bindgen::generate!({
     world: "plugin",
-    path: "../../../../../schemas/niles-integration.wit",
+    path: "../../../../../schemas/niles-integration-0.3.wit",
 });
 
 use niles::integration::types::{Device, DeviceClass, LightCapabilities};

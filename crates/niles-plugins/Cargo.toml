@@ -36,6 +36,7 @@ niles-tools.workspace = true
 # connection Niles makes itself to the address it checked.
 rumqttc.workspace = true
 futures-util.workspace = true
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 # A trust-device broker's certificate is its own, signed by nobody, so
 # this crate needs rustls directly to say so; ring, the provider the rest

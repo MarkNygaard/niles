@@ -1,6 +1,6 @@
 # Publishing
 
-> Interface 0.2, and 0.1. `niles plugin check` and installing, updating and
+> Interface 0.4, and 0.1–0.3. `niles plugin check` and installing, updating and
 > rolling back from GitHub releases are built (Niles 0.2.0), as described
 > here.
 
@@ -148,6 +148,7 @@ anyone who installed it; publish a new release instead.
 
 | Interface | Niles | What changed |
 |---|---|---|
+| 0.4 | 0.4.0 | The `websocket` interface and the `on-websocket-message` and `on-websocket-status` exports. |
 | 0.3 | 0.3.0 | [Accounts and webhooks](accounts.md): the `secrets` and `inbound` interfaces, the exports `authorize-url`, `on-callback` and `on-webhook`, and the `callback` and `webhook` permissions. Nothing 0.2.1 had changed. |
 | 0.2.1 | 0.2.1 | `config.time-zone` and `devices.set-room-light`. Any device class may `report-action`. Nothing 0.2.0 had changed. |
 | 0.2.0 | 0.2.0 | The `mqtt` interface and the exports `on-mqtt-message` and `on-mqtt-status`. Nothing else. |

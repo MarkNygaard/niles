@@ -38,6 +38,7 @@ pub mod runtime;
 pub mod store;
 pub mod tools;
 pub mod ui;
+pub mod websocket;
 mod worker;
 
 pub use error::{Error, Result};

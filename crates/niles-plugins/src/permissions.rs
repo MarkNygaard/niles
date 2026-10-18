@@ -100,6 +100,30 @@ pub fn grants(manifest: &Manifest, tools: Option<&[String]>) -> Vec<Grant> {
             text,
         );
     }
+    for grant in &p.websocket {
+        let location = match grant.host.strip_prefix("setting:") {
+            Some(key) => format!(
+                "the address you enter under {}",
+                manifest.setting(key).map_or(key, |s| s.label.as_str())
+            ),
+            None => grant.host.clone(),
+        };
+        let port = grant.port.unwrap_or(if grant.tls { 443 } else { 80 });
+        add(
+            format!(
+                "websocket:{}:{}:{}:{}",
+                grant.name, grant.host, port, grant.tls
+            ),
+            format!(
+                "Keep a WebSocket connection to {location}, port {port}, {}",
+                if grant.tls {
+                    "with TLS certificate verification"
+                } else {
+                    "unencrypted on your home network"
+                }
+            ),
+        );
+    }
     if p.callback {
         add(
             "callback".into(),

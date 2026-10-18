@@ -1,9 +1,9 @@
 # Host API
 
-> Interface 0.3: 0.1 plus [`mqtt`](#mqtt) and its two exports (0.2.0),
+> Interface 0.4: 0.1 plus [`mqtt`](#mqtt) and its two exports (0.2.0),
 > `config.time-zone` and `devices.set-room-light` (0.2.1), and
 > [`secrets`](#secrets), [`inbound`](#inbound) and three exports for
-> [accounts and webhooks](accounts.md) (0.3). The examples compile against
+> [accounts and webhooks](accounts.md) (0.3), and WebSockets (0.4). The examples compile against
 > [`niles-integration.wit`](../../schemas/niles-integration.wit) with
 > `wit-bindgen` 0.63; the WIT file is the authority. A plugin built for 0.2
 > has everything here but `secrets`, `inbound` and their exports, and one
@@ -104,6 +104,11 @@ New in 0.3: connecting an account through a service's sign-in page, and
 answering a webhook. A plugin that does neither still exports all three:
 `authorize-url` returns an `err`, and `on-webhook` a `404`. See
 [accounts and webhooks](accounts.md).
+
+### WebSocket callbacks
+
+Interface 0.4 exports `on-websocket-message` and `on-websocket-status`.
+See [WebSockets](websocket.md) for the complete API and lifecycle.
 
 ### `stop()`
 
@@ -420,8 +425,7 @@ sockets and DNS (refused), `std::process`, threads.
 
 Not yet:
 
-- **WebSockets**, held by Niles, which reconnects them and delivers each
-  message to a new export, for devices and services that push.
+
 - **Local TCP and UDP**: one request, one reply, to an address under
   `local_network`, for devices that speak something other than HTTP.
 - **`wasi:http/outgoing-handler`**, so that `fetch` and other native clients

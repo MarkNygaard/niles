@@ -23,6 +23,27 @@ use crate::manifest::{MqttBroker, Permissions, TlsMode};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+pub(crate) fn ws_address_allowed(ip: IpAddr, local: bool, loopback: bool) -> Result<(), String> {
+    let ip = canonical(ip);
+    if loopback && ip.is_loopback() {
+        return Ok(());
+    }
+    if let Some(why) = never(ip) {
+        return Err(format!("policy denied {why} address"));
+    }
+    if is_local(ip) && !local {
+        return Err("policy denied undeclared local address".into());
+    }
+    if !is_local(ip) && local {
+        return Err("policy denied public address for local grant".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn is_private_for_ws(ip: IpAddr) -> bool {
+    is_local(canonical(ip))
+}
+
 /// What a plugin's manifest lets it reach, with `setting:` entries
 /// already replaced by what the household entered.
 #[derive(Debug, Clone, Default)]

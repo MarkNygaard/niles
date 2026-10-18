@@ -1,20 +1,65 @@
-# WebSocket support proposal
+# WebSockets (interface 0.4)
 
-Work in progress for NIL-36. This document records the contribution's scope;
-it does not describe an available host API. See the host API's **Coming later**
-section for the existing framework intent.
+Interface 0.4 adds an outbound WebSocket client managed by Niles. The plugin names a manifest grant, supplies a URL and optional handshake headers, then receives asynchronous status and message callbacks. The WIT in [`schemas/niles-integration.wit`](../../schemas/niles-integration.wit) and implementation in `crates/niles-plugins/src/websocket.rs` are authoritative.
 
-Niles will own WebSocket connections for sandboxed add-ons, reconnect them,
-and deliver messages and connection status through serialized callbacks.
-The implementation will use explicit household-approved permissions and
-bounded connections, messages and queues. It will make connection loss and
-queue overflow visible so add-ons can re-establish their application state.
-Existing interface versions must continue to work.
+## Declare the endpoint
 
-Verification will include an actual Wasm add-on communicating with a local
-synthetic WebSocket server, plus permission, lifecycle, resource-limit and
-compatibility tests. Implementation and verification are still in progress.
+Add a named grant under `[permissions]`. Its `host` is an exact hostname or IP, optionally `setting:<key>` referring to a declared string setting. `port` defaults to 443 when `tls = true`, otherwise 80. `tls` defaults to false.
 
-Autodarts provides a concrete use case for local device events. Its scoring
-logic, speech policy, satellite targeting and deployment are outside this
-contribution.
+```toml
+interface = "0.4"
+min_niles = "0.4.0"
+
+[permissions]
+websocket = [{ name = "feed", host = "stream.example.com", tls = true }]
+
+[[settings]]
+key = "token"
+label = "Access token"
+type = "secret"
+required = true
+```
+
+Use `wss` for a public endpoint and `ws` for a local endpoint. The URL's scheme must match `tls`; its hostname and effective port must exactly match the grant. The resolved address is checked against Niles's WebSocket address policy. A `setting:` host is evaluated from plugin settings. Grants have unique `[a-z0-9_]+` names (maximum 32 characters), and port zero is invalid. The manifest validator requires interface `0.4` whenever WebSocket grants are declared. Ask only for endpoints the plugin needs.
+
+Handshake headers are optional. At most 32 headers and 8 KiB total name/value bytes are accepted; invalid names, CR/LF in values, and WebSocket protocol/handshake headers (`host`, `connection`, `upgrade`, `origin`, `sec-websocket-*`) are rejected. Do not put credentials in URL userinfo or fragments; these are rejected too. A secret setting can be read with `config.secret` and used as an authorization header.
+
+## API and callbacks
+
+`websocket.connect(grant, url, headers)` validates the grant and request synchronously, then starts the connection asynchronously and immediately returns its connection id. Network and handshake failures arrive via `on-websocket-status`; a successful connection produces `connected`. On connection, implement the `on-websocket-message(conn, message)` and `on-websocket-status(conn, status)` exports in the 0.4 world, even if a particular connection is unused.
+
+`message` is either `text(string)` or `binary(list<u8>)`. Call `websocket.send(conn, message)` to queue one message; it returns `unavailable` while not connected and `limit` when a message or queue exceeds bounds. It does not mean the peer received the frame. `websocket.close(conn)` is idempotent; closing an unknown id has no effect.
+
+```rust
+// Illustrative Rust-shaped pseudocode; exact generated names depend on bindings.
+let conn = websocket::connect("feed", "wss://stream.example.com/events", &[
+    ("authorization".into(), format!("Bearer {token}")),
+])?;
+// on_websocket_status(conn, Connected) marks the stream ready.
+// on_websocket_message(conn, Message::Text(text)) parses a complete message.
+// Only send after Connected; otherwise send returns unavailable.
+```
+
+Keep callbacks short and avoid blocking host calls. Callbacks are delivered serially to the plugin. Reconnect establishes a new generation; stale queued events from older generations are discarded. On reconnection, the host reports `connected` again. The host does not promise replay of messages missed while offline.
+
+## Bounds and loss
+
+- At most 4 connections per plugin.
+- Each assembled inbound or outbound message is at most 64 KiB.
+- The incoming callback queue holds at most 128 messages and 4 MiB total. When full, oldest messages are discarded; an `overflow(count)` status reports the number dropped for that stream. Overflow is delivered before later messages.
+- The outgoing queue holds at most 32 messages and 1 MiB total. A full queue makes `send` fail with `limit`.
+- Text and binary messages larger than 64 KiB are rejected by the host. A receive that exceeds the WebSocket library limit ends that session; the host reports disconnect and retries.
+
+These are bounded, lossy queues: do not use this interface where every event must be delivered. Design application protocols to tolerate disconnects, duplicates and missing updates, and request a fresh snapshot after reconnect where needed.
+
+## Disconnect, retry, and terminal failure
+
+DNS, TCP, peer-close, receive and send failures produce `disconnected(reason)` and trigger retries after 1, 2, 5, 10, 30, then 60 seconds; subsequent delays remain at 60 seconds. A successfully established WebSocket resets this consecutive-failure schedule, so a later disconnect starts again at 1 second. During a retry delay, queued sends are discarded and do not shorten the deadline; close interrupts the wait immediately. The schedule has no jitter. Some invalid requests, policy denials and handshake errors are classified as terminal `failed(kind)`; kinds are `policy`, `authentication`, `tls` and `protocol`. Do not rely on a precise mapping from every network error to a failure kind: the current implementation classifies some handshake failures coarsely. A terminal failure ends automatic retry for that connection; close it and call connect again after correcting the grant, endpoint or credentials.
+
+Handshake HTTP 401/403 responses are terminal authentication failures. HTTP 408/429 and 5xx responses, I/O failures, and handshake timeouts are retried. Other HTTP rejections and protocol errors are terminal; TLS errors are terminal TLS failures. Response bodies and underlying error details are not forwarded to callbacks.
+
+`close` stops retries and requests a WebSocket close; if that cannot be queued, the host aborts the task. Otherwise the task has at most 250 ms to finish before forced cancellation, including during connection setup. Closing is local cleanup, not a remote application-level acknowledgement. `stop` is called before an instance is dropped, with a two-second deadline; nothing is guaranteed after it. Niles cancels that instance's remaining WebSocket tasks when their connections are dropped. Also close connections when no longer needed, but do not depend on `stop` to run after crashes or timeouts.
+
+## Compatibility
+
+The manifest uses `interface = "0.4"`; build against the 0.4 WIT package. This feature is not yet released: the `min_niles = "0.4.0"` example matches this development checkout, not a claim that released Niles 0.4.0 includes WebSockets. Set `min_niles` to the first release that actually includes this feature before publishing. Niles continues to run the frozen 0.1, 0.2 and 0.3 worlds; those worlds do not import WebSockets. Do not copy the current schema while claiming an older interface.

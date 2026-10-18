@@ -179,11 +179,12 @@ fn inspect(bytes: Vec<u8>, plugin: Arc<Plugin>, house: Arc<House>) -> Result<Ins
         }
     });
     let state = crate::host::HostState::new(
-        plugin,
+        plugin.clone(),
         house,
         toml::Table::new(),
         crate::policy::HttpPolicy::default(),
         crate::policy::MqttPolicy::default(),
+        crate::websocket::WsPolicy::new(&plugin.manifest.permissions, &toml::Table::new(), false),
     );
     let mut store = wasmtime::Store::new(&engine, state);
     store.limiter(|state| &mut state.memory);
