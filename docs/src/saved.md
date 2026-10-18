@@ -90,10 +90,7 @@ corner. Its menu shows what applies to the item:
   its dates, travellers, stays, each day's plan, the packing list with
   its ticks, the budget and the notes.
 - **Download as Markdown** saves a document's markdown as a `.md` file.
-- **Download the episode** opens a ready podcast's MP3 in a new tab,
-  where the browser offers to save it. The recording is kept in the
-  podcast bucket, on another site, so the browser does not save it
-  straight away.
+- **Download the episode** saves a ready podcast's MP3, named after it.
 
 A file is named after the item. While you read an old version, Copy and
 the downloads use that version, and the file name says which: "Thailand

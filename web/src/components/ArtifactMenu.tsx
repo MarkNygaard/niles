@@ -47,7 +47,7 @@ export function ArtifactMenu({ artifact: a, content, reading, onShare }: Artifac
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
-  const episodeUrl = episode ? audio.data?.url : undefined;
+  const episodeUrl = episode ? audio.data?.download_url : undefined;
   const word = shown && WORD_KINDS.has(a.kind);
   const markdown = shown && a.kind === "document";
 
@@ -132,18 +132,10 @@ export function ArtifactMenu({ artifact: a, content, reading, onShare }: Artifac
           </DropdownMenuItem>
         )}
         {episodeUrl && (
-          // The address is the bucket's, another site's, so a browser
-          // opens the episode in a tab rather than saving it straight
-          // away; it is saved from there.
+          // Another site's address, so `download` alone would be ignored:
+          // the bucket is asked to answer it as a file to save instead.
           <DropdownMenuItem
-            render={
-              <a
-                href={episodeUrl}
-                download={fileName(a.title, "mp3")}
-                target="_blank"
-                rel="noopener noreferrer"
-              />
-            }
+            render={<a href={episodeUrl} download={fileName(a.title, "mp3")} rel="noreferrer" />}
           >
             <Podcast />
             Download the episode

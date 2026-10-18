@@ -533,6 +533,8 @@ describe("ArtifactView, podcast", () => {
 
   const AUDIO = {
     url: "https://abc123.r2.cloudflarestorage.com/niles-podcasts/podcasts/5.mp3?X-Amz-Expires=14400",
+    download_url:
+      "https://abc123.r2.cloudflarestorage.com/niles-podcasts/podcasts/5.mp3?X-Amz-Expires=14400&response-content-disposition=attachment",
     expires_at: NOW,
     kept_until: "2026-10-31T00:00:00Z",
   };
@@ -555,15 +557,16 @@ describe("ArtifactView, podcast", () => {
     expect(screen.getByText(/Sunlight scattering off the air\./)).toBeInTheDocument();
   });
 
-  it("offers the episode from the share menu, by the address the player plays", async () => {
+  it("offers the episode from the share menu, by the address the bucket saves", async () => {
     const asked = vi.spyOn(api, "episodeAudio").mockResolvedValue(AUDIO);
     show(detail(EPISODE));
     await screen.findByLabelText("Play Why the sky is blue");
     await openMenu();
     expect(menuItems()).toEqual(["Share…", "Copy", "Download the episode"]);
     const link = screen.getByRole("menuitem", { name: "Download the episode" });
-    expect(link).toHaveAttribute("href", AUDIO.url);
+    expect(link).toHaveAttribute("href", AUDIO.download_url);
     expect(link).toHaveAttribute("download", "Why the sky is blue.mp3");
+    expect(link).not.toHaveAttribute("target");
     // One address for the player and the menu.
     expect(asked).toHaveBeenCalledTimes(1);
   });
