@@ -2775,7 +2775,7 @@ dependencies = [
  "niles-webos",
  "niles-webpush",
  "niles-websearch",
- "rand 0.10.2",
+ "rand 0.10.3",
  "reqwest",
  "rust-embed",
  "serde",
@@ -2873,7 +2873,7 @@ dependencies = [
  "niles-websearch",
  "niles-wyoming",
  "parking_lot",
- "rand 0.10.2",
+ "rand 0.10.3",
  "reqwest",
  "serde",
  "serde_json",
@@ -2897,7 +2897,7 @@ dependencies = [
  "futures-util",
  "html2text",
  "mail-parser",
- "rand 0.10.2",
+ "rand 0.10.3",
  "reqwest",
  "roxmltree",
  "rustls 0.23.40",
@@ -2969,7 +2969,7 @@ dependencies = [
  "niles-recognition",
  "niles-training",
  "niles-webpush",
- "rand 0.10.2",
+ "rand 0.10.3",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -3030,7 +3030,7 @@ version = "0.4.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
- "rand 0.10.2",
+ "rand 0.10.3",
  "reqwest",
  "serde",
  "serde_json",
@@ -3101,7 +3101,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "niles-core",
- "rand 0.10.2",
+ "rand 0.10.3",
  "serde",
  "thiserror 2.0.21",
  "tokio",
@@ -3125,7 +3125,7 @@ dependencies = [
  "niles-notifications",
  "niles-tls",
  "niles-tools",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rcgen",
  "reqwest",
  "roxmltree",
@@ -3200,7 +3200,7 @@ dependencies = [
  "fs2",
  "ndarray",
  "ort",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rand_chacha 0.10.0",
  "realfft",
  "serde",
@@ -3371,7 +3371,7 @@ dependencies = [
  "chrono",
  "hkdf 0.13.0",
  "p256",
- "rand 0.10.2",
+ "rand 0.10.3",
  "reqwest",
  "serde",
  "serde_json",
@@ -4158,9 +4158,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.2"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
+checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
 dependencies = [
  "chacha20",
  "getrandom 0.4.2",
@@ -5495,7 +5495,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.2",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -5963,7 +5963,7 @@ dependencies = [
  "http 1.5.0",
  "httparse",
  "log",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rustls 0.23.40",
  "rustls-pki-types",
  "sha1 0.11.0",
@@ -6128,7 +6128,7 @@ checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
 dependencies = [
  "getrandom 0.4.2",
  "js-sys",
- "rand 0.10.2",
+ "rand 0.10.3",
  "wasm-bindgen",
 ]
 
@@ -6561,7 +6561,7 @@ dependencies = [
  "bytes",
  "cap-primitives",
  "futures",
- "rand 0.10.2",
+ "rand 0.10.3",
  "rustix",
  "rustix-linux-procfs",
  "thiserror 2.0.21",
