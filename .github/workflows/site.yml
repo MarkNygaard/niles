@@ -1,63 +1,30 @@
-name: Site
+name: Site refresh
 
-# getniles.app: the landing page, the docs and the add-on library, built from
-# site/ and published to GitHub Pages. The daily run picks up add-ons the
-# library gained since the last release.
+# getniles.app is built and hosted by Vercel, from site/ on main: a push to
+# main deploys it, and every pull request gets a preview. This only adds the
+# daily rebuild, which is how add-ons published since the last release get
+# their pages. It calls the project's deploy hook (Vercel → Settings → Git →
+# Deploy Hooks, for the main branch), kept in the VERCEL_DEPLOY_HOOK secret.
 
 on:
-  push:
-    branches: [main]
   schedule:
     - cron: "17 4 * * *"
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
+permissions: {}
 
 jobs:
-  build:
-    name: build
+  rebuild:
+    name: rebuild
     runs-on: ubuntu-latest
     steps:
-      # main is what is released. A scheduled run starts from the default
-      # branch (development), so the ref is named rather than inherited.
-      - uses: actions/checkout@v7
-        with:
-          ref: main
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - uses: actions/configure-pages@v6
-
-      - name: Install site dependencies
-        working-directory: site
-        run: bun install --frozen-lockfile
-
-      - name: Build
-        working-directory: site
+      - name: Call the deploy hook
         env:
-          NEXT_PUBLIC_SITE_URL: https://getniles.app
-        run: bun run build
-
-      - uses: actions/upload-pages-artifact@v5
-        with:
-          path: site/out
-
-  deploy:
-    name: deploy
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v5
+          HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "VERCEL_DEPLOY_HOOK is not set, so nothing to call." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          curl --fail --silent --show-error --max-time 30 -X POST "$HOOK" > /dev/null
+          echo "Vercel is rebuilding getniles.app from main." >> "$GITHUB_STEP_SUMMARY"

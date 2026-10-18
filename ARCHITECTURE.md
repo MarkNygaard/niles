@@ -218,7 +218,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 - Blinds open to a normal level, and a second Open goes all the way (#441).
 - Podcasts: the assistant researches and writes the script; the house's own Kokoro voices it, and the episode lives in a private R2 bucket the household set up, not on a hosted voice or storage service (#457).
 - Release flow: `development` is the default branch, release-please cuts releases, images are built from `main` (#456).
-- The website, getniles.app, is one static Next.js and Fumadocs site in `site/`: the landing page, the docs and the add-on library, published to GitHub Pages from `main` and rebuilt daily. It replaced the mdBook, and it shares the app's theme file (NIL-41).
+- The website, getniles.app, is one static Next.js and Fumadocs site in `site/`: the landing page, the docs and the add-on library, built and hosted by Vercel from `main` (with a preview for every pull request) and rebuilt daily. It replaced the mdBook, and it shares the app's theme file (NIL-41).
 - Self-hosted two ways, both supported: Docker Compose on one Linux machine (`deploy/compose`, which CI starts on every pull request) and Kubernetes with Kustomize (`deploy/kustomize`). The Compose stack runs Niles and Postgres only; the broker, Zigbee2MQTT and Piper stay the household's own (NIL-44).
 
 ## Security notes

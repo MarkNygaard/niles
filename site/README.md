@@ -45,8 +45,8 @@ page per add-on.
   runs no script and loads nothing. Permissions are not shown; Niles shows
   those itself before an install.
 - `lib/addons-build.ts` fetches the file during the build, with a 10 second
-  timeout, over HTTPS and then HTTP (GitHub Pages serves the custom domain over
-  HTTP until its certificate is issued). If it can't, the build still
+  timeout, over HTTPS and then HTTP (the registry's GitHub Pages serves its
+  custom domain over HTTP until its certificate is issued). If it can't, the build still
   succeeds: the list page loads the file in the browser instead, over HTTPS
   only, and those add-ons link to their repos because the build made no page
   for them. `ADDONS_INDEX_URL` points the build at another file, which is how
@@ -54,8 +54,26 @@ page per add-on.
 - A static export needs at least one path for a dynamic route, so with no
   add-ons the detail route renders one placeholder, `/add-ons/_/_`, as a 404.
 
-The site rebuilds daily (`.github/workflows/site.yml`), which is how new
-add-ons get their pages.
+## Hosting
+
+Vercel builds and hosts getniles.app. The project's settings:
+
+- **Root Directory:** `site`, with "Include files outside the root directory
+  in the Build Step" on. The build reads `web/src/styles/theme.css`,
+  `deploy/README.md`, `deploy/compose/README.md` and `MANIFEST.md`.
+- **Framework:** Next.js. Install and build are detected from `bun.lock` and
+  `package.json` (`bun install`, `bun run build`); the static export in
+  `out/` is what is served.
+- **Production branch:** `main`, so the docs match the released version.
+  Every other branch and pull request gets a preview.
+- **Environment:** `NEXT_PUBLIC_SITE_URL=https://getniles.app` for
+  production.
+- **Domains:** `getniles.app` and `www.getniles.app`, with DNS at Cloudflare
+  set to DNS only, as Vercel's domain page says.
+
+The site also rebuilds daily (`.github/workflows/site.yml` calls the
+project's deploy hook, in the `VERCEL_DEPLOY_HOOK` secret), which is how
+add-ons published since the last release get their pages.
 
 ## Develop
 
