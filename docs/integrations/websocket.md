@@ -8,7 +8,7 @@ Add a named grant under `[permissions]`. Its `host` is an exact hostname or IP, 
 
 ```toml
 interface = "0.4"
-min_niles = "<first Niles release with WebSocket support>"
+min_niles = "0.5.0"
 
 [permissions]
 websocket = [{ name = "feed", host = "stream.example.com", tls = true }]
@@ -56,4 +56,4 @@ Handshake HTTP 401/403 responses are terminal authentication failures. HTTP 408/
 
 ## Compatibility
 
-The manifest uses `interface = "0.4"`; build against the 0.4 WIT package. This feature is not yet released, and its minimum Niles release number has not been assigned. Set `min_niles` to the first release that includes this feature before publishing. Niles continues to run the frozen 0.1, 0.2 and 0.3 worlds; those worlds do not import WebSockets. Do not copy the current schema while claiming an older interface.
+The manifest uses `interface = "0.4"`; build against the 0.4 WIT package and set `min_niles = "0.5.0"`. WebSocket support is planned for Niles 0.5.0; it is not available in released Niles 0.4.0. Niles continues to run the frozen 0.1, 0.2 and 0.3 worlds; those worlds do not import WebSockets. Do not copy the current schema while claiming an older interface.

@@ -143,14 +143,14 @@ anyone who installed it; publish a new release instead.
   runs any `0.2.x` component; patch versions of the interface only add.
 - `min_niles` is the oldest Niles your plugin needs: `"0.3.0"` for interface
   0.3, and later when you use a function or UI node added after that. For
-  interface 0.4, use the first Niles release that includes WebSocket support;
-  its release number has not been assigned yet.
+  interface 0.4, set `min_niles = "0.5.0"`, the planned first Niles release
+  with WebSocket support.
 
 ### Interface versions
 
 | Interface | Niles | What changed |
 |---|---|---|
-| 0.4 | First Niles release with WebSocket support (not assigned) | The `websocket` interface and the `on-websocket-message` and `on-websocket-status` exports. |
+| 0.4 | 0.5.0 (planned) | The `websocket` interface and the `on-websocket-message` and `on-websocket-status` exports. |
 | 0.3 | 0.3.0 | [Accounts and webhooks](accounts.md): the `secrets` and `inbound` interfaces, the exports `authorize-url`, `on-callback` and `on-webhook`, and the `callback` and `webhook` permissions. Nothing 0.2.1 had changed. |
 | 0.2.1 | 0.2.1 | `config.time-zone` and `devices.set-room-light`. Any device class may `report-action`. Nothing 0.2.0 had changed. |
 | 0.2.0 | 0.2.0 | The `mqtt` interface and the exports `on-mqtt-message` and `on-mqtt-status`. Nothing else. |
