@@ -1,0 +1,19 @@
+{
+  "title": "Writing add-ons",
+  "defaultOpen": true,
+  "pages": [
+    "index",
+    "getting-started",
+    "manifest",
+    "host-api",
+    "devices",
+    "tools",
+    "ui",
+    "mqtt",
+    "websocket",
+    "accounts",
+    "permissions",
+    "publishing",
+    "example-spotprice"
+  ]
+}

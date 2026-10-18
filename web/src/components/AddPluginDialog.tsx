@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -15,6 +15,8 @@ import type { PluginPreview, PluginSummary } from "@/lib/api";
 
 export interface AddPluginDialogProps {
   open: boolean;
+  /** An address to preview as soon as it opens: Browse's Install. */
+  address?: string;
   onOpenChange: (open: boolean) => void;
   onInstalled: (plugin: PluginSummary) => void;
 }
@@ -27,31 +29,51 @@ export interface AddPluginDialogProps {
  * preview downloads and checks the release and keeps it under a token,
  * and Install hands back the token and the checksum it showed.
  */
-export function AddPluginDialog({ open, onOpenChange, onInstalled }: AddPluginDialogProps) {
+export function AddPluginDialog({ open, address, onOpenChange, onInstalled }: AddPluginDialogProps) {
   const [repo, setRepo] = useState("");
   const [preview, setPreview] = useState<PluginPreview | null>(null);
   const [busy, setBusy] = useState<"preview" | "install" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Each opening is its own: a preview still on its way when the dialog
+  // closes must not land in the next one.
+  const opening = useRef(0);
+  const started = useRef<string | null>(null);
 
   function close() {
+    opening.current += 1;
+    started.current = null;
     setRepo("");
     setPreview(null);
+    setBusy(null);
     setError(null);
     onOpenChange(false);
   }
 
-  async function look(event: FormEvent) {
-    event.preventDefault();
+  const lookUp = useCallback(async (address: string) => {
+    const mine = opening.current;
     setBusy("preview");
     setError(null);
     try {
-      setPreview(await api.previewPlugin(repo.trim()));
+      const found = await api.previewPlugin(address);
+      if (mine === opening.current) setPreview(found);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (mine === opening.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(null);
+      if (mine === opening.current) setBusy(null);
     }
+  }, []);
+
+  function look(event: FormEvent) {
+    event.preventDefault();
+    void lookUp(repo.trim());
   }
+
+  useEffect(() => {
+    if (!open || !address || started.current === address) return;
+    started.current = address;
+    setRepo(address);
+    void lookUp(address);
+  }, [open, address, lookUp]);
 
   async function install() {
     if (!preview) return;

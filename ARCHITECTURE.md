@@ -1,12 +1,12 @@
 # Niles architecture
 
-This is the map and the rules. What exists is listed in `features.toml` (and the `MANIFEST.md` made from it); how a piece works and why is in its crate's doc comments; how to use Niles is the user guide in `docs/src/`; planned work and feature specs are Linear issues in the *Niles software* project. This file changes when a house rule, the crate map or a big decision changes.
+This is the map and the rules. What exists is listed in `features.toml` (and the `MANIFEST.md` made from it); how a piece works and why is in its crate's doc comments; how to use Niles is the user guide in `site/content/docs/`, published at getniles.app; planned work and feature specs are Linear issues in the *Niles software* project. This file changes when a house rule, the crate map or a big decision changes.
 
 ## What Niles is
 
 *Niles* (NYE-uls) is the project, the system and the wake word: one word, three roles. The acronym, **N**eural **I**ntelligence, **L**ightweight **E**dge **S**ystem, says what it is: an AI-first home assistant that runs on the household's own small hardware.
 
-It replaces Home Assistant for a household that has a focused set of devices (mostly Zigbee through Zigbee2MQTT, a few Wi-Fi ones), wants voice that answers in well under a second, prefers config and naming to setup screens, and wants a language model built in rather than bolted on. Home Assistant solves a different problem, the widest device coverage for people who don't run infrastructure, and that makes it heavy and UI-led. Niles is opinionated and assumes somebody in the house runs a cluster.
+It replaces Home Assistant for a household that has a focused set of devices (mostly Zigbee through Zigbee2MQTT, a few Wi-Fi ones), wants voice that answers in well under a second, prefers config and naming to setup screens, and wants a language model built in rather than bolted on. Home Assistant solves a different problem, the widest device coverage for people who don't run infrastructure, and that makes it heavy and UI-led. Niles is opinionated and self-hosted: somebody in the house runs a container and a Postgres database, with Docker Compose or Kubernetes.
 
 What Niles is not:
 
@@ -94,12 +94,12 @@ A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the res
 | `niles-webpush` | Web Push to a person's devices, RFC 8291 and 8292 in pure Rust. |
 | `niles-websearch` | The SearXNG client, and the fetcher that goes only to the public internet. |
 | `niles-mcp` | Niles as an MCP client, for remote tool servers such as Linear's. |
-| `niles-plugins` | Third-party plugins: WebAssembly components run in wasmtime. |
+| `niles-plugins` | Third-party plugins: WebAssembly components run in wasmtime, installed from GitHub releases and found in the add-on library. |
 | `niles-integration-linear` | Linear's webhook, turned into notifications. |
 | `niles-tls` | TLS to devices that sign their own certificate (an LG TV). |
 | `niles-bin` | The `niles` binary: `serve`, the dev subcommands, and all the wiring. |
 
-**Outside `crates/`:** `web/` (the React app, served by `niles-api`), `firmware/xiao-wyoming/satellite-idf/` (the satellite firmware), `hardware/satellite-v2/` (the custom satellite board), `schemas/` (the plugin WIT), `docs/src/` (the user guide, an mdBook), `docs/capabilities/` (capability references), `docs/integrations/` (the plugin author guide), `deploy/kustomize/` and `deploy/README.md` (deployment), and `examples/niles.example.toml`.
+**Outside `crates/`:** `web/` (the React app, served by `niles-api`), `firmware/xiao-wyoming/satellite-idf/` (the satellite firmware), `hardware/satellite-v2/` (the custom satellite board), `schemas/` (the plugin WIT), `site/` (getniles.app: the landing page, the add-on library, the user guide in `site/content/docs/` and the plugin author guide in `site/content/docs/writing-add-ons/`), `docs/capabilities/` (capability references), `deploy/kustomize/` and `deploy/README.md` (deployment), and `examples/niles.example.toml`.
 
 ## How a voice turn flows
 
@@ -117,9 +117,9 @@ A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the res
 
 1. The app (`web/`) sends `POST /chat`, JSON or multipart with files, to `niles-api`. The session says who is typing; their address links them to their voice.
 2. `app.rs` (`AppChat::reply`) finds the conversation in the chat log and seeds the context with it, spoken turns included.
-3. Without files, `dispatch_text` runs as for voice: Tier 0 first, then `dispatch_tier1`, where a chat turn goes to the assistant when one is on, and to the fast model otherwise or when the assistant can't answer (with a note under the reply saying why).
+3. Without files, `dispatch_text` runs as for voice: Tier 0 first, then `dispatch_tier1`, where a chat turn goes to the assistant when one is on, and to the fast model otherwise or when the assistant can't answer (with a note under the reply saying why). A turn that runs out of time in the middle of changing one artifact goes on as a job on it instead, and says so (`Artifacts::carry_on`).
 4. With files, `dispatch::dispatch_attached` skips Tier 0 and the fast model: only the assistant can see them, and nobody else answers.
-5. The assistant's tools come over MCP with a token for that run, which is how a tool knows whose turn it is. Artifact tools are offered only there; a big artifact is a background job.
+5. The assistant's tools come over MCP with a token for that run, which is how a tool knows whose turn it is. Artifact tools are offered only there. A change is said as edits, never the whole artifact again; a big artifact, a new page and a big change are background jobs. Each tool call of a chat turn is logged with its time, never its arguments.
 6. The turn is kept with its approval card and artifacts. Later changes go to that person's connections on `/events/stream` (`approval_changed`, `artifact_changed`), and a finished job reaches their devices by Web Push.
 
 ## How an automation flows
@@ -129,6 +129,15 @@ A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the res
 3. Actions go out through the `DeviceSink` (`MqttDeviceSink` in `niles-bin/src/wiring/automations.rs`, which uses the `CommandRouter`) and the `Notifier` (`niles-notifications`).
 4. A delay is kept in `automation_waits`, and a `wake_up` action starts a wake-up (`wake_up.rs`) kept in `wake_ups`, so both survive a restart. The last 20 runs of each rule, including ones a condition stopped, are kept in memory to answer "why didn't it".
 5. The curve and the morning routine are code, not rules: `niles-scheduler` computes them and `niles-bin/src/lighting.rs` ticks them.
+
+## How an add-on is found
+
+1. The author publishes releases as `site/content/docs/writing-add-ons/publishing.mdx` says, with a small `niles-installed` file beside the manifest and component, and gives the repo the GitHub topic `niles-addon`.
+2. The registry repo, `MarkNygaard/niles-addons`, lists reviewed repos in `addons.toml`. A pull request that adds one runs `niles plugin check --listing <repo>`: everything an install checks, plus the marker. It puts the permission lines in the check's summary, and Mark merges by hand. Merged is **Listed**: it passed the checks and someone read what it asks for. That is not an audit of its code, and later releases aren't reviewed again.
+3. An Action in the registry builds `index.json` every six hours and on every merge, and GitHub Pages serves it at `https://addons.getniles.app/index.json`, the project's own domain, so the repo can change owner without breaking any Niles. It holds the listed repos, every public repo with the topic as Unreviewed, and repos taken off the list (removed, with the reason). Each entry carries its latest release's manifest and logo as text, a README excerpt, its stars, and GitHub's download counts. The format is in `niles_plugins::library`.
+4. `GET /plugins/install/library` fetches that one file when Browse or an add-on's panel asks, and keeps it six hours. It reads it as a stranger's: manifests go through the install's own parser, so permissions read as on the approval screen and `min_niles` is the install's own check; logos go through the logo allowlist; text is capped, and links are built from the repo. Browsing calls no GitHub API.
+5. Browse's **Install** opens the paste flow with the address filled in: the same preview, checks and approval. An installed add-on's panel says Listed, Unreviewed or No longer listed.
+6. After a fresh install succeeds, `Installer::install` downloads the release's `niles-installed` once per repo per house; `plugin_installs_counted` remembers, through a removal. A preview, an update or a reinstall never downloads it. GitHub's download count of that file across releases is the install count; without one, the library shows the component's downloads, labelled as such. This is not telemetry (rule 26): a public file is fetched from the address that just downloaded the add-on, and it carries nothing that download didn't.
 
 ## House rules
 
@@ -176,7 +185,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 23. No plugin code runs in the web app (its UI is declarative); a plugin reaches only what its manifest declares and the household approved; nothing outside `niles-plugins` knows about WebAssembly. *The sandbox is one crate wide.*
 24. Plugin-facing names stay as they are: `niles:integration`, `niles-integration.toml`, `/integrations`, `/plugins/…`, `integrations.*`. *Published plugins depend on them.*
 25. No OpenSSL in the build: rustls and RustCrypto. *One build on every platform.*
-26. No telemetry. If it is ever added, opt-in only. *Local-first is the point.*
+26. No telemetry. If it is ever added, opt-in only. A download a person's own action starts, from the host that action already reaches, and carrying nothing that action didn't, is not telemetry: the add-on library's install count (one `niles-installed` per repo per house, at install) is the one such download. *Local-first is the point.*
 
 **Code**
 
@@ -184,7 +193,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 
 ## Big decisions
 
-- Cluster Postgres, not embedded SQLite (#16); stores create their own tables, and the database is just `NILES_DATABASE_URL` (#367).
+- Postgres, not embedded SQLite (#16); stores create their own tables, and the database is just `NILES_DATABASE_URL` (#367).
 - Layered config: a ConfigMap base plus overrides in Postgres, with history and undo, edited from the UI, by voice or over the API (#153, #154, #158; spec #168). Why Postgres: see Operations notes.
 - Credentials typed into the app and sealed in Postgres (#209, #210); tado connected from the app by device flow (#203, #204).
 - Custom ESP-IDF satellite firmware streaming raw PCM over Wyoming, not ESPHome, MQTT or wyoming-satellite (#103, #122, #123, #127); an on-device "Niles" wake word (#128).
@@ -197,17 +206,20 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 - WLED as a second MQTT device source (#110, #111).
 - Automations as narrow JSON rules in Postgres with a flow-drawn page, and no scripting language, which would be a security and complexity hole (#342, #344); waits survive a restart, and a rule can start the morning routine (#431).
 - Third-party add-ons as sandboxed WebAssembly components installed from GitHub releases (spec #384, #388, #390, #391); MQTT in 0.2 (#392); accounts and webhooks in 0.3 (#439, #444). **Rejected:** native Rust dylibs, because Rust has no stable ABI and a native library has the whole process's rights; and a subprocess or container per plugin, because it is sandboxed differently on every OS and Niles in Kubernetes can't start containers. A component is one portable file whose imports are all it can touch. Trust model: see Security notes.
+- The add-on library (NIL-35): found by a GitHub topic, listed through pull requests to a registry repo, read from one `index.json` on GitHub Pages, and counted by GitHub's download count of a `niles-installed` file each fresh install fetches once. **Rejected:** a server of Niles's own, which someone would have to run and trust; counts reported by each Niles, which is telemetry; and the component's own download count, which previews and updates inflate.
 - Linear through Linear's own MCP server, as a remote tool server; Niles files and queries issues and never talks to the ai-harness (#417, #419).
 - Approvals: Ask-first tools and every mail wait for the person's yes (spec #422, #423); the panel and the history (#455).
 - Accounts: one sign-in per provider serves Calendar, Mail or both (#424); mail (#425); iCloud over IMAP and SMTP (#426). App registrations: see Operations notes.
 - Training from each person's own Strava app, not Garmin or Apple Health (#410, then #418). Why: see Operations notes.
-- Artifacts made by the assistant and versioned per person (#429); pages in a sealed frame (#440); pictures as Niles's own copies (#442); sharing to view or to edit (#452).
+- Artifacts made by the assistant and versioned per person (#429); pages in a sealed frame (#440); pictures as Niles's own copies (#442); sharing to view or to edit (#452); changes said as edits, and a change a chat turn runs out of time on carried on as a job (NIL-37).
 - Web Push, with no inbound port (#432).
 - SearXNG as the house's search; Claude's own `WebSearch` when there is none; `WebFetch` never (#451).
 - Chat attachments, sniffed by content and always answered by the assistant (#449).
 - Blinds open to a normal level, and a second Open goes all the way (#441).
 - Podcasts: the assistant researches and writes the script; the house's own Kokoro voices it, and the episode lives in a private R2 bucket the household set up, not on a hosted voice or storage service (#457).
 - Release flow: `development` is the default branch, release-please cuts releases, images are built from `main` (#456).
+- The website, getniles.app, is one static Next.js and Fumadocs site in `site/`: the landing page, the docs and the add-on library, built and hosted by Vercel from `main` (with a preview for every pull request) and rebuilt daily. It replaced the mdBook, and it shares the app's theme file (NIL-41).
+- Self-hosted two ways, both supported: Docker Compose on one Linux machine (`deploy/compose`, which CI starts on every pull request) and Kubernetes with Kustomize (`deploy/kustomize`). The Compose stack runs Niles and Postgres only; the broker, Zigbee2MQTT and Piper stay the household's own (NIL-44).
 
 ## Security notes
 
@@ -223,6 +235,8 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 
 **The plugin trust model.** The sandbox limits what a plugin can *reach*; it does not make a plugin *trustworthy*. An approved plugin can do anything its declared hosts and devices allow: one given an account's password can do what that account can, one subscribed to device state learns when the house is empty and can send that to any host it declared, and any plugin can tell the model untrue things in a tool result. What the sandbox guarantees: no undeclared hosts or local addresses, no other integration's secrets, no database, conversations, memory or people, no code in the app, and capped memory and time. So the approval screen says plainly what is granted, the repo is shown, the component is pinned, and an update that asks for more is approved again.
 
+**The add-on library.** Listed means an add-on passed `niles plugin check --listing` when it was listed and someone read its permissions. It is not an audit of its code, and later releases aren't reviewed again. Nothing about installing changes: Browse's Install is the same preview and approval as a pasted address, and an update that asks for more is approved again. The index is a stranger's file. Niles parses its manifests with the install's parser, sanitises its logos with the install's allowlist, shows its text as text, and takes no address from it.
+
 ## Operations notes
 
 **Config overrides live in Postgres**, not on a node-local volume. A local volume pins the pod to one node and blocks drains, which on a Talos cluster means every upgrade. Voice prints are in Postgres for the same reason. Without a database, changes still apply but don't outlive the process, and every surface says so.
@@ -235,7 +249,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 - *Microsoft:* register in Entra for "accounts in any organizational directory and personal Microsoft accounts". A work tenant may still refuse a person's consent to an outside app; that is the employer's call.
 - *Both:* changing what an account serves means signing in again for the new scopes. iCloud's app-specific password can't be narrowed, so its read-only access is Niles's own rule, not Apple's.
 
-**Deploying** is `deploy/README.md` and the Kustomize manifests in `deploy/kustomize/`.
+**Deploying** is `deploy/compose/` (Docker Compose, with its README) or `deploy/README.md` and the Kustomize manifests in `deploy/kustomize/`. A fresh install needs the broker's address and login and the hearing and thinking keys before its first start, because `serve` connects to the broker and builds both clients before the API is up; the shipped `niles.toml` files name those variables.
 
 ## Glossary
 
@@ -258,6 +272,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 - **Notification**: something Niles says unprompted at a satellite, with a chime and quiet hours; a person's own things also go to their devices by Web Push.
 - **Automation**: when X, do Y. Rules are stored in Postgres; the curve and the morning routine are code.
 - **Tool server**: a remote MCP server whose tools Niles offers, named `<id>__<tool>`.
+- **Add-on library**: the add-ons other people published, read from the registry's `index.json` and shown under Add-ons → Browse. Each is Listed (reviewed into the registry), Unreviewed (found by the `niles-addon` topic) or, once taken off the list, No longer listed.
 - **Plugin**: a WebAssembly component installed from a GitHub release, targeting the `niles:integration/plugin` world in `schemas/niles-integration.wit`.
 - **features.toml / MANIFEST.md**: the catalogue of what Niles does, and the LLM-facing file `niles generate-manifest` makes from it.
 
@@ -266,6 +281,6 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 - **How a piece works, and why:** its crate's doc comments.
 - **What exists:** `features.toml`, and `MANIFEST.md` made from it.
 - **Planned work and feature specs:** Linear, the *Niles software* project.
-- **How to use Niles:** the user guide in `docs/src/`.
-- **Writing a plugin:** `docs/integrations/`.
+- **How to use Niles:** the user guide in `site/content/docs/`, at getniles.app/docs.
+- **Writing a plugin:** `site/content/docs/writing-add-ons/`.
 - **The long spec this replaced:** git history.

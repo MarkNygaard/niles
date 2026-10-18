@@ -1,0 +1,159 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+
+/* Shared with the dashboard. One definition of the palette, two apps. */
+@import "../../web/src/styles/theme.css";
+
+/* Fumadocs styles the docs area from its own `--color-fd-*` palette. Left
+   alone, the docs render in fumadocs' neutral greys while the header, landing
+   page and footer use ours -- which is what makes the docs read as a second,
+   unrelated site. Pointing its tokens at the shared theme fixes that in one
+   place, and because ours are redefined under `.dark`, the indirection carries
+   dark mode along for free. */
+/* Deliberately NOT `@theme`: Tailwind hoists those into `:root` at the top of
+   the output, where fumadocs' own `.dark` block -- emitted ~68KB later at equal
+   specificity -- would simply overwrite them. Plain rules keep source order, so
+   these land after fumadocs and win in both modes. */
+:root,
+.dark {
+  --color-fd-background: var(--background);
+  --color-fd-foreground: var(--foreground);
+  --color-fd-muted: var(--muted);
+  --color-fd-muted-foreground: var(--muted-foreground);
+  --color-fd-popover: var(--popover);
+  --color-fd-popover-foreground: var(--popover-foreground);
+  --color-fd-card: var(--card);
+  --color-fd-card-foreground: var(--card-foreground);
+  --color-fd-border: var(--border);
+  --color-fd-primary: var(--primary);
+  --color-fd-primary-foreground: var(--primary-foreground);
+  --color-fd-secondary: var(--secondary);
+  --color-fd-secondary-foreground: var(--secondary-foreground);
+  --color-fd-accent: var(--accent);
+  --color-fd-accent-foreground: var(--accent-foreground);
+  --color-fd-ring: var(--ring);
+}
+
+/* neutral.css hard-codes three greys for the sidebar, which would put the one
+   panel back on the wrong palette. */
+#nd-sidebar {
+  --color-fd-muted: var(--muted);
+  --color-fd-secondary: var(--secondary);
+  --color-fd-muted-foreground: var(--muted-foreground);
+}
+
+/* ── Docs chrome ──────────────────────────────────────────────────────────
+   Fumadocs supplies the layout engine (grid, responsive behaviour, TOC,
+   mobile); these rules take over its surface treatment so the docs read as the
+   same site as the landing page rather than as a docs template dropped next to
+   it. Kept to CSS on fumadocs' own ids: no forked components to re-sync on
+   upgrade. */
+
+/* Full width, and exactly one viewport tall.
+
+   Fumadocs caps the grid at `--fd-layout-width` (97rem by default) and pads the
+   remainder into gutters; 100% collapses those.
+
+   The height matters for more than fit. Fumadocs sizes the sticky sidebar and
+   TOC from `--fd-docs-height`, which defaults to `100dvh` and takes no account
+   of a header above it -- so the sidebar box started behind our header and
+   overhung the viewport by the same 3.5rem at the bottom. Both ends of the
+   separator's fade were off-screen, and a hard-cut line is what you saw
+   instead.
+
+   Sizing the region to the space actually below the header, and letting the
+   content column scroll inside it rather than scrolling the page, pins the
+   sidebar and TOC for good: the gradient's endpoints are the endpoints of what
+   you can see, with or without enough content to scroll. */
+#nd-docs-layout {
+  --fd-layout-width: 100%;
+  --fd-docs-height: calc(100svh - var(--fd-nav-height));
+}
+
+/* Only from `md`, which is where fumadocs makes the sidebar persistent. Below
+   it the sidebar is a drawer and the TOC a popover, so a fixed shell buys
+   nothing -- and it would stop a mobile browser's address bar collapsing,
+   which needs the page itself to be the scroller. `svh` rather than `dvh` for
+   the same reason: the small viewport is the one that does not move. */
+@media (min-width: 768px) {
+  /* The whole grid scrolls, not the content column inside it. Both put the
+     content in motion and leave the sidebar and TOC still -- they are sticky
+     and a viewport tall, so they stay pinned either way -- but they differ in
+     where the scrollbar lands. Scrolling the column puts it at that column's
+     right edge, which is between the prose and the table of contents; scrolling
+     the grid puts it at the window edge, where a scrollbar belongs.
+
+     `min-height: 0` is load bearing: a grid item defaults to `min-height: auto`
+     and refuses to shrink below its content, so without it this grows to fit
+     and the page scrolls after all -- which is what the fixed height was for. */
+  /* `position: relative` is load bearing too. Without it, absolutely
+     positioned things in the docs (fumadocs' sr-only labels) take the
+     `(app)` wrapper as their containing block, escape this box and stretch
+     the page past the viewport. The window then scrolls after all, and
+     Next's scroll-into-view on a link from a page scrolled down moves it by
+     the header's height, which the reader can't scroll back: the wheel goes
+     to this box, already at its top, and `overscroll-behavior` keeps it
+     there. */
+  #nd-docs-layout {
+    position: relative;
+    height: var(--fd-docs-height);
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    /* In-page anchors would otherwise land hard against the top edge. */
+    scroll-padding-top: 1.5rem;
+  }
+}
+
+/* The sidebar ships as a filled card with a solid end border. Two problems:
+   the fill reads as a separate panel rather than part of the page, and the
+   border runs the full height at full strength, so it collides with the
+   header's own bottom rule and makes a hard corner.
+
+   Replaced with a hairline that fades in below the header and out again at the
+   foot. This has to be a positioned pseudo-element: `border-image` with a
+   gradient looked like the obvious fix and renders as a plain solid line here,
+   which is worse than the default because it looks deliberate. The aside is
+   already `position: absolute`, so it is the containing block, and its
+   inline-end edge is exactly where the old border sat -- at any sidebar
+   width. */
+#nd-sidebar {
+  background-color: transparent;
+  border-inline-end-width: 0;
+}
+
+#nd-sidebar::after {
+  content: "";
+  position: absolute;
+  inset-block: 3rem 0;
+  inset-inline-end: 0;
+  width: 1px;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    var(--border) 12%,
+    var(--border) 88%,
+    transparent 100%
+  );
+}
+
+/* The active page in the sidebar arrives with a tinted fill
+   (`data-[active=true]:bg-fd-primary/10`). Dropped -- the block of tint
+   competes with the hairline separator for attention.
+
+   The weight carries the state instead. Without the fill, the only thing left
+   marking the current page was its colour, and colour alone is both easy to
+   miss when scanning and invisible to anyone who cannot separate those two
+   greys.
+
+   Scoped with `:not(:hover)` so the item keeps its hover fill: without that,
+   this rule would win over the hover utility as well and the active row would
+   be the one row in the list with no pointer feedback. */
+#nd-sidebar a[data-active="true"] {
+  font-weight: 600;
+}
+
+#nd-sidebar a[data-active="true"]:not(:hover) {
+  background-color: transparent;
+}

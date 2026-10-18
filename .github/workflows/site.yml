@@ -1,0 +1,30 @@
+name: Site refresh
+
+# getniles.app is built and hosted by Vercel, from site/ on main: a push to
+# main deploys it, and every pull request gets a preview. This only adds the
+# daily rebuild, which is how add-ons published since the last release get
+# their pages. It calls the project's deploy hook (Vercel → Settings → Git →
+# Deploy Hooks, for the main branch), kept in the VERCEL_DEPLOY_HOOK secret.
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  rebuild:
+    name: rebuild
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call the deploy hook
+        env:
+          HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "VERCEL_DEPLOY_HOOK is not set, so nothing to call." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          curl --fail --silent --show-error --max-time 30 -X POST "$HOOK" > /dev/null
+          echo "Vercel is rebuilding getniles.app from main." >> "$GITHUB_STEP_SUMMARY"

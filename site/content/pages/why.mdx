@@ -1,0 +1,162 @@
+---
+title: "Why Niles"
+description: "Why Niles is built the way it is, what leaves the house and when, and whether it fits yours."
+---
+
+Niles is a home assistant you talk to. You say "Niles" to the satellite in
+the room and ask for what you want, and the answer comes back from the same
+satellite, usually in well under a second. It runs on a machine in your
+house, with Docker Compose or Kubernetes, and keeps what it knows in your
+own Postgres. This page explains the choices behind that.
+
+## Speed first on the voice path
+
+A spoken command never waits on something it doesn't need: a plugin, the
+database, a second model or a cloud call. Audio streams in and the reply
+streams out, and each add-on runs on its own thread, so a slow one holds up
+nothing else.
+
+## Tiers by trigger
+
+Each step runs only when the one before it could not answer.
+
+- **Fixed phrasings first.** Lights, blinds, scenes, music, the TV, timers,
+  heating, the weather and the clock are matched by regex and carried out
+  with no model at all. The target is about half a second end to end.
+- **A fast model for the rest.** Anything else goes to a fast model
+  (Cerebras by default) with only the tools that request is likely to need.
+  You can say it your own way, and it takes a second or so.
+- **The assistant for bigger jobs.** Making a rule, planning a trip,
+  writing a podcast or reading a photo goes to Claude Code or ChatGPT. By
+  voice it gets only the turns that need it. In the app's chat it answers
+  whatever the fixed phrasings don't.
+
+The model asks the device registry what is on through tool calls, instead
+of searching a pile of text about the house. See
+[the voice loop](/docs/architecture/voice-loop) for each step.
+
+## Its own satellites and wake word
+
+The satellite is a reSpeaker XVF3800 with a XIAO ESP32-S3, running Niles's
+own firmware. A wake word model trained for "Niles" runs on the satellite
+itself, so nothing leaves the room until the word is said. Then it streams
+raw 16 kHz audio to Niles over TCP and plays the reply. The XMOS chip
+cancels echo, so it hears you over music, and the room's Sonos turns down
+while Niles listens and speaks.
+
+Every satellite runs the same firmware and keeps no room state. Niles knows
+which room one is in from its address, so a new satellite flashed with the
+same firmware and given the old one's address takes its place. See [Satellites and hardware](/docs/setting-up/satellites).
+
+## The assistant on your own subscription
+
+The assistant is Claude Code or ChatGPT, signed in with the household's own
+Claude or ChatGPT subscription. Both programs ship in the Niles image, and
+Niles gives them its tools through its own MCP server, so it can switch a
+light or read a calendar the same way the fast model does. There is no
+Niles account, and no service of the authors' between you and the model.
+
+## The house is described upstream
+
+Rooms and devices are the names you give them in Zigbee2MQTT, as
+`room/device`: `kitchen/ceiling`, `living_room/floor_lamp`. Niles keeps no
+device database of its own, and no screen in the app creates a room. The app
+changes values and presses switches. Name things well once and every new
+device turns up in the right room. See
+[Naming your devices](/docs/setting-up/naming).
+
+## One house, several people
+
+The house has one state: one set of devices, one lighting curve, one set of
+scenes. Two people can't both own the curve.
+
+People get personal references instead. "My calendar" and "wake me up" mean
+the speaker's own calendar and alarm, found from the voice Niles recognised or
+the person signed in to the app. A voice Niles doesn't know reaches nobody's
+calendar, mail or notes. Voice prints stay in the house's own database, and
+only people who enrolled are recognised.
+
+## The model approves nothing
+
+The model never decides an approval. When it wants to send a mail or use a
+tool set to ask first, Niles holds the exact call and shows it to you. What
+runs after your yes is what you saw. A mail is never sent without a press in
+the app: never by voice, and no setting turns that off.
+
+What a web page, a file, a tool result or an add-on says is information to
+the model, never an instruction. A PDF that says "ignore your rules" is read,
+not obeyed.
+
+## Local first
+
+What Niles keeps stays in your house, in your Postgres: settings, rules,
+conversations, Saved items, voice prints and timers. Keys typed into the
+app are sealed in that database with a key only your deployment holds.
+
+These run on your own Niles and need no outside service: the fixed
+phrasings, the lighting curve, recognising voices, speaking the replies
+(Piper), rules and timers. With the internet down, wall switches, the
+curve, rules and timers keep working. Voice needs the speech-to-text
+service, unless you run an OpenAI-compatible one of your own.
+
+There is no telemetry. Niles sends nothing about you or your use of it to
+its authors or anyone else.
+
+## What leaves the house, and when
+
+| Service | What goes there | When |
+| --- | --- | --- |
+| Speech to text (ElevenLabs Scribe, or any OpenAI-compatible server) | The audio of a command | After the wake word, never before |
+| The fast model (Cerebras, or any OpenAI-compatible server) | The words of a command, with the context it needs | Only when no fixed phrasing caught it |
+| Claude or ChatGPT | Chat messages, attached files, rules to work out, the background review | Only once you switch one on |
+| The add-ons and accounts you connect | What each one needs to answer | While it is connected |
+| Open-Meteo | The house's location | When Niles needs the weather |
+| Apple, Google or Mozilla push | A notification for your phone | When Niles has something to tell you |
+| GitHub | Signing in, add-on downloads and update checks | When someone signs in, and for installed add-ons |
+
+The full list is on
+[Security and privacy](/docs/using/security#what-leaves-the-house).
+
+## Extending it
+
+Built-in integrations (Sonos, LG TVs, tado°, calendars, Strava and the rest)
+are crates in the repository, held to its tests. A remote MCP tool server,
+such as Linear's, brings a service's own tools. For the rest there are
+[add-ons](/add-ons): WebAssembly components installed from a GitHub release.
+
+An add-on reaches only what its manifest declares and the household approved.
+It gets no undeclared hosts, no other add-on's secrets, no database, no
+conversations and no code in the app. That limits what an add-on can reach. It
+does not make one trustworthy, so the approval screen says plainly what is
+granted, and an update that asks for more is approved again.
+
+## Is it a fit?
+
+Niles is a good fit if:
+
+- your devices are Zigbee, through Zigbee2MQTT, or LED strips on WLED, with
+  a few Wi-Fi devices beside them;
+- you want to talk to the house, and to be answered from the room you are
+  in;
+- you are comfortable running a container and a database, with Docker
+  Compose or Kubernetes;
+- the household speaks English.
+
+It is not a fit yet if:
+
+- you need hundreds of integrations, or Z-Wave or Matter;
+- you want to describe the house in a UI, adding rooms and devices from
+  setup screens.
+
+If you need the widest device support, that is what Home Assistant is built
+for.
+
+Niles is also young. Its releases are 0.x, and breaking changes are
+expected.
+
+## Open source
+
+Niles is open source under the MIT or Apache-2.0 license, at your option. The
+crate map, the house rules every change keeps, and the decisions behind them
+are in
+[ARCHITECTURE.md](https://github.com/MarkNygaard/niles/blob/main/ARCHITECTURE.md).

@@ -68,6 +68,48 @@ function show(start: ArtifactDetail = detail()) {
   return { patch, back };
 }
 
+async function openMenu() {
+  fireEvent.click(await screen.findByRole("button", { name: "Share and download" }));
+  await screen.findByRole("menu");
+}
+
+function menuItems(): string[] {
+  return within(screen.getByRole("menu"))
+    .getAllByRole("menuitem")
+    .map((item) => item.textContent ?? "");
+}
+
+/** Files handed to the browser to save, caught at the link's click. */
+function catchDownloads(): { name: string; blob: Blob }[] {
+  const blobs = new Map<string, Blob>();
+  const saved: { name: string; blob: Blob }[] = [];
+  let n = 0;
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    value: (blob: Blob) => {
+      const url = `blob:test/${n++}`;
+      blobs.set(url, blob);
+      return url;
+    },
+  });
+  Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: () => {} });
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
+    this: HTMLAnchorElement,
+  ) {
+    const blob = blobs.get(this.href);
+    if (blob) saved.push({ name: this.download, blob });
+  });
+  return saved;
+}
+
+function textOf(blob: Blob): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.readAsText(blob);
+  });
+}
+
 describe("ArtifactView", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -129,15 +171,82 @@ describe("ArtifactView", () => {
     await waitFor(() => expect(patch).toHaveBeenCalledWith(5, { notify: false }));
   });
 
-  it("copies the document as markdown", async () => {
+  it("copies the document as markdown, from the share menu", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     show();
-    fireEvent.click(await screen.findByRole("button", { name: "Copy" }));
+    await openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy" }));
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith("# Packing\n\n- [ ] Passport\n- [x] Charger"),
     );
-    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+    // Said in the menu, which stays open to say it.
+    expect(await screen.findByRole("menuitem", { name: "Copied" })).toBeInTheDocument();
+  });
+
+  it("keeps only Versions under the item: Share and Copy are in the menu", async () => {
+    show(detail({ page: 3, page_html: "<p>poster</p>" }));
+    expect(await screen.findByRole("button", { name: "Versions (2)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove page" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
+  });
+
+  it("offers a document as Word and as Markdown, and Share to its owner", async () => {
+    show();
+    await openMenu();
+    expect(menuItems()).toEqual(["Share…", "Copy", "Download as Word", "Download as Markdown"]);
+  });
+
+  it("downloads the markdown as a file named after it", async () => {
+    const saved = catchDownloads();
+    show();
+    await openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Download as Markdown" }));
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0].name).toBe("Packing list.md");
+    expect(await textOf(saved[0].blob)).toBe("# Packing\n\n- [ ] Passport\n- [x] Charger");
+  });
+
+  it("downloads a Word file named after it", async () => {
+    const saved = catchDownloads();
+    show();
+    await openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Download as Word" }));
+    await waitFor(() => expect(saved).toHaveLength(1), { timeout: 5000 });
+    expect(saved[0].name).toBe("Packing list.docx");
+    expect(saved[0].blob.size).toBeGreaterThan(0);
+  });
+
+  it("downloads the version being read, and says so in the name", async () => {
+    const saved = catchDownloads();
+    show();
+    vi.spyOn(api, "artifactRevision").mockResolvedValue({
+      n: 1,
+      reason: "First version",
+      author: "claude",
+      at: NOW,
+      content: { markdown: "- [ ] Passport only" },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Versions (2)" }));
+    fireEvent.click(screen.getByText(/Version 1 · First version/));
+    await screen.findByRole("checkbox", { name: "Passport only" });
+    await openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Download as Markdown" }));
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0].name).toBe("Packing list (version 1).md");
+    expect(await textOf(saved[0].blob)).toBe("- [ ] Passport only");
+  });
+
+  it("offers Word but no Markdown for a plan and a trip", async () => {
+    show(
+      detail({
+        kind: "trip",
+        content: { destination: "Thailand", start: "2027-02-01", end: "2027-02-03", days: [] },
+      }),
+    );
+    await openMenu();
+    expect(menuItems()).toEqual(["Share…", "Copy", "Download as Word"]);
   });
 
   it("says what a job is doing while it writes", async () => {
@@ -151,7 +260,8 @@ describe("ArtifactView", () => {
       }),
     );
     expect(await screen.findByText("Writing your Thailand travel plan…")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
+    await openMenu();
+    expect(menuItems()).toEqual(["Share…"]);
   });
 
   it("says why a job did not finish, and tries it again", async () => {
@@ -268,12 +378,14 @@ describe("ArtifactView, shared", () => {
     expect(await screen.findByText("Shared by Mark · read only")).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Passport" })).toBeDisabled();
     expect(screen.queryByRole("switch")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Versions (1)" }));
     expect(screen.getByText(/^Claude for Mark ·/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("checkbox", { name: "Passport" }));
     expect(patch).not.toHaveBeenCalled();
+    // Theirs to copy and download, not to share.
+    await openMenu();
+    expect(menuItems()).toEqual(["Copy", "Download as Word", "Download as Markdown"]);
   });
 
   it("shared to read, its page cannot save and cannot be taken away", async () => {
@@ -302,7 +414,10 @@ describe("ArtifactView, shared", () => {
     const { patch } = show(detail({ access: "edit", owner: "Mark", ...PAGED }));
     expect(await screen.findByText("Shared by Mark")).toBeInTheDocument();
     expect(screen.queryByRole("switch")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
+    await openMenu();
+    expect(menuItems()).not.toContain("Share…");
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     fireEvent.click(screen.getByRole("button", { name: "Remove page" }));
     await waitFor(() => expect(patch).toHaveBeenCalledWith(5, { remove_page: true }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Passport" }));
@@ -339,7 +454,8 @@ describe("ArtifactView, shared", () => {
     });
     show(detail({ access: "owner", shared_with: 1 }));
     expect(await screen.findByText("Shared with 1")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    await openMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Share…" }));
     const majse = await screen.findByRole("radiogroup", { name: "Majse" });
     expect(within(majse).getByRole("radio", { name: "None" })).toHaveAttribute(
       "aria-checked",
@@ -417,6 +533,8 @@ describe("ArtifactView, podcast", () => {
 
   const AUDIO = {
     url: "https://abc123.r2.cloudflarestorage.com/niles-podcasts/podcasts/5.mp3?X-Amz-Expires=14400",
+    download_url:
+      "https://abc123.r2.cloudflarestorage.com/niles-podcasts/podcasts/5.mp3?X-Amz-Expires=14400&response-content-disposition=attachment",
     expires_at: NOW,
     kept_until: "2026-10-31T00:00:00Z",
   };
@@ -437,6 +555,20 @@ describe("ArtifactView, podcast", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Script/ }));
     expect(screen.getByText(/Why is the sky blue\?/)).toBeInTheDocument();
     expect(screen.getByText(/Sunlight scattering off the air\./)).toBeInTheDocument();
+  });
+
+  it("offers the episode from the share menu, by the address the bucket saves", async () => {
+    const asked = vi.spyOn(api, "episodeAudio").mockResolvedValue(AUDIO);
+    show(detail(EPISODE));
+    await screen.findByLabelText("Play Why the sky is blue");
+    await openMenu();
+    expect(menuItems()).toEqual(["Share…", "Copy", "Download the episode"]);
+    const link = screen.getByRole("menuitem", { name: "Download the episode" });
+    expect(link).toHaveAttribute("href", AUDIO.download_url);
+    expect(link).toHaveAttribute("download", "Why the sky is blue.mp3");
+    expect(link).not.toHaveAttribute("target");
+    // One address for the player and the menu.
+    expect(asked).toHaveBeenCalledTimes(1);
   });
 
   it("says why a ready episode cannot be played when the add-on is gone", async () => {
@@ -479,5 +611,7 @@ describe("ArtifactView, podcast", () => {
     expect(screen.queryByRole("button", { name: "Restore this version" })).toBeNull();
     // A version is not the recording either.
     expect(screen.queryByLabelText("Play Why the sky is blue")).toBeNull();
+    await openMenu();
+    expect(menuItems()).not.toContain("Download the episode");
   });
 });

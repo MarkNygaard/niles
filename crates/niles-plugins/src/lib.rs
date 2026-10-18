@@ -13,7 +13,9 @@
 //! already has: the [`Runtime`] is a `niles_mqtt::DeviceCommander` for
 //! `x_*` devices, and its tools are in a `niles_tools::DynamicTools`.
 //!
-//! Spec: the author guide in `docs/integrations/`.
+//! Spec: the author guide in `site/content/docs/writing-add-ons/`. What other people
+//! published, for Add-ons → Browse, is the [`library`]: one index file,
+//! read as a stranger's.
 
 mod bindings;
 pub mod check;
@@ -26,6 +28,7 @@ pub mod images;
 pub mod inbound;
 pub mod install;
 pub mod kept;
+pub mod library;
 pub mod log;
 pub mod manifest;
 pub mod mqtt;
@@ -46,6 +49,7 @@ pub use github::GitHub;
 pub use inbound::{HookAnswer, HookRequest, LastHook};
 pub use install::{Inbound, Installer, Leftovers, Listed, Options, Preview, Refusal};
 pub use kept::{KeptSecrets, MemoryKept};
+pub use library::{Library, Shelf};
 pub use manifest::Manifest;
 pub use runtime::{House, Limits, PluginInfo, Runtime, Status, SurfaceError};
 pub use store::{MemoryStore, Package, PluginStore, Source, Update};

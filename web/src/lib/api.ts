@@ -360,6 +360,46 @@ export interface PluginPreview {
   removed: string[];
 }
 
+/** Where an add-on stands in the library. */
+export type LibraryStanding = "listed" | "unreviewed" | "removed";
+
+/** One add-on in the library. Mirrors `niles_plugins::library::ShelfEntry`. */
+export interface LibraryEntry {
+  /** `https://github.com/<owner>/<repo>`, built by Niles from the checked repo. */
+  repo: string;
+  owner: string;
+  standing: LibraryStanding;
+  /** For `removed`: why it was taken off the list. */
+  removed_reason: string | null;
+  name: string;
+  description: string;
+  version: string | null;
+  published_at: string | null;
+  /** Fresh installs, counted by its `niles-installed`; null when it has none. */
+  installs: number | null;
+  /** Downloads of its component, previews and updates included. */
+  downloads: number;
+  stars: number;
+  /** The sanitised SVG itself. */
+  logo: string | null;
+  readme: string | null;
+  /** What it may do, in the approval screen's words; null when this Niles can't read its manifest. */
+  permissions: string[] | null;
+  min_niles: string | null;
+  needs_newer_niles: boolean;
+  /** Why it can't be installed from Browse, when it can't. */
+  blocked: string | null;
+}
+
+/** The add-on library, as Browse shows it. Mirrors `niles_plugins::library::Shelf`. */
+export interface PluginLibrary {
+  /** When the registry built the index it came from. */
+  generated_at: string | null;
+  /** What no add-on may do, always the same sentence. */
+  cannot: string;
+  addons: LibraryEntry[];
+}
+
 /** One Sonos room: a speaker, a stereo pair, or a soundbar with the
     speakers around it — always played as one. */
 export interface SonosSpeaker {
@@ -564,6 +604,8 @@ export interface PodcastVoices {
     is the retention date the app shows. */
 export interface EpisodeAudio {
   url: string;
+  /** The same recording, which the bucket answers as a file to save. */
+  download_url: string;
   expires_at: string;
   kept_until: string;
 }
@@ -1763,6 +1805,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ repo }),
     }),
+  pluginLibrary: () => request<PluginLibrary>("/plugins/install/library"),
   installPlugin: (preview: PluginPreview) =>
     request<PluginSummary>("/plugins/install", {
       method: "POST",

@@ -15,7 +15,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-If you changed `web/`, also run `npm run build` and `npm test` there.
+If you changed `web/`, also run `npm run build` and `npm test` there. If you changed `site/`, the website and the docs, run `bun install`, `bun run typecheck` and `bun run build` there.
+
+A change people will notice updates its page under `site/content/docs/` in the same PR.
 
 ## Pull requests
 

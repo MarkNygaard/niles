@@ -134,7 +134,10 @@ pub(crate) fn authorization(
 
 /// A presigned URL for `method`: `host` is the only signed header and
 /// the payload is `UNSIGNED-PAYLOAD`, so a player fetching it may send
-/// Range headers without breaking the signature.
+/// Range headers without breaking the signature. `extra` are further
+/// query parameters, given unencoded and signed with the rest, such as
+/// `response-content-disposition`, which S3 and R2 answer with.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn presign(
     creds: &Credentials,
     method: &str,
@@ -142,18 +145,24 @@ pub(crate) fn presign(
     host: &str,
     canonical_uri: &str,
     expires_secs: u64,
+    extra: &[(&str, &str)],
     now: DateTime<Utc>,
 ) -> String {
     let (amz, date) = amz_date(now);
     let scope = format!("{date}/{}/s3/aws4_request", creds.region);
     let credential = encode(&format!("{}/{scope}", creds.access_key_id), false);
-    let mut params = [
+    let mut params = vec![
         ("X-Amz-Algorithm", "AWS4-HMAC-SHA256".to_string()),
         ("X-Amz-Credential", credential),
         ("X-Amz-Date", amz),
         ("X-Amz-Expires", expires_secs.to_string()),
         ("X-Amz-SignedHeaders", "host".to_string()),
     ];
+    params.extend(
+        extra
+            .iter()
+            .map(|(name, value)| (*name, encode(value, false))),
+    );
     params.sort_by(|a, b| a.0.cmp(b.0));
     let query = params
         .iter()
@@ -204,6 +213,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_extra_parameter_is_encoded_sorted_and_signed() {
+        let creds = Credentials {
+            access_key_id: "AKIAIOSFODNN7EXAMPLE",
+            secret: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            region: "auto",
+        };
+        let at = utc(2026, 10, 18, 12, 0, 0);
+        let sign = |extra: &[(&str, &str)]| {
+            presign(
+                &creds,
+                "GET",
+                "https",
+                "r2.example",
+                "/b/k.mp3",
+                600,
+                extra,
+                at,
+            )
+        };
+        let plain = sign(&[]);
+        let download = sign(&[(
+            "response-content-disposition",
+            "attachment; filename=\"a b.mp3\"",
+        )]);
+        let query = download.split_once('?').unwrap().1;
+        assert!(
+            query.contains(
+                "X-Amz-SignedHeaders=host&response-content-disposition=\
+                 attachment%3B%20filename%3D%22a%20b.mp3%22&X-Amz-Signature="
+            ),
+            "after the X-Amz- names, encoded, before the signature: {query}"
+        );
+        let signature = |url: &str| url.rsplit_once("X-Amz-Signature=").unwrap().1.to_string();
+        assert_ne!(
+            signature(&plain),
+            signature(&download),
+            "the parameter is signed"
+        );
+    }
+
     /// The AWS SigV4 presigned-URL test vector (get object, virtual-hosted).
     #[test]
     fn the_aws_presigned_get_example() {
@@ -219,6 +269,7 @@ mod tests {
             "examplebucket.s3.amazonaws.com",
             "/test.txt",
             86400,
+            &[],
             utc(2013, 5, 24, 0, 0, 0),
         );
         assert_eq!(

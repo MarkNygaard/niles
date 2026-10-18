@@ -196,6 +196,9 @@ pub enum PageChange {
     Keep,
     /// A new page, already checked by [`crate::page::page`].
     New(String),
+    /// A partial edit, checked as a new page, saved only while `from`
+    /// is still the current page. The store checks under its write lock.
+    Edit { from: i64, html: String },
     /// A page of this artifact's that is kept already: a restored
     /// version's.
     Use(i64),

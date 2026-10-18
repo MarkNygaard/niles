@@ -4,7 +4,7 @@
 /// at the bottom of this file: it imports the host interfaces below and
 /// exports the lifecycle and tool functions Niles calls.
 ///
-/// Spec and author guide: docs/integrations/.
+/// Spec and author guide: site/content/docs/writing-add-ons/.
 ///
 /// Status: v0.4.0 (`crates/niles-plugins`). 0.4 adds the host-managed
 /// WebSocket client interface. 0.3.0 is frozen in `niles-integration-0.3.wit`;

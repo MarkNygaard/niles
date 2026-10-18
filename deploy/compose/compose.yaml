@@ -1,0 +1,71 @@
+# Niles and its Postgres, with Docker Compose. See README.md beside this
+# file. The MQTT broker, Zigbee2MQTT and Piper run elsewhere; Niles is
+# pointed at them in niles.toml and in the app.
+#
+#   cp .env.example .env    # then fill it in
+#   docker compose up -d
+
+name: niles
+
+services:
+  niles:
+    # `latest` is the newest release. To pin one, set NILES_IMAGE in .env
+    # to a version tag, such as ghcr.io/marknygaard/niles:0.4.0.
+    image: ${NILES_IMAGE:-ghcr.io/marknygaard/niles:latest}
+    restart: unless-stopped
+    command: ["serve", "--config", "/etc/niles/niles.toml"]
+    ports:
+      # The app and the API.
+      - "8080:8080"
+      # Wyoming: the satellites stream to this port.
+      - "10300:10300"
+    environment:
+      # The database and the key that seals what is typed into the app.
+      # These two always come from here.
+      NILES_DATABASE_URL: postgres://niles:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/niles
+      NILES_SECRET_KEY: ${NILES_SECRET_KEY:?set NILES_SECRET_KEY in .env}
+      # What Niles needs before the app is up: the broker's login and the
+      # keys for hearing and thinking. niles.toml names these variables.
+      NILES_MQTT_USERNAME: ${NILES_MQTT_USERNAME:-}
+      NILES_MQTT_PASSWORD: ${NILES_MQTT_PASSWORD:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
+    volumes:
+      - ./niles.toml:/etc/niles/niles.toml:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # The image has no curl or wget, so bash asks /healthz itself.
+      test:
+        - CMD
+        - bash
+        - -c
+        - exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /healthz HTTP/1.0\r\n\r\n' >&3 && grep -q ' 200 ' <&3
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  db:
+    # Niles needs no extensions; it creates its own tables on first use.
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: niles
+      POSTGRES_DB: niles
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      # Over TCP: while the image first initialises the database, its
+      # temporary server answers only on the socket, and a socket check
+      # would call it ready too early.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "niles", "-d", "niles"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+volumes:
+  db:

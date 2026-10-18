@@ -3,6 +3,7 @@
 //!
 //! ```text
 //! GET    /plugins                                            -> [PluginSummary]
+//! GET    /plugins/install/library                            -> the add-on library, for Browse
 //! POST   /plugins/install/preview   {repo, tag?}             -> the approval screen, with a token
 //! POST   /plugins/install           {token, sha256?}         -> PluginSummary
 //! POST   /plugins/{id}/check-update                          -> PluginSummary, with `update`
@@ -25,14 +26,17 @@
 //! ```
 //!
 //! The last five are interface 0.3's accounts and webhooks;
-//! `docs/integrations/accounts.md` has the rules. Niles owns the sign-in round trip (`state`, the cookie
+//! `site/content/docs/writing-add-ons/accounts.mdx` has the rules. Niles owns the sign-in round trip (`state`, the cookie
 //! binding it to the browser, the person) and the webhook's token and
 //! limits; the plugin builds the service's address, exchanges the code,
 //! and answers the webhook.
 //!
 //! An install is two requests so that what is installed is what was
 //! shown: the preview downloads and checks the release and answers with
-//! a token, and the install takes the token. A refusal is plain text,
+//! a token, and the install takes the token. The library is the
+//! registry's index, kept by Niles for six hours: browsing calls no
+//! GitHub API, and Install goes through the same preview. A refusal is
+//! plain text,
 //! with its status saying whose move it is: 400 a request that makes no
 //! sense, 404 no such repo, release or plugin, 409 a clash with what is
 //! installed, 410 a preview that expired, 422 a release that is not a
@@ -330,6 +334,12 @@ pub trait Plugins: Send + Sync {
         repo: &str,
         tag: Option<&str>,
     ) -> Result<serde_json::Value, PluginFailure>;
+
+    /// The add-on library, as Browse shows it: the registry's index,
+    /// read and kept by the binary, as JSON bytes. Bytes rather than a
+    /// `serde_json::Value`, so the kept copy is written straight to the
+    /// response instead of copied into a tree on every request.
+    async fn library(&self) -> Result<Vec<u8>, PluginFailure>;
     async fn install(
         &self,
         token: &str,
@@ -420,6 +430,12 @@ pub struct Approval {
     /// The component's sha256 as the preview showed it.
     #[serde(default)]
     pub sha256: Option<String>,
+}
+
+/// `GET /plugins/install/library`
+pub async fn library(State(state): State<AppState>) -> Result<Response, Failure> {
+    let json = plugins(&state)?.library().await?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
 }
 
 /// `POST /plugins/install/preview`
@@ -913,6 +929,7 @@ pub(crate) mod tests {
         pub calls: Mutex<Vec<String>>,
         pub hooks: Mutex<Vec<HookRequest>>,
         pub completed: Mutex<Vec<Completed>>,
+        pub library_down: bool,
     }
 
     impl Fake {
@@ -985,6 +1002,25 @@ pub(crate) mod tests {
                 "t0k3n" => Ok(summary()),
                 _ => Err(PluginFailure::Gone("expired".into())),
             }
+        }
+
+        async fn library(&self) -> Result<Vec<u8>, PluginFailure> {
+            self.called("library".into());
+            if self.library_down {
+                return Err(PluginFailure::Upstream(
+                    "The add-on library could not be reached.".into(),
+                ));
+            }
+            Ok(serde_json::json!({
+                "generated_at": null,
+                "cannot": "It cannot see your conversations.",
+                "addons": [{
+                    "repo": "https://github.com/jane/niles-spotprice",
+                    "standing": "listed",
+                }],
+            })
+            .to_string()
+            .into_bytes())
         }
 
         async fn check_update(&self, id: &str) -> Result<PluginSummary, PluginFailure> {
@@ -1181,6 +1217,31 @@ pub(crate) mod tests {
         assert_eq!(list[0]["repo"], "https://github.com/jane/niles-spotprice");
         assert_eq!(list[0]["group"]["label"], "Custom");
         assert_eq!(list[0]["enabled"], true);
+    }
+
+    #[tokio::test]
+    async fn the_library_passes_through_and_a_failure_to_load_it_is_a_502() {
+        let fake = Arc::new(Fake::default());
+        let (status, body) = send(app(fake.clone()), get("/plugins/install/library")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let shelf: serde_json::Value = serde_json::from_str(&body).expect("the body is JSON");
+        assert_eq!(
+            shelf["addons"][0]["repo"],
+            "https://github.com/jane/niles-spotprice"
+        );
+        assert_eq!(
+            *fake.calls.lock().unwrap(),
+            vec!["library"],
+            "the fake saw the one call"
+        );
+
+        let down = Arc::new(Fake {
+            library_down: true,
+            ..Default::default()
+        });
+        let (status, body) = send(app(down), get("/plugins/install/library")).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(body, "The add-on library could not be reached.");
     }
 
     #[tokio::test]

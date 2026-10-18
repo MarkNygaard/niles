@@ -11,12 +11,12 @@ Niles is an open-source, AI-first home automation system in Rust. It replaces Ho
 - `ARCHITECTURE.md` is the map: the crates, how a turn flows, the 27 house rules and the big decisions. Every change keeps the house rules.
 - `features.toml`, and the `MANIFEST.md` generated from it, say what exists.
 - A crate's doc comments say how it works and why.
-- `docs/src/` is the user guide (an mdBook); `docs/integrations/` is the plugin author guide.
+- `site/` is getniles.app, a Next.js and Fumadocs site: the landing page, the add-on library, and the docs in `site/content/docs/`. Those are the user guide and, in `site/content/docs/writing-add-ons/`, the plugin author guide.
 - Planned work and feature specs are Linear issues in the *Niles software* project.
 
 A new or ambiguous feature gets a Linear issue with the decision written down before any code. A change to a house rule, the crate map or a big decision updates `ARCHITECTURE.md` in the same PR.
 
-The repo is one Cargo workspace (`crates/`, with `niles-bin` the only binary) beside `web/` (the React app), `firmware/xiao-wyoming/satellite-idf/`, `hardware/satellite-v2/`, `schemas/` (the plugin WIT), `deploy/` (Kustomize), `examples/` and `scripts/`.
+The repo is one Cargo workspace (`crates/`, with `niles-bin` the only binary) beside `web/` (the React app), `site/` (the website and the docs), `firmware/xiao-wyoming/satellite-idf/`, `hardware/satellite-v2/`, `schemas/` (the plugin WIT), `deploy/` (Docker Compose, Kustomize and the image's Dockerfile), `examples/` and `scripts/`.
 
 ## Commands
 
@@ -31,7 +31,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-When `web/` changed, also run, in `web/`: `bun install` (only if dependencies changed), `npm run build` (tsc and vite) and `npm test` (vitest). When a skill changed, run `python scripts/check-skills.py`.
+When `web/` changed, also run, in `web/`: `bun install` (only if dependencies changed), `npm run build` (tsc and vite) and `npm test` (vitest). When `site/` changed (a docs page included), run `cd site; bun install; bun run typecheck; bun run build`, and `bun run dev` to look at it on http://localhost:4000. When a skill changed, run `python scripts/check-skills.py`.
 
 One crate at a time: `cargo test -p niles-core`, `cargo run -p niles-bin -- --help`.
 
@@ -43,6 +43,7 @@ One crate at a time: `cargo test -p niles-core`, `cargo run -p niles-bin -- --he
 - **Units.** Brightness is a `u8` in `0..=100`, colour temperature a `u16` in Kelvin. The source crate translates (Z2M's 0-254, WLED's 0-255, mireds).
 - **Comments** explain why. Never restate the code; the default is no comment.
 - **features.toml.** A user-visible feature adds or updates its `[[feature]]` entry (`id`, `category`, `summary`, `phrasings`, `since_pr` set to the PR's number). Then `cargo run -p niles-bin -- generate-manifest` rewrites `MANIFEST.md`; the test `committed_manifest_matches_features_toml` fails when the two disagree.
+- **The docs.** A user-visible change updates its page under `site/content/docs/` in the same PR: the user guide for what a household sees, `writing-add-ons/` for what a plugin author sees. Pages are MDX, so a bare `{` or `<` in prose is escaped (`\{`, `\<`); links between pages are `/docs/...` routes, and links to repository files are GitHub URLs on `main`.
 
 ### File and function size
 
@@ -80,7 +81,13 @@ Rulesets protect both branches: no direct pushes, no force-pushes, no deletion, 
 
 ## Linear
 
-Issues go in the `niles` team, project *Niles software*. The *Satellite v2 PCB* project and `hardware/` are Mark's; leave them alone. An agent reaches Linear through Linear's MCP server (`https://mcp.linear.app/mcp`), signed in as the person running it, so what it files is theirs.
+Issues go in the `niles` team, in one of three projects:
+
+- ***Niles software*:** everything outside `firmware/` and `hardware/`. Open to anyone working on Niles.
+- ***Satellite firmware*:** `firmware/`. The current XIAO firmware (`firmware/xiao-wyoming/satellite-idf/`) is open to anyone working on Niles. The port to the satellite v2 mainboard is Mark's until his boards work. A firmware change is tested by flashing a real satellite before it merges, because CI doesn't build the firmware; say in the PR what was tried on which satellite.
+- ***Satellite v2 PCB*:** `hardware/`, the case and the ordering. Mark's alone; leave it alone.
+
+An agent reaches Linear through Linear's MCP server (`https://mcp.linear.app/mcp`), signed in as the person running it, so what it files is theirs.
 
 - **Filing.** Anyone but Mark files a new issue into Triage. Only Mark moves an issue to Todo, and only he hands one to the ai-harness. An agent never triggers the harness. A good issue says what exists today (with file paths), the decision already made, and when it is done.
 - **Before filing, search.** Look through the issues in Triage, Backlog, Todo and the started states (In Progress through Ready for merge) for the same thing. If one already covers it, add what you know as a comment there instead of filing a new one. If one is close but doesn't cover it, file the new issue and mark it *related to* that one, saying in the description how the two differ.
@@ -90,7 +97,7 @@ Issues go in the `niles` team, project *Niles software*. The *Satellite v2 PCB* 
 
 ## Things to avoid
 
-- Local Docker workflows. Everything containerised runs on the household's Kubernetes cluster; don't suggest `docker run` or `docker compose up`.
+- Local Docker workflows for developing Niles or for Mark's own deployment. His house runs on Kubernetes, so don't suggest `docker run` or `docker compose up` for working on Niles or for his setup. Docker Compose is still a supported way for users to run Niles (`deploy/compose`), and changes to it are tested by CI's compose job.
 - `git add -A` or `git add .`. Stage files by name, so an `.env` never slips in.
 - Skipping hooks (`--no-verify`, `--no-gpg-sign`). If a hook fails, fix the cause.
 - Compatibility shims for code that isn't in production yet. Change the code.
