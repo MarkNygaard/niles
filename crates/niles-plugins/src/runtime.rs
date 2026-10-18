@@ -1282,13 +1282,14 @@ impl Plugin {
         }
     }
 
-    /// An id for a new MQTT connection.
+    /// An id for a new WebSocket connection.
     pub fn next_websocket_connection(&self) -> u32 {
         self.websocket_connections
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1
     }
 
+    /// An id for a new MQTT connection.
     pub fn next_connection(&self) -> u32 {
         self.connections
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -1619,6 +1620,8 @@ struct Pending {
     websocket: crate::websocket::Inbox,
     /// Whether an event goes next when both are waiting.
     events_turn: bool,
+    /// MQTT and WebSocket alternate when both transports are waiting.
+    websocket_turn: bool,
     restart: bool,
     stop: bool,
 }
@@ -1720,6 +1723,21 @@ impl Queue {
                     return Next::Event(event);
                 }
             }
+            let mqtt_waiting = !pending.mqtt.is_empty();
+            let websocket_waiting = !pending.websocket.is_empty();
+            if mqtt_waiting && websocket_waiting {
+                if pending.websocket_turn {
+                    if let Some(delivery) = pending.websocket.pop() {
+                        pending.websocket_turn = false;
+                        pending.events_turn = true;
+                        return Next::WebSocket(delivery);
+                    }
+                } else if let Some(delivery) = pending.mqtt.pop() {
+                    pending.websocket_turn = true;
+                    pending.events_turn = true;
+                    return Next::Mqtt(delivery);
+                }
+            }
             if let Some(delivery) = pending.mqtt.pop() {
                 pending.events_turn = true;
                 return Next::Mqtt(delivery);
@@ -1808,6 +1826,39 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, ["mqtt", "event", "mqtt", "event"]);
+    }
+
+    #[test]
+    fn mqtt_flood_cannot_starve_websocket_and_events_keep_turns() {
+        let queue = Queue::default();
+        queue.register_websocket(7);
+        for n in 0..8 {
+            queue.push_mqtt(crate::mqtt::Delivery::Message {
+                conn: 1,
+                topic: "t".into(),
+                payload: vec![n],
+                latest_only: false,
+            });
+        }
+        queue.push_websocket(crate::websocket::Delivery::Status {
+            conn: 7,
+            generation: 1,
+            status:
+                crate::bindings::v0_4::niles::integration::websocket::ConnectionStatus::Connected,
+        });
+        let kinds: Vec<_> = (0..7)
+            .map(|_| {
+                queue.push_event(event());
+                match queue.next(None, None) {
+                    Next::Mqtt(_) => "mqtt",
+                    Next::WebSocket(_) => "websocket",
+                    Next::Event(_) => "event",
+                    _ => "other",
+                }
+            })
+            .collect();
+        assert!(kinds.iter().position(|kind| *kind == "websocket").unwrap() <= 3);
+        assert!(kinds.contains(&"event"));
     }
 
     #[test]

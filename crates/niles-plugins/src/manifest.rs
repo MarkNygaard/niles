@@ -596,16 +596,27 @@ impl Manifest {
                     ) {
                         out.push(format!("websocket: {why}"));
                     }
-                    if grant.tls
-                        && grant.host.parse::<std::net::IpAddr>().is_ok()
-                        && crate::policy::is_private_for_ws(
-                            grant
-                                .host
-                                .parse()
-                                .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)),
-                        )
-                    {
-                        out.push("websocket: wss grants must name a public host; use ws for local_network".into());
+                    if !grant.tls {
+                        if let Ok(ip) = grant
+                            .host
+                            .trim_matches(['[', ']'])
+                            .parse::<std::net::IpAddr>()
+                        {
+                            if !crate::policy::is_local_network_address(ip) {
+                                out.push(
+                                    "websocket: plaintext grants must be on local_network".into(),
+                                );
+                            }
+                        } else if !self.permissions.local_network.iter().any(|entry| {
+                            entry
+                                .trim_end_matches('.')
+                                .eq_ignore_ascii_case(grant.host.trim_end_matches('.'))
+                        }) {
+                            out.push(
+                                "websocket: plaintext host must be declared in local_network"
+                                    .into(),
+                            );
+                        }
                     }
                 }
             }

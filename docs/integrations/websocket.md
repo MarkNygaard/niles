@@ -34,7 +34,7 @@ The maintained runnable component example is [`tests/fixtures/websocket`](../../
 
 The host integration test uses a synthetic WebSocket server bound to `127.0.0.1` and explicitly enables loopback for that test. This is test-only wiring, not production address policy or a production endpoint recommendation. The example intentionally reuses the maintained fixture rather than duplicating sample component code here.
 
-Keep callbacks short and avoid blocking host calls. Callbacks are delivered serially to the plugin. Reconnect establishes a new generation; stale queued events from older generations are discarded. On reconnection, the host reports `connected` again. The host does not promise replay of messages missed while offline.
+Keep callbacks short and avoid blocking host calls. Callbacks are delivered serially to the plugin. Reconnect establishes a new generation; unread messages from older generations are discarded and counted in `overflow(count)`. The latest pending disconnect/failure boundary is retained before the new `connected` status. Repeated statuses may be coalesced without counting them as message loss. The host does not promise replay of messages missed while offline.
 
 ## Bounds and loss
 

@@ -3,13 +3,16 @@
 #[path = "websocket_inbox_tests.rs"]
 mod inbox_tests;
 #[cfg(test)]
+#[path = "websocket_policy_tests.rs"]
+mod policy_tests;
+#[cfg(test)]
 #[path = "websocket_tests.rs"]
 mod tests;
 use crate::bindings::niles::integration::types::HostError;
 use crate::bindings::v0_4::niles::integration::websocket as wit;
 use crate::runtime::{House, Plugin};
 use futures_util::{SinkExt, StreamExt};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -72,23 +75,89 @@ impl Delivery {
 pub(crate) struct Inbox {
     items: VecDeque<Delivery>,
     bytes: usize,
+    messages: usize,
+    statuses: usize,
     overflow: VecDeque<(u32, u64, u32)>,
     streams: std::collections::BTreeMap<u32, u64>,
 }
 impl Inbox {
     pub fn register(&mut self, conn: u32) {
         if self.streams.len() < MAX_CONNECTIONS {
-            self.streams.insert(conn, 0);
+            self.streams.insert(conn, 1);
         }
     }
     pub fn remove(&mut self, conn: u32) {
         self.streams.remove(&conn);
         self.purge(conn);
+        self.overflow.retain(|(c, _, _)| *c != conn);
     }
     fn purge(&mut self, conn: u32) {
-        self.items.retain(|item| item.conn() != conn);
-        self.bytes = self.items.iter().map(Delivery::bytes).sum();
-        self.overflow.retain(|(c, _, _)| *c != conn);
+        let mut retained = VecDeque::with_capacity(self.items.len());
+        let mut lost: BTreeMap<u64, u32> = BTreeMap::new();
+        for item in self.items.drain(..) {
+            if item.conn() == conn {
+                if matches!(item, Delivery::Message { .. }) {
+                    *lost.entry(item.generation()).or_default() += 1;
+                    self.messages -= 1;
+                    self.bytes -= item.bytes();
+                } else {
+                    self.statuses -= 1;
+                }
+            } else {
+                retained.push_back(item);
+            }
+        }
+        self.items = retained;
+        if let Some((generation, count)) = lost.into_iter().next() {
+            self.note_overflow(conn, generation, count);
+        }
+    }
+    fn note_overflow(&mut self, conn: u32, generation: u64, count: u32) {
+        if count == 0 {
+            return;
+        }
+        if let Some((_, queued_generation, total)) =
+            self.overflow.iter_mut().find(|(c, _, _)| *c == conn)
+        {
+            *total = total.saturating_add(count);
+            *queued_generation = generation;
+        } else {
+            self.overflow.retain(|(c, _, _)| *c != conn);
+            if self.overflow.len() >= MAX_CONNECTIONS {
+                self.overflow.pop_front();
+            }
+            self.overflow.push_back((conn, generation, count));
+        }
+    }
+    fn advance(&mut self, conn: u32, generation: u64) {
+        let mut retained = VecDeque::with_capacity(self.items.len());
+        let mut lost = 0u32;
+        for item in self.items.drain(..) {
+            if item.conn() == conn && item.generation() < generation {
+                if matches!(item, Delivery::Message { .. }) {
+                    lost = lost.saturating_add(1);
+                    self.messages -= 1;
+                    self.bytes -= item.bytes();
+                } else if matches!(
+                    &item,
+                    Delivery::Status {
+                        status: wit::ConnectionStatus::Disconnected(_)
+                            | wit::ConnectionStatus::Failed(_),
+                        ..
+                    }
+                ) {
+                    retained.push_back(item);
+                } else {
+                    self.statuses -= 1;
+                }
+            } else {
+                retained.push_back(item);
+            }
+        }
+        self.items = retained;
+        if lost > 0 {
+            self.note_overflow(conn, generation, lost);
+        }
     }
     pub fn push(&mut self, d: Delivery) {
         let Some(&generation) = self.streams.get(&d.conn()) else {
@@ -98,20 +167,14 @@ impl Inbox {
             return;
         }
         if d.generation() > generation {
-            self.purge(d.conn());
+            self.advance(d.conn(), d.generation());
             self.streams.insert(d.conn(), d.generation());
         }
         if matches!(d, Delivery::Message { .. }) {
             self.bytes += d.bytes();
+            self.messages += 1;
             self.items.push_back(d);
-            while self
-                .items
-                .iter()
-                .filter(|i| matches!(i, Delivery::Message { .. }))
-                .count()
-                > INBOX_COUNT
-                || self.bytes > INBOX_BYTES
-            {
+            while self.messages > INBOX_COUNT || self.bytes > INBOX_BYTES {
                 if let Some(i) = self
                     .items
                     .iter()
@@ -119,18 +182,9 @@ impl Inbox {
                 {
                     if let Some(v) = self.items.remove(i) {
                         self.bytes -= v.bytes();
+                        self.messages -= 1;
                         let (conn, generation) = (v.conn(), v.generation());
-                        if let Some((_, _, count)) = self
-                            .overflow
-                            .iter_mut()
-                            .find(|(c, g, _)| *c == conn && *g == generation)
-                        {
-                            *count = count.saturating_add(1);
-                        } else {
-                            self.overflow
-                                .retain(|(c, g, _)| *c != conn || *g >= generation);
-                            self.overflow.push_back((conn, generation, 1));
-                        }
+                        self.note_overflow(conn, generation, 1);
                     }
                 } else {
                     break;
@@ -138,18 +192,21 @@ impl Inbox {
             }
         } else {
             let key = (d.conn(), d.generation());
-            // Keep the latest state transition for a stream; this bounds
-            // reconnect/status floods without allowing stale generations to
-            // overwrite a newer stream's status.
-            self.overflow.retain(|(c, g, _)| *c != key.0 || *g >= key.1);
-            if let Some(pos) = self.items.iter().position(|i| matches!(i, Delivery::Status { conn, generation, .. } if (*conn, *generation) == key)) {
-                self.items.remove(pos);
-                if let Some((_, _, count)) = self.overflow.iter_mut().find(|(c, g, _)| (*c, *g) == key) {
-                    *count = count.saturating_add(1);
-                } else {
-                    self.overflow.push_back((key.0, key.1, 1));
+            if matches!(
+                d,
+                Delivery::Status {
+                    status: wit::ConnectionStatus::Connected,
+                    ..
                 }
+            ) && self.items.iter().any(|i| matches!(i, Delivery::Status { conn, generation, status: wit::ConnectionStatus::Connected, .. } if (*conn, *generation) == key)) {
+                return;
             }
+            if matches!(&d, Delivery::Status { status: wit::ConnectionStatus::Disconnected(_) | wit::ConnectionStatus::Failed(_), .. })
+                && let Some(pos) = self.items.iter().position(|item| matches!(item, Delivery::Status { conn, status: wit::ConnectionStatus::Disconnected(_) | wit::ConnectionStatus::Failed(_), .. } if *conn == d.conn())) {
+                    self.items.remove(pos);
+                    self.statuses -= 1;
+            }
+            self.statuses += 1;
             self.items.push_back(d);
         }
     }
@@ -161,14 +218,31 @@ impl Inbox {
                 status: wit::ConnectionStatus::Overflow(count),
             });
         }
-        let d = self.items.pop_front()?;
-
+        let d = match self.items.pop_front() {
+            Some(item) => item,
+            None => {
+                let (conn, generation, count) = self.overflow.pop_front()?;
+                return Some(Delivery::Status {
+                    conn,
+                    generation,
+                    status: wit::ConnectionStatus::Overflow(count),
+                });
+            }
+        };
+        if let Delivery::Status { .. } = d {
+            self.statuses -= 1;
+        }
+        if let Delivery::Message { .. } = d {
+            self.messages -= 1;
+        }
         self.bytes -= d.bytes();
         Some(d)
     }
     pub fn clear(&mut self) {
         self.items.clear();
         self.bytes = 0;
+        self.messages = 0;
+        self.statuses = 0;
         self.overflow.clear();
         self.streams.clear();
     }
@@ -269,45 +343,99 @@ pub(crate) struct WsTarget {
     pub host: String,
     pub port: u16,
     pub tls: bool,
-    pub local: bool,
+    pub reach: Reach,
     pub loopback: bool,
 }
 impl WsTarget {
     pub fn allows(&self, ip: IpAddr) -> Result<(), String> {
-        crate::policy::ws_address_allowed(ip, self.local, self.loopback)
+        match self.reach {
+            Reach::Home => crate::policy::ws_address_allowed(ip, true, self.loopback),
+            Reach::Internet => crate::policy::ws_address_allowed(ip, false, self.loopback),
+            Reach::Either => crate::policy::ws_address_allowed(ip, true, self.loopback)
+                .or_else(|_| crate::policy::ws_address_allowed(ip, false, self.loopback)),
+        }
     }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reach {
+    Home,
+    Internet,
+    Either,
 }
 #[derive(Clone)]
 pub(crate) struct WsPolicy {
-    grants: Vec<(String, WsTarget)>,
+    grants: Vec<(String, Result<WsTarget, String>)>,
 }
 impl WsPolicy {
-    pub fn new(p: &crate::manifest::Permissions, settings: &toml::Table, loopback: bool) -> Self {
-        let grants = p
+    pub fn new(
+        manifest: &crate::manifest::Manifest,
+        settings: &toml::Table,
+        loopback: bool,
+    ) -> Self {
+        let grants = manifest
+            .permissions
             .websocket
             .iter()
-            .filter_map(|g| {
-                let host = if let Some(k) = g.host.strip_prefix("setting:") {
-                    settings.get(k)?.as_str()?.to_string()
-                } else {
-                    g.host.clone()
-                };
-                let tls = g.tls;
-                let local = g.host.starts_with("setting:")
-                    || host
-                        .parse::<IpAddr>()
-                        .ok()
-                        .is_some_and(crate::policy::is_private_for_ws);
-                Some((
-                    g.name.clone(),
-                    WsTarget {
+            .map(|g| {
+                let target = (|| {
+                    let (host, entered) = match g.host.strip_prefix("setting:") {
+                        Some(key) => {
+                            let value = match manifest
+                                .setting(key)
+                                .and_then(|setting| setting.value(settings))
+                            {
+                                Some(crate::manifest::SettingValue::Text(value)) => value,
+                                _ => {
+                                    return Err(format!(
+                                        "the address in setting {key} is empty or invalid"
+                                    ));
+                                }
+                            };
+                            (
+                                crate::policy::setting_host(&value)
+                                    .trim_end_matches('.')
+                                    .to_ascii_lowercase(),
+                                true,
+                            )
+                        }
+                        None => (
+                            g.host.trim().trim_end_matches('.').to_ascii_lowercase(),
+                            false,
+                        ),
+                    };
+                    let host = host.trim_matches(['[', ']']).to_owned();
+                    let literal = host.parse::<IpAddr>().ok();
+                    if literal.is_none() {
+                        crate::policy::check_mqtt_host(
+                            &host,
+                            if g.tls {
+                                crate::manifest::TlsMode::Verify
+                            } else {
+                                crate::manifest::TlsMode::Plain
+                            },
+                        )?;
+                    }
+                    let reach = if !g.tls {
+                        Reach::Home
+                    } else if entered || literal.is_some() {
+                        Reach::Either
+                    } else {
+                        Reach::Internet
+                    };
+
+                    let target = WsTarget {
                         host,
-                        port: g.port.unwrap_or(if tls { 443 } else { 80 }),
-                        tls,
-                        local,
+                        port: g.port.unwrap_or(if g.tls { 443 } else { 80 }),
+                        tls: g.tls,
+                        reach,
                         loopback,
-                    },
-                ))
+                    };
+                    if let Some(ip) = literal {
+                        target.allows(ip)?;
+                    }
+                    Ok(target)
+                })();
+                (g.name.clone(), target)
             })
             .collect();
         Self { grants }
@@ -316,7 +444,7 @@ impl WsPolicy {
         self.grants
             .iter()
             .find(|(n, _)| n == name)
-            .map(|(_, t)| Ok(t.clone()))
+            .map(|(_, t)| t.clone())
     }
 }
 
@@ -342,7 +470,7 @@ pub(crate) fn open(
         Task {
             id,
             plugin,
-            _house: house.clone(),
+
             target,
             url,
             headers,
@@ -361,23 +489,69 @@ pub(crate) fn open(
     }
 }
 
-fn classify_handshake_error(error: tokio_tungstenite::tungstenite::Error) -> (bool, String) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailureKind {
+    Tls,
+    Authentication,
+    Policy,
+    Protocol,
+    Transient,
+}
+
+fn tls_connector(roots: rustls::RootCertStore) -> tokio_tungstenite::Connector {
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("supported TLS versions")
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    tokio_tungstenite::Connector::Rustls(Arc::new(config))
+}
+
+#[cfg(test)]
+#[path = "websocket_tls_tests.rs"]
+mod tls_tests;
+
+fn classify_handshake_error(error: tokio_tungstenite::tungstenite::Error) -> (FailureKind, String) {
     use tokio_tungstenite::tungstenite::Error;
     match error {
         Error::Http(response) => match response.status().as_u16() {
-            401 | 403 => (true, "WebSocket authentication rejected".into()),
-            408 | 429 | 500..=599 => (false, "WebSocket server temporarily unavailable".into()),
-            _ => (true, "WebSocket HTTP handshake rejected".into()),
+            401 | 403 => (
+                FailureKind::Authentication,
+                "WebSocket authentication rejected".into(),
+            ),
+            408 | 429 | 500..=599 => (
+                FailureKind::Transient,
+                "WebSocket server temporarily unavailable".into(),
+            ),
+            _ => (
+                FailureKind::Protocol,
+                "WebSocket HTTP handshake rejected".into(),
+            ),
         },
-        Error::Io(_) | Error::ConnectionClosed | Error::AlreadyClosed => {
-            (false, "WebSocket handshake connection failed".into())
+        Error::Io(ref error)
+            if error
+                .get_ref()
+                .is_some_and(|cause| cause.is::<rustls::Error>()) =>
+        {
+            (FailureKind::Tls, "TLS handshake rejected".into())
         }
-        Error::Tls(_) => (true, "TLS handshake rejected".into()),
-        _ => (true, "WebSocket protocol handshake rejected".into()),
+        Error::Io(_) | Error::ConnectionClosed | Error::AlreadyClosed => (
+            FailureKind::Transient,
+            "WebSocket handshake connection failed".into(),
+        ),
+        Error::Tls(_) => (FailureKind::Tls, "TLS handshake rejected".into()),
+        _ => (
+            FailureKind::Protocol,
+            "WebSocket protocol handshake rejected".into(),
+        ),
     }
 }
 
-async fn connect_pinned(addresses: &[SocketAddr]) -> Result<tokio::net::TcpStream, (bool, String)> {
+async fn connect_pinned(
+    addresses: &[SocketAddr],
+) -> Result<tokio::net::TcpStream, (FailureKind, String)> {
     for address in addresses {
         match tokio::time::timeout(
             Duration::from_secs(10),
@@ -387,20 +561,21 @@ async fn connect_pinned(addresses: &[SocketAddr]) -> Result<tokio::net::TcpStrea
         {
             Ok(Ok(stream)) => return Ok(stream),
             Ok(Err(_)) => {}
-            Err(_) => return Err((false, "connection timed out".into())),
+            Err(_) => return Err((FailureKind::Transient, "connection timed out".into())),
         }
     }
-    Err((false, "connection failed".into()))
+    Err((FailureKind::Transient, "connection failed".into()))
 }
 
 fn checked_addresses(
     ips: impl IntoIterator<Item = IpAddr>,
     port: u16,
     allows: impl Fn(IpAddr) -> Result<(), String>,
-) -> Result<Vec<SocketAddr>, (bool, String)> {
+) -> Result<Vec<SocketAddr>, (FailureKind, String)> {
     ips.into_iter()
         .map(|ip| {
-            allows(ip).map_err(|_| (true, "policy denied resolved address".into()))?;
+            allows(ip)
+                .map_err(|_| (FailureKind::Policy, "policy denied resolved address".into()))?;
             Ok(SocketAddr::new(ip, port))
         })
         .collect()
@@ -422,7 +597,7 @@ mod pinned_address_tests {
         });
         assert_eq!(
             checked,
-            Err((true, "policy denied resolved address".into()))
+            Err((FailureKind::Policy, "policy denied resolved address".into()))
         );
     }
 
@@ -473,7 +648,7 @@ fn handshake_http_classification_does_not_leak_body() {
             .body(Some(b"private upstream response".to_vec()))
             .unwrap();
         let (actual, reason) = classify_handshake_error(Error::Http(Box::new(response)));
-        assert_eq!(actual, terminal);
+        assert_eq!(actual == FailureKind::Transient, !terminal);
         assert!(!reason.contains("private upstream"));
         assert_eq!(
             reason.contains("authentication"),
@@ -481,11 +656,29 @@ fn handshake_http_classification_does_not_leak_body() {
         );
     }
     assert!(
-        !classify_handshake_error(Error::Io(std::io::Error::from(
+        classify_handshake_error(Error::Io(std::io::Error::from(
             std::io::ErrorKind::ConnectionReset
         )))
-        .0
+        .0 == FailureKind::Transient
     );
+}
+
+#[test]
+fn wrapped_certificate_errors_are_terminal_tls_failures() {
+    use tokio_tungstenite::tungstenite::Error;
+    for certificate_error in [
+        rustls::CertificateError::UnknownIssuer,
+        rustls::CertificateError::NotValidForName,
+        rustls::CertificateError::Expired,
+    ] {
+        let error = Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            rustls::Error::InvalidCertificate(certificate_error),
+        ));
+        let (kind, reason) = classify_handshake_error(error);
+        assert_eq!(kind, FailureKind::Tls);
+        assert_eq!(reason, "TLS handshake rejected");
+    }
 }
 
 fn retry_delay(consecutive_failures: usize) -> Duration {
@@ -536,7 +729,7 @@ async fn wait_for_retry(
 struct Task {
     id: u32,
     plugin: Arc<Plugin>,
-    _house: Arc<House>,
+
     target: WsTarget,
     url: Url,
     headers: Vec<(String, String)>,
@@ -566,17 +759,15 @@ impl Task {
                         attempt = 0;
                     }
                 }
-                Err((terminal, why)) => {
+                Err((kind, why)) => {
                     self.shared.connected.store(false, Ordering::SeqCst);
-                    if terminal {
-                        let kind = if why.contains("TLS") {
-                            wit::FailureKind::Tls
-                        } else if why.contains("authentication") {
-                            wit::FailureKind::Authentication
-                        } else if why.contains("policy") {
-                            wit::FailureKind::Policy
-                        } else {
-                            wit::FailureKind::Protocol
+                    if kind != FailureKind::Transient {
+                        let kind = match kind {
+                            FailureKind::Tls => wit::FailureKind::Tls,
+                            FailureKind::Authentication => wit::FailureKind::Authentication,
+                            FailureKind::Policy => wit::FailureKind::Policy,
+                            FailureKind::Protocol => wit::FailureKind::Protocol,
+                            FailureKind::Transient => unreachable!(),
                         };
                         self.status(wit::ConnectionStatus::Failed(kind));
                         return;
@@ -606,8 +797,7 @@ impl Task {
     fn target_url(&self) -> String {
         self.url.as_str().to_string()
     }
-    async fn session(&mut self) -> Result<(), (bool, String)> {
-        let _url = self.url.clone();
+    async fn session(&mut self) -> Result<(), (FailureKind, String)> {
         let host = self.target.host.clone();
         let port = self.target.port;
         let ips = if let Ok(ip) = host.parse::<IpAddr>() {
@@ -618,36 +808,55 @@ impl Task {
                 tokio::net::lookup_host((host.as_str(), port)),
             )
             .await
-            .map_err(|_| (false, "DNS lookup timed out".into()))?
-            .map_err(|_| (false, "DNS lookup failed".into()))?
+            .map_err(|_| (FailureKind::Transient, "DNS lookup timed out".into()))?
+            .map_err(|_| (FailureKind::Transient, "DNS lookup failed".into()))?
             .map(|a| a.ip())
             .collect()
         };
-        let addresses = checked_addresses(ips, port, |ip| self.target.allows(ip))?;
+        let addresses = checked_addresses(ips, port, |ip| {
+            self.target
+                .allows(ip)
+                .map_err(|_| "policy denied resolved address".to_string())
+        })?;
         if addresses.is_empty() {
-            return Err((false, "DNS lookup returned no addresses".into()));
+            return Err((
+                FailureKind::Transient,
+                "DNS lookup returned no addresses".into(),
+            ));
         }
         let tcp = connect_pinned(&addresses).await?;
         let mut request = self
             .target_url()
             .into_client_request()
-            .map_err(|_| (true, "invalid WebSocket request".into()))?;
+            .map_err(|_| (FailureKind::Protocol, "invalid WebSocket request".into()))?;
 
         for (name, value) in &self.headers {
             let n = reqwest::header::HeaderName::from_bytes(name.as_bytes())
-                .map_err(|_| (true, "invalid handshake header".into()))?;
+                .map_err(|_| (FailureKind::Protocol, "invalid handshake header".into()))?;
             let v = reqwest::header::HeaderValue::from_str(value)
-                .map_err(|_| (true, "invalid handshake header".into()))?;
+                .map_err(|_| (FailureKind::Protocol, "invalid handshake header".into()))?;
             request.headers_mut().insert(n, v);
         }
         let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
             .max_message_size(Some(MAX_MESSAGE))
             .max_frame_size(Some(MAX_MESSAGE));
-        let connect =
-            tokio_tungstenite::client_async_tls_with_config(request, tcp, Some(config), None);
+        let mut roots = rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let connector = tls_connector(roots);
+        let connect = tokio_tungstenite::client_async_tls_with_config(
+            request,
+            tcp,
+            Some(config),
+            Some(connector),
+        );
         let (mut socket, _) = tokio::time::timeout(Duration::from_secs(10), connect)
             .await
-            .map_err(|_| (false, "WebSocket handshake timed out".into()))?
+            .map_err(|_| {
+                (
+                    FailureKind::Transient,
+                    "WebSocket handshake timed out".into(),
+                )
+            })?
             .map_err(classify_handshake_error)?;
         let generation = self.shared.generation.fetch_add(1, Ordering::SeqCst) + 1;
         self.shared.connected.store(true, Ordering::SeqCst);
@@ -661,13 +870,13 @@ impl Task {
             tokio::select! {
                 cmd = self.rx.recv() => match cmd {
                     Some(Command::Close) | None => { let _ = socket.close(None).await; self.shared.connected.store(false, Ordering::SeqCst); return Ok(()); }
-                    Some(Command::Send { message, generation: queued_generation }) => { self.shared.out_count.fetch_sub(1, Ordering::SeqCst); self.shared.out_bytes.fetch_sub(message.len(), Ordering::SeqCst); if queued_generation == generation && socket.send(message).await.is_err() { self.shared.connected.store(false, Ordering::SeqCst); return Err((false, "send failed".into())); } }
+                    Some(Command::Send { message, generation: queued_generation }) => { self.shared.out_count.fetch_sub(1, Ordering::SeqCst); self.shared.out_bytes.fetch_sub(message.len(), Ordering::SeqCst); if queued_generation == generation && socket.send(message).await.is_err() { self.shared.connected.store(false, Ordering::SeqCst); return Err((FailureKind::Transient, "send failed".into())); } }
                 },
                 item = socket.next() => match item {
-                    Some(Ok(Message::Text(text))) => { if text.len() > MAX_MESSAGE { return Err((false, "message exceeded limit".into())); } self.plugin.queue.push_websocket(Delivery::Message { conn: self.id, generation, message: wit::Message::Text(text.to_string()) }); }
-                    Some(Ok(Message::Binary(bytes))) => { if bytes.len() > MAX_MESSAGE { return Err((false, "message exceeded limit".into())); } self.plugin.queue.push_websocket(Delivery::Message { conn: self.id, generation, message: wit::Message::Binary(bytes.to_vec()) }); }
-                    Some(Ok(Message::Close(_))) | None => { self.shared.connected.store(false, Ordering::SeqCst); return Err((false, "peer closed connection".into())); }
-                    Some(Err(_)) => { self.shared.connected.store(false, Ordering::SeqCst); return Err((false, "receive failed".into())); }
+                    Some(Ok(Message::Text(text))) => { if text.len() > MAX_MESSAGE { return Err((FailureKind::Transient, "message exceeded limit".into())); } self.plugin.queue.push_websocket(Delivery::Message { conn: self.id, generation, message: wit::Message::Text(text.to_string()) }); }
+                    Some(Ok(Message::Binary(bytes))) => { if bytes.len() > MAX_MESSAGE { return Err((FailureKind::Transient, "message exceeded limit".into())); } self.plugin.queue.push_websocket(Delivery::Message { conn: self.id, generation, message: wit::Message::Binary(bytes.to_vec()) }); }
+                    Some(Ok(Message::Close(_))) | None => { self.shared.connected.store(false, Ordering::SeqCst); return Err((FailureKind::Transient, "peer closed connection".into())); }
+                    Some(Err(_)) => { self.shared.connected.store(false, Ordering::SeqCst); return Err((FailureKind::Transient, "receive failed".into())); }
                     _ => {}
                 }
             }
@@ -693,12 +902,18 @@ fn check_url(raw: &str, t: &WsTarget) -> Result<(), HostError> {
     let port = u
         .port_or_known_default()
         .unwrap_or(if t.tls { 443 } else { 80 });
-    if !u
-        .host_str()
-        .unwrap_or_default()
-        .eq_ignore_ascii_case(&t.host)
-        || port != t.port
-    {
+    let url_host = match u.host() {
+        Some(url::Host::Domain(host)) => host.trim_end_matches('.').to_ascii_lowercase(),
+        Some(url::Host::Ipv4(ip)) => ip.to_string(),
+        Some(url::Host::Ipv6(ip)) => ip.to_string(),
+        None => String::new(),
+    };
+    let grant_host = t
+        .host
+        .trim_matches(['[', ']'])
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if url_host != grant_host || port != t.port {
         return Err(HostError::NotPermitted(
             "URL host or port differs from the named grant".into(),
         ));

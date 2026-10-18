@@ -165,7 +165,7 @@ fn endpoint_and_header_validation_rejects_authority_changes() {
         host: "example.com".into(),
         port: 443,
         tls: true,
-        local: false,
+        reach: Reach::Internet,
         loopback: false,
     };
     assert!(check_url("wss://example.com/path?q=1", &target).is_ok());
@@ -197,7 +197,7 @@ fn address_policy_rejects_loopback_metadata_and_addresses_outside_grant_kind() {
         host: "stream.example.com".into(),
         port: 443,
         tls: true,
-        local: false,
+        reach: Reach::Internet,
         loopback: false,
     };
     for ip in ["127.0.0.1", "::1", "169.254.169.254", "fd00:ec2::254"] {
@@ -210,7 +210,7 @@ fn address_policy_rejects_loopback_metadata_and_addresses_outside_grant_kind() {
         host: "192.168.1.50".into(),
         port: 80,
         tls: false,
-        local: true,
+        reach: Reach::Home,
         loopback: false,
     };
     assert!(local.allows("192.168.1.50".parse().unwrap()).is_ok());

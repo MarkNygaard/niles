@@ -423,8 +423,7 @@ impl Worker {
         };
         let mut policy = HttpPolicy::new(&manifest.permissions, text);
         let mut mqtt = MqttPolicy::new(&manifest.permissions, text);
-        let ws =
-            crate::websocket::WsPolicy::new(&manifest.permissions, &settings, self.house.loopback);
+        let ws = crate::websocket::WsPolicy::new(manifest, &settings, self.house.loopback);
         if self.house.loopback {
             policy = policy.allowing_loopback();
             mqtt = mqtt.allowing_loopback();
@@ -814,14 +813,9 @@ impl Worker {
         else {
             return;
         };
-        if connection
-            .shared
-            .generation
-            .load(std::sync::atomic::Ordering::SeqCst)
-            != delivery.generation()
-        {
-            return;
-        }
+        // Inbox rejects stale arrivals when enqueuing; queued older generations
+        // must still be observed before the reconnect boundary.
+        let _ = connection;
         match delivery {
             crate::websocket::Delivery::Message {
                 conn,

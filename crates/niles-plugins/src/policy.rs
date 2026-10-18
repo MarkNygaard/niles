@@ -40,7 +40,7 @@ pub(crate) fn ws_address_allowed(ip: IpAddr, local: bool, loopback: bool) -> Res
     Ok(())
 }
 
-pub(crate) fn is_private_for_ws(ip: IpAddr) -> bool {
+pub(crate) fn is_local_network_address(ip: IpAddr) -> bool {
     is_local(canonical(ip))
 }
 
@@ -293,7 +293,7 @@ fn parse_local(entry: &str) -> Result<Local, String> {
 /// The host in what the household typed into a `setting:` address: an
 /// IP or a host name, perhaps with a scheme, a port or a path they pasted
 /// along with it.
-fn setting_host(value: &str) -> &str {
+pub(crate) fn setting_host(value: &str) -> &str {
     let value = value.trim();
     let rest = value.split_once("://").map_or(value, |(_, rest)| rest);
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
