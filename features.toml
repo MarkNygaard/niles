@@ -761,7 +761,7 @@ since_pr = 442
 [[feature]]
 id = "artifacts-edits"
 category = "runtime.assistant"
-summary = "Small changes to a saved item or its page made in the chat as edits; a big one finishes in the background"
+summary = "Small changes to a saved item or its page made in the chat as edits; big or slow ones finish in the background"
 phrasings = ["make the headings on the Thailand page green", "move the ferry to Koh Tao to 9:30", "make our trip a week longer"]
 since_pr = 474
 

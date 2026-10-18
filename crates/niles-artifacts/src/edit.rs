@@ -224,26 +224,17 @@ fn apply(content: &mut Value, n: usize, op: &Op) -> Result<()> {
         },
         Value::Array(list) => match op {
             Op::Set { path, value } => {
-                let i = element(n, path, &last, &shown, list.len())?;
+                let i = element(n, path, &last, &shown, list.len(), false)?;
                 list[i] = value.clone();
                 Ok(())
             }
             Op::Insert { path, value } => {
-                let i = match last.as_str() {
-                    "-" => list.len(),
-                    _ => element(n, path, &last, &shown, list.len())?,
-                };
-                if i > list.len() {
-                    return Err(bad(format!(
-                        "{path} is past the end of a list of {}; insert adds an entry",
-                        list.len()
-                    )));
-                }
+                let i = element(n, path, &last, &shown, list.len(), true)?;
                 list.insert(i, value.clone());
                 Ok(())
             }
             Op::Remove { path } => {
-                let i = element(n, path, &last, &shown, list.len())?;
+                let i = element(n, path, &last, &shown, list.len(), false)?;
                 list.remove(i);
                 Ok(())
             }
@@ -253,9 +244,21 @@ fn apply(content: &mut Value, n: usize, op: &Op) -> Result<()> {
 }
 
 /// The index `last` names in a list of `len`, or why it does not.
-fn element(n: usize, path: &str, last: &str, shown: &str, len: usize) -> Result<usize> {
+/// `at_end` is for insert, which may put an entry just past the last
+/// one; `-` names that spot.
+fn element(
+    n: usize,
+    path: &str,
+    last: &str,
+    shown: &str,
+    len: usize,
+    at_end: bool,
+) -> Result<usize> {
     let bad = |reason: String| invalid(format!("edit {n}: {reason}"));
     if last == "-" {
+        if at_end {
+            return Ok(len);
+        }
         return Err(bad("- is the end of a list, for insert".to_string()));
     }
     let Some(i) = index(last) else {
@@ -263,9 +266,11 @@ fn element(n: usize, path: &str, last: &str, shown: &str, len: usize) -> Result<
             "{last} is not an index into the list at {shown}"
         )));
     };
-    if i >= len {
+    let past = if at_end { i > len } else { i >= len };
+    if past {
         return Err(bad(format!(
-            "{path} is past the end of a list of {len}; insert adds an entry"
+            "{path} is past the end of a list of {len}{}",
+            if at_end { "" } else { "; insert adds an entry" }
         )));
     }
     Ok(i)
@@ -387,6 +392,25 @@ mod tests {
         assert_eq!(edited["list"], json!(["first", "b", "c", "last"]));
         assert_eq!(edited["obj"], json!({ "k": 1, "new": 2 }));
         assert_eq!(trip["a"][1]["t"], "y", "the original is untouched");
+    }
+
+    #[test]
+    fn an_insert_at_the_end_of_a_list_appends_and_past_it_is_refused() {
+        let list = || json!({ "list": ["a", "b"] });
+        let edited = content(
+            "trip",
+            &list(),
+            &json!([{ "op": "insert", "path": "/list/2", "value": "c" }]),
+        )
+        .unwrap();
+        assert_eq!(edited["list"], json!(["a", "b", "c"]));
+        let e = content(
+            "trip",
+            &list(),
+            &json!([{ "op": "insert", "path": "/list/3", "value": "c" }]),
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("past the end of a list of 2"), "{e}");
     }
 
     #[test]
