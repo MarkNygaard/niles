@@ -10,7 +10,7 @@ word, because plugins already built depend on them: the WIT package is
 `integration.wasm`. For how a household installs and manages one, see
 [Add-ons and accounts](/docs/using/add-ons#add-ons-from-github).
 
-> **v0.3 of the interface, built.** Niles 0.2.0 runs plugins (the sandbox,
+> **v0.4 of the interface, built.** Niles 0.2.0 runs plugins (the sandbox,
 > every host interface, devices, tools, timers, events, pages, MQTT, and from
 > Niles 0.3.0 accounts and webhooks) and installs
 > them: **Add-on from GitHub** with its approval screen, update checks, updates
@@ -22,8 +22,8 @@ word, because plugins already built depend on them: the WIT package is
 > `niles plugin dev --live`, which would run a plugin on a running Niles, and
 > `--http`, which would serve its webhook locally. The interface
 > ([`schemas/niles-integration.wit`](https://github.com/MarkNygaard/niles/blob/main/schemas/niles-integration.wit)) is
-> v0.3: v0.1 plus MQTT (0.2), the house's time zone and lights kept out of
-> their room's (0.2.1), and connecting accounts and webhooks (0.3). Niles still
+> v0.4: v0.1 plus MQTT (0.2), the house's time zone and lights kept out of
+> their room's (0.2.1), connecting accounts and webhooks (0.3), and WebSockets (0.4). Niles still
 > runs plugins built for 0.2 and 0.1. See
 > [versioning](/docs/writing-add-ons/publishing#interface-versions) for what may change.
 
@@ -46,7 +46,7 @@ installs it by pasting your repo's URL into the app.
 - **WIT** (WebAssembly Interface Type) is the language those declarations are
   written in. Niles's is one file,
   [`niles-integration.wit`](https://github.com/MarkNygaard/niles/blob/main/schemas/niles-integration.wit): package
-  `niles:integration@0.3.0`, world `plugin`. A *world* is the full contract,
+  `niles:integration@0.4.0`, world `plugin`. A *world* is the full contract,
   what you import and what you export. You do not write WIT; you read it, and a
   bindings generator turns it into types and functions in your language.
 - **`cargo-component`** and **`wit-bindgen`** are the Rust tools that do that
@@ -82,8 +82,8 @@ installs it by pasting your repo's URL into the app.
 A plugin runs in a sandbox. It cannot read Niles's database, other
 add-ons' passwords, conversations, memory or the people in the house. It
 has no filesystem, no environment variables and no sockets; the only network
-access is HTTP to the hosts your manifest declares, and MQTT to the brokers it
-names. It cannot put HTML or
+access is HTTP to the hosts your manifest declares, MQTT to the brokers it
+names, and WebSockets to the endpoints it names. It cannot put HTML or
 script into the app. See [permissions](/docs/writing-add-ons/permissions).
 
 ## Where it shows up
@@ -122,13 +122,14 @@ hides and moves them in Settings → Menu like the built-in ones. People find
 | Speak through the satellites | `notify.say` | `notify = true` or `"urgent"` | [host API](/docs/writing-add-ons/host-api#notify) |
 | React to other devices or presence | `events.subscribe` → `on-event` | `events = [...]` | [host API](/docs/writing-add-ons/host-api#events) |
 | Talk to an MQTT device or broker | `mqtt.connect`, `subscribe`, `publish` → `on-mqtt-message`, `on-mqtt-status` | `mqtt = [{ name, host, tls }]` (0.2) | [MQTT](/docs/writing-add-ons/mqtt) |
+| Talk to a WebSocket endpoint | `websocket.connect`, `send`, `close` → `on-websocket-message`, `on-websocket-status` | `websocket = [{ name, host, tls }]` (0.4) | [WebSockets](/docs/writing-add-ons/websocket) |
 | Connect an account through its sign-in page | exports `authorize-url`, `on-callback` | `callback = true` (0.3) | [accounts](/docs/writing-add-ons/accounts) |
 | Keep a token you refreshed, encrypted | `secrets.get`, `set`, `delete` | none (0.3) | [host API](/docs/writing-add-ons/host-api#secrets) |
 | Be called by a service that pushes | `inbound.hook-url` → export `on-webhook` | `webhook = true` (0.3) | [accounts](/docs/writing-add-ons/accounts#the-webhook) |
 | Log | `log.log` | none | [host API](/docs/writing-add-ons/host-api#log) |
 
-Not yet: raw TCP or UDP, WebSockets, and a page that runs your own HTML.
-See [host API](/docs/writing-add-ons/host-api#coming-later).
+Raw TCP or UDP and a page that runs your own HTML are not provided.
+See [host API](/docs/writing-add-ons/host-api#outside-the-host-api).
 
 ## The guide
 
@@ -139,10 +140,11 @@ See [host API](/docs/writing-add-ons/host-api#coming-later).
 5. [Tools](/docs/writing-add-ons/tools): designing tools the AI uses well
 6. [Pages and widgets](/docs/writing-add-ons/ui): the declarative UI
 7. [MQTT](/docs/writing-add-ons/mqtt): brokers, `trust-device` certificates, a printer as the example
-8. [Accounts and webhooks](/docs/writing-add-ons/accounts): signing in to a service, keeping its tokens, being called by it
-9. [Permissions](/docs/writing-add-ons/permissions): what each one allows and how the household sees it
-10. [Publishing](/docs/writing-add-ons/publishing): release layout, the add-on library, versioning, updates
-11. [Worked example: spot prices](/docs/writing-add-ons/example-spotprice): a complete plugin in Rust,
+8. [WebSockets](/docs/writing-add-ons/websocket): a connection Niles keeps open, its lifecycle and limits
+9. [Accounts and webhooks](/docs/writing-add-ons/accounts): signing in to a service, keeping its tokens, being called by it
+10. [Permissions](/docs/writing-add-ons/permissions): what each one allows and how the household sees it
+11. [Publishing](/docs/writing-add-ons/publishing): release layout, the add-on library, versioning, updates
+12. [Worked example: spot prices](/docs/writing-add-ons/example-spotprice): a complete plugin in Rust,
    with the same tool in JavaScript and Python
 
 Why plugins are WebAssembly components, and what the sandbox does and does

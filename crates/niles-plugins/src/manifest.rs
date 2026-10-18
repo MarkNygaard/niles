@@ -15,7 +15,7 @@ use std::collections::HashSet;
 pub const NILES_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The `interface` versions this Niles runs, oldest first.
-pub const INTERFACES: &[&str] = &["0.1", "0.2", "0.3"];
+pub const INTERFACES: &[&str] = &["0.1", "0.2", "0.3", "0.4"];
 
 /// Memory a plugin gets unless its manifest asks for more.
 pub const DEFAULT_MEMORY_MB: u32 = 64;
@@ -93,6 +93,20 @@ pub struct Permissions {
     /// A secret address the internet may call, from interface 0.3.
     #[serde(default)]
     pub webhook: bool,
+    /// Named WebSocket endpoints. Introduced in interface 0.4.
+    #[serde(default)]
+    pub websocket: Vec<WebSocketGrant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebSocketGrant {
+    pub name: String,
+    pub host: String,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub tls: bool,
 }
 
 /// One broker a plugin may connect to.
@@ -484,6 +498,7 @@ impl Manifest {
             out.push("pages and widgets need ui = true in [permissions]".into());
         }
         self.check_mqtt(out);
+        self.check_websocket(out);
         let older = matches!(self.interface.as_str(), "0.1" | "0.2");
         for (asked, name) in [(p.callback, "callback"), (p.webhook, "webhook")] {
             if asked && older {
@@ -539,6 +554,75 @@ impl Manifest {
                     }
                 }
             }
+        }
+    }
+
+    fn check_websocket(&self, out: &mut Vec<String>) {
+        let mut names = HashSet::new();
+        for grant in &self.permissions.websocket {
+            if !is_identifier(&grant.name) || grant.name.len() > 32 {
+                out.push(format!(
+                    "websocket: grant name {:?} must be [a-z0-9_]+, at most 32 characters",
+                    grant.name
+                ));
+            }
+            if !names.insert(grant.name.as_str()) {
+                out.push(format!(
+                    "websocket: grant name {:?} is used twice",
+                    grant.name
+                ));
+            }
+            if grant.port == Some(0) {
+                out.push(format!("websocket: grant {:?} has port 0", grant.name));
+            }
+            match grant.host.strip_prefix("setting:") {
+                Some(key) => match self.setting(key) {
+                    Some(s) if s.kind == SettingKind::String => {}
+                    Some(_) => out.push(format!(
+                        "websocket: setting:{key} must name a string setting"
+                    )),
+                    None => out.push(format!(
+                        "websocket: setting:{key} names no declared setting"
+                    )),
+                },
+                None => {
+                    if let Err(why) = crate::policy::check_mqtt_host(
+                        &grant.host,
+                        if grant.tls {
+                            TlsMode::Verify
+                        } else {
+                            TlsMode::Plain
+                        },
+                    ) {
+                        out.push(format!("websocket: {why}"));
+                    }
+                    if !grant.tls {
+                        if let Ok(ip) = grant
+                            .host
+                            .trim_matches(['[', ']'])
+                            .parse::<std::net::IpAddr>()
+                        {
+                            if !crate::policy::is_local_network_address(ip) {
+                                out.push(
+                                    "websocket: plaintext grants must be on local_network".into(),
+                                );
+                            }
+                        } else if !self.permissions.local_network.iter().any(|entry| {
+                            entry
+                                .trim_end_matches('.')
+                                .eq_ignore_ascii_case(grant.host.trim_end_matches('.'))
+                        }) {
+                            out.push(
+                                "websocket: plaintext host must be declared in local_network"
+                                    .into(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        if !self.permissions.websocket.is_empty() && self.interface != "0.4" {
+            out.push("websocket: WebSockets are in interface 0.4; set interface = \"0.4\" and build against its WIT".into());
         }
     }
 
@@ -910,7 +994,7 @@ room = "setting:room"
             replacing(r#"min_niles = "0.2.0""#, r#"min_niles = "9.0.0""#)[0]
                 .contains("needs Niles")
         );
-        assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.4""#)[0].contains("interface"));
+        assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.4""#).is_empty());
         assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.2""#).is_empty());
         assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.3""#).is_empty());
     }

@@ -3,10 +3,11 @@ title: "Host API"
 description: "Every import and export of the plugin interface, with examples."
 ---
 
-> Interface 0.3: 0.1 plus [`mqtt`](#mqtt) and its two exports (0.2.0),
+> Interface 0.4: 0.1 plus [`mqtt`](#mqtt) and its two exports (0.2.0),
 > `config.time-zone` and `devices.set-room-light` (0.2.1), and
 > [`secrets`](#secrets), [`inbound`](#inbound) and three exports for
-> [accounts and webhooks](/docs/writing-add-ons/accounts) (0.3). The examples compile against
+> [accounts and webhooks](/docs/writing-add-ons/accounts) (0.3), and
+> [WebSockets](/docs/writing-add-ons/websocket) (0.4). The examples compile against
 > [`niles-integration.wit`](https://github.com/MarkNygaard/niles/blob/main/schemas/niles-integration.wit) with
 > `wit-bindgen` 0.63; the WIT file is the authority. A plugin built for 0.2
 > has everything here but `secrets`, `inbound` and their exports, and one
@@ -107,6 +108,11 @@ New in 0.3: connecting an account through a service's sign-in page, and
 answering a webhook. A plugin that does neither still exports all three:
 `authorize-url` returns an `err`, and `on-webhook` a `404`. See
 [accounts and webhooks](/docs/writing-add-ons/accounts).
+
+### WebSocket callbacks
+
+Interface 0.4 exports `on-websocket-message` and `on-websocket-status`.
+See [WebSockets](/docs/writing-add-ons/websocket) for the complete API and lifecycle.
 
 ### `stop()`
 
@@ -419,16 +425,7 @@ provides them, empty. What works: the wall clock and monotonic clock
 What does not: files (no directories exist), environment variables (none),
 sockets and DNS (refused), `std::process`, threads.
 
-## Coming later
+## Outside the host API
 
-Not yet:
-
-- **WebSockets**, held by Niles, which reconnects them and delivers each
-  message to a new export, for devices and services that push.
-- **Local TCP and UDP**: one request, one reply, to an address under
-  `local_network`, for devices that speak something other than HTTP.
-- **`wasi:http/outgoing-handler`**, so that `fetch` and other native clients
-  work under the same checks.
-- **A page of your own**: your static HTML in a sandboxed iframe, under a
-  separate permission.
-- **Reading other devices' state on demand**, not only through events.
+Raw TCP and UDP, `wasi:http/outgoing-handler`, plugin-owned HTML pages, and
+on-demand reads of other devices' state are not provided by this host API.

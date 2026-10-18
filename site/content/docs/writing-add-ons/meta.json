@@ -10,6 +10,7 @@
     "tools",
     "ui",
     "mqtt",
+    "websocket",
     "accounts",
     "permissions",
     "publishing",

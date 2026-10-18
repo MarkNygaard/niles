@@ -18,7 +18,7 @@
 
 use crate::bindings::niles::integration::types::{DeviceState, Event, ToolDef};
 use crate::bindings::niles::integration::ui::{ActionResult, ActionValue, RenderContext, UiTree};
-use crate::bindings::{inbound, mqtt, v0_1, v0_2, v0_3};
+use crate::bindings::{inbound, mqtt, v0_1, v0_2, v0_3, v0_4};
 use crate::host::HostState;
 use crate::inbound::HookAnswer;
 use crate::log::Level;
@@ -70,7 +70,9 @@ pub(crate) fn interface_of(component: &Component, engine: &Engine) -> Result<&'s
         .exports(engine)
         .map(|(name, _)| name.to_string())
         .collect();
-    if exports.contains("on-webhook") {
+    if exports.contains("on-websocket-message") || exports.contains("on-websocket-status") {
+        found.insert("0.4");
+    } else if exports.contains("on-webhook") {
         found.insert("0.3");
     } else if exports.contains("on-mqtt-message") {
         found.insert("0.2");
@@ -110,7 +112,8 @@ pub(crate) fn prepare(
     Ok(match built {
         "0.1" => Pre::V1(v0_1::PluginPre::new(pre).map_err(missing)?),
         "0.2" => Pre::V2(v0_2::PluginPre::new(pre).map_err(missing)?),
-        _ => Pre::V3(v0_3::PluginPre::new(pre).map_err(missing)?),
+        "0.3" => Pre::V3(v0_3::PluginPre::new(pre).map_err(missing)?),
+        _ => Pre::V4(v0_4::PluginPre::new(pre).map_err(missing)?),
     })
 }
 
@@ -120,6 +123,7 @@ pub(crate) enum Pre {
     V1(v0_1::PluginPre<HostState>),
     V2(v0_2::PluginPre<HostState>),
     V3(v0_3::PluginPre<HostState>),
+    V4(v0_4::PluginPre<HostState>),
 }
 
 impl Pre {
@@ -128,6 +132,7 @@ impl Pre {
             Pre::V1(pre) => Bindings::V1(pre.instantiate(store)?),
             Pre::V2(pre) => Bindings::V2(pre.instantiate(store)?),
             Pre::V3(pre) => Bindings::V3(pre.instantiate(store)?),
+            Pre::V4(pre) => Bindings::V4(pre.instantiate(store)?),
         })
     }
 }
@@ -137,6 +142,7 @@ pub(crate) enum Bindings {
     V1(v0_1::Plugin),
     V2(v0_2::Plugin),
     V3(v0_3::Plugin),
+    V4(v0_4::Plugin),
 }
 
 /// The same call on any world's bindings.
@@ -146,6 +152,7 @@ macro_rules! either {
             Bindings::V1($b) => $call,
             Bindings::V2($b) => $call,
             Bindings::V3($b) => $call,
+            Bindings::V4($b) => $call,
         }
     };
 }
@@ -223,6 +230,7 @@ impl Bindings {
             Bindings::V1(_) => Ok(()),
             Bindings::V2(b) => b.call_on_mqtt_message(s, conn, topic, payload),
             Bindings::V3(b) => b.call_on_mqtt_message(s, conn, topic, payload),
+            Bindings::V4(b) => b.call_on_mqtt_message(s, conn, topic, payload),
         }
     }
 
@@ -236,6 +244,7 @@ impl Bindings {
             Bindings::V1(_) => Ok(()),
             Bindings::V2(b) => b.call_on_mqtt_status(s, conn, status),
             Bindings::V3(b) => b.call_on_mqtt_status(s, conn, status),
+            Bindings::V4(b) => b.call_on_mqtt_status(s, conn, status),
         }
     }
 
@@ -244,7 +253,7 @@ impl Bindings {
     /// they are.
     fn older(&self) -> Option<String> {
         match self {
-            Bindings::V3(_) => None,
+            Bindings::V3(_) | Bindings::V4(_) => None,
             _ => Some("it is built for an interface without accounts or webhooks".into()),
         }
     }
@@ -257,6 +266,7 @@ impl Bindings {
     ) -> Called<Result<String, String>> {
         match self {
             Bindings::V3(b) => b.call_authorize_url(s, callback_url, state),
+            Bindings::V4(b) => b.call_authorize_url(s, callback_url, state),
             _ => Ok(Err(self.older().unwrap_or_default())),
         }
     }
@@ -270,6 +280,7 @@ impl Bindings {
     ) -> Called<Result<String, String>> {
         match self {
             Bindings::V3(b) => b.call_on_callback(s, callback_url, query, person),
+            Bindings::V4(b) => b.call_on_callback(s, callback_url, query, person),
             _ => Ok(Err(self.older().unwrap_or_default())),
         }
     }
@@ -281,6 +292,7 @@ impl Bindings {
     ) -> Called<inbound::InboundResponse> {
         match self {
             Bindings::V3(b) => b.call_on_webhook(s, request),
+            Bindings::V4(b) => b.call_on_webhook(s, request),
             _ => Ok(inbound::InboundResponse {
                 status: 404,
                 content_type: None,
@@ -375,6 +387,7 @@ pub(crate) fn run(
             }
             Next::Job(job) => worker.handle(job),
             Next::Mqtt(delivery) => worker.deliver(delivery),
+            Next::WebSocket(delivery) => worker.deliver_websocket(delivery),
         }
     }
 }
@@ -410,6 +423,7 @@ impl Worker {
         };
         let mut policy = HttpPolicy::new(&manifest.permissions, text);
         let mut mqtt = MqttPolicy::new(&manifest.permissions, text);
+        let ws = crate::websocket::WsPolicy::new(manifest, &settings, self.house.loopback);
         if self.house.loopback {
             policy = policy.allowing_loopback();
             mqtt = mqtt.allowing_loopback();
@@ -420,6 +434,7 @@ impl Worker {
             settings,
             policy,
             mqtt,
+            ws,
         );
         let mut store = Store::new(&self.engine, state);
         store.limiter(|state| &mut state.memory);
@@ -781,6 +796,45 @@ impl Worker {
             Delivery::Status { conn, status } => {
                 self.call("on-mqtt-status", self.limits.call, |b, s| {
                     b.call_on_mqtt_status(s, conn, &status)
+                });
+            }
+        }
+    }
+
+    fn deliver_websocket(&mut self, delivery: crate::websocket::Delivery) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Some(connection) = live
+            .store
+            .data()
+            .websocket_connections
+            .get(&delivery.conn())
+        else {
+            return;
+        };
+        // Inbox rejects stale arrivals when enqueuing; queued older generations
+        // must still be observed before the reconnect boundary.
+        let _ = connection;
+        match delivery {
+            crate::websocket::Delivery::Message {
+                conn,
+                generation: _,
+                message,
+            } => {
+                self.call("on-websocket-message", self.limits.call, |b, s| match b {
+                    Bindings::V4(v) => v.call_on_websocket_message(s, conn, &message),
+                    _ => Ok(()),
+                });
+            }
+            crate::websocket::Delivery::Status {
+                conn,
+                generation: _,
+                status,
+            } => {
+                self.call("on-websocket-status", self.limits.call, |b, s| match b {
+                    Bindings::V4(v) => v.call_on_websocket_status(s, conn, &status),
+                    _ => Ok(()),
                 });
             }
         }

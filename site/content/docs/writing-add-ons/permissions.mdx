@@ -34,7 +34,7 @@ Without asking, every plugin can log, read its own settings and secrets, keep
 No plugin, whatever it asks for, can read Niles's database, other
 add-ons' secrets, conversations, memory, voice data or the people in the
 house; open files, sockets or environment variables; or run code in the app.
-Its network is HTTP and MQTT, to what the manifest names.
+Its network is HTTP, MQTT and WebSockets, to what the manifest names.
 The approval screen always ends with that sentence: "It cannot see your
 conversations, the people in your house, other add-ons' passwords or
 Niles's database."
@@ -112,6 +112,18 @@ Shown as: **"Connect to the MQTT broker at the address you enter under Printer
 address, on your home network, trusting the certificate it shows the first
 time"**, **"Connect to the MQTT broker at 192.168.1.20, on your home network,
 unencrypted"**, **"Connect to the MQTT broker at broker.example.com"**.
+
+### `websocket` (interface 0.4)
+
+Named outbound endpoints restricted to their declared host, port and TLS
+mode. A grant may use a declared string setting as its host. A plain `ws`
+grant stays on the home network. See [WebSockets](/docs/writing-add-ons/websocket)
+for declaration and behavior.
+
+Shown as: **"Keep a connection open to stream.example.com, port 443, and
+receive what it sends over a TLS connection with certificate verification"**,
+**"Keep a connection open to 192.168.1.50, port 80, and receive what it sends
+over an unencrypted connection on your home network"**.
 
 ### `callback`
 
