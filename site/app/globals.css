@@ -87,7 +87,16 @@
      `min-height: 0` is load bearing: a grid item defaults to `min-height: auto`
      and refuses to shrink below its content, so without it this grows to fit
      and the page scrolls after all -- which is what the fixed height was for. */
+  /* `position: relative` is load bearing too. Without it, absolutely
+     positioned things in the docs (fumadocs' sr-only labels) take the
+     `(app)` wrapper as their containing block, escape this box and stretch
+     the page past the viewport. The window then scrolls after all, and
+     Next's scroll-into-view on a link from a page scrolled down moves it by
+     the header's height, which the reader can't scroll back: the wheel goes
+     to this box, already at its top, and `overscroll-behavior` keeps it
+     there. */
   #nd-docs-layout {
+    position: relative;
     height: var(--fd-docs-height);
     min-height: 0;
     overflow-y: auto;
