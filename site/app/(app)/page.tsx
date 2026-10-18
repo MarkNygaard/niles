@@ -3,6 +3,7 @@ import Link from "next/link"
 
 import { siteConfig } from "@/lib/config"
 import { CopyButton } from "@/components/copy-button"
+import { Screenshot } from "@/components/screenshot"
 import { SiteFooter } from "@/components/site-footer"
 
 const tagline = "A self-hosted home assistant you talk to"
@@ -219,6 +220,13 @@ export default function HomePage() {
             View source
           </a>
         </div>
+
+        <Screenshot
+          src="/screenshots/dashboard.webp"
+          alt={`${siteConfig.name}'s dashboard: a card for each room with its temperature, humidity and lights, a scene button and "Turn everything off".`}
+          priority
+          className="mt-12"
+        />
       </section>
 
       <section className="mx-auto w-full max-w-6xl px-6 pb-16">
@@ -278,6 +286,23 @@ export default function HomePage() {
           says how it is built, what leaves the house, and whether it fits
           yours.
         </p>
+      </section>
+
+      <section className="mx-auto w-full max-w-6xl px-6 pb-16">
+        <h2 className="text-2xl font-semibold tracking-tight">In the app</h2>
+        <p className="mt-3 max-w-2xl leading-relaxed text-muted-foreground">
+          What you say to a satellite is in your chat too, and you can type
+          there instead. Ask for a plan, a trip or a document and the assistant
+          writes it in the background and keeps it under Saved, with every
+          version.
+        </p>
+        <Screenshot
+          src="/screenshots/chat-and-saved.webp"
+          alt={`The chat, where a half-marathon training plan was asked for, beside ${siteConfig.name}'s panel open on Saved, where the plan is listed while it is written.`}
+          caption="A training plan asked for in the chat. On a computer the panel opens beside the chat, which stays live."
+          className="mt-8"
+        />
+
       </section>
 
       <section className="mx-auto w-full max-w-6xl px-6 pb-16">
