@@ -604,6 +604,8 @@ export interface PodcastVoices {
     is the retention date the app shows. */
 export interface EpisodeAudio {
   url: string;
+  /** The same recording, which the bucket answers as a file to save. */
+  download_url: string;
   expires_at: string;
   kept_until: string;
 }

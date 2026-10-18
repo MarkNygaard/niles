@@ -581,6 +581,8 @@ const FORGET_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
 #[derive(Debug, Serialize)]
 pub struct EpisodeAudio {
     pub url: String,
+    /// The same recording, answered by the bucket as a file to save.
+    pub download_url: String,
     /// When the address stops working, RFC 3339.
     pub expires_at: String,
     /// When the episode itself goes, RFC 3339: `created_at` + the
@@ -620,7 +622,10 @@ pub async fn audio(
     };
     let now = chrono::Utc::now();
     let valid_for = niles_podcasts::PLAY_FOR;
-    let url = bucket.presign_get(&niles_podcasts::episode_key(id), valid_for, now);
+    let key = niles_podcasts::episode_key(id);
+    let url = bucket.presign_get(&key, valid_for, now);
+    let download_url =
+        bucket.presign_download(&key, &episode_file_name(&artifact.title), valid_for, now);
     let expires_at = now + chrono::Duration::from_std(valid_for).unwrap_or(chrono::Duration::MAX);
     let kept_until = artifact.created_at + chrono::Duration::days(podcasts.keep_days.max(1) as i64);
     let mut response_headers = HeaderMap::new();
@@ -629,10 +634,24 @@ pub async fn audio(
         response_headers,
         Json(EpisodeAudio {
             url,
+            download_url,
             expires_at: expires_at.to_rfc3339(),
             kept_until: kept_until.to_rfc3339(),
         }),
     ))
+}
+
+/// The episode's file name when it is saved: its title, without what a
+/// file name can't hold, as the app names the files it makes.
+fn episode_file_name(title: &str) -> String {
+    let name: String = title
+        .chars()
+        .filter(|c| {
+            !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') && !c.is_control()
+        })
+        .collect();
+    let name = name.trim();
+    format!("{}.mp3", if name.is_empty() { "Episode" } else { name })
 }
 
 /// Delete a podcast's recording before its row. Refused while the
@@ -2516,6 +2535,15 @@ keep_days = 14
             "unexpected: {url}"
         );
         assert!(url.contains("X-Amz-Expires=14400"), "unexpected: {url}");
+        assert!(
+            !url.contains("response-content-disposition"),
+            "the player's plays: {url}"
+        );
+        let download = body["download_url"].as_str().expect("a download url");
+        assert!(
+            download.contains("response-content-disposition=attachment%3B%20filename%3D%22"),
+            "the download's saves: {download}"
+        );
         for key in ["expires_at", "kept_until"] {
             let at = body[key].as_str().expect("a timestamp");
             chrono::DateTime::parse_from_rfc3339(at).expect("RFC 3339");

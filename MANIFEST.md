@@ -171,6 +171,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-approvals-panel` | Approvals tab in Niles's panel: what needs review, folded with Details, answered there; a count on the tab | [#455](https://github.com/MarkNygaard/niles/pull/455) |
 | `ui-artifact-page-frame` | An artifact's page in a sealed frame, no network and no Niles: a Page / Built-in switch, links opened on a yes | [#440](https://github.com/MarkNygaard/niles/pull/440) |
 | `ui-artifact-pictures` | Pictures drawn from Niles's own copies with their credit; a picture by its web address is never fetched | [#442](https://github.com/MarkNygaard/niles/pull/442) |
+| `ui-artifact-share-menu` | A share menu on an open artifact: Share, Copy, Word for documents, plans and trips, Markdown, a podcast's MP3 | [#472](https://github.com/MarkNygaard/niles/pull/472) |
 | `ui-artifact-sharing` | Share from an open artifact: None, View or Edit for each person; Saved marks what is shared and who changed it last | [#452](https://github.com/MarkNygaard/niles/pull/452) |
 | `ui-push-nudge` | While a document is being written, one tap on "Notify me when it's done" turns notifications on for this device | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `ui-saved-artifacts` | Saved tab: pin, archive, rename, tick checklists, restore versions; a card with a preview under the reply | [#429](https://github.com/MarkNygaard/niles/pull/429) |

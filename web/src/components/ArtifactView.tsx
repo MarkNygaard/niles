@@ -2,15 +2,13 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
-  Check,
-  Copy,
   History,
   LoaderCircle,
   PanelTopClose,
   RotateCcw,
   TriangleAlert,
-  Users,
 } from "lucide-react";
+import { ArtifactMenu } from "@/components/ArtifactMenu";
 import { SandboxedPage } from "@/components/SandboxedPage";
 import { ShareDialog } from "@/components/ShareDialog";
 import { EpisodePlayer } from "@/components/EpisodePlayer";
@@ -75,7 +73,8 @@ export interface ArtifactViewProps {
 /**
  * One artifact, open in Niles's panel: its kind's view, or its page in
  * a sealed frame when it has one, the versions it has been through,
- * whether its person is told, and a copy of it.
+ * whether its person is told, and behind the share symbol in its
+ * corner, sharing it, a copy of it and its downloads.
  *
  * Shared with them to read, it is only that: no ticks, no marks, no
  * saves from its page, no restoring. Its owner alone shares it, and
@@ -86,7 +85,6 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
   const detail = useQuery({ queryKey: artifactKey(id), queryFn: () => api.artifact(id) });
   const [versions, setVersions] = useState(false);
   const [reading, setReading] = useState<number>();
-  const [copied, setCopied] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [look, setLook] = useState<Look>("page");
   // Why the page shown under this key was swapped for the built-in
@@ -170,11 +168,17 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
       {back}
       <div className="flex items-start gap-2">
         <kind.icon aria-hidden className="text-muted-foreground mt-1 size-4 shrink-0" />
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <h3 className="font-heading text-lg leading-snug font-medium break-words">{a.title}</h3>
           {a.summary && <p className="text-muted-foreground text-sm">{a.summary}</p>}
           {whose && <p className="text-muted-foreground text-xs">{whose}</p>}
         </div>
+        <ArtifactMenu
+          artifact={a}
+          content={showing}
+          reading={reading}
+          onShare={mine ? () => setSharing(true) : undefined}
+        />
       </div>
 
       {a.status === "working" && (
@@ -278,12 +282,6 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
           </label>
         )}
         <div className="flex flex-wrap gap-2">
-          {mine && (
-            <Button size="sm" variant="outline" onClick={() => setSharing(true)}>
-              <Users />
-              Share
-            </Button>
-          )}
           <Button
             size="sm"
             variant="outline"
@@ -293,19 +291,6 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
             <History />
             Versions ({a.revisions.length})
           </Button>
-          {a.content !== null && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={async () => {
-                await navigator.clipboard?.writeText(kind.text(a.content));
-                setCopied(true);
-              }}
-            >
-              {copied ? <Check /> : <Copy />}
-              {copied ? "Copied" : "Copy"}
-            </Button>
-          )}
           {a.page_html && reading === undefined && editable && (
             <Button
               size="sm"

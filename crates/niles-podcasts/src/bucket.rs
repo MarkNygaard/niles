@@ -110,6 +110,34 @@ impl Bucket {
     /// A time-limited GET address for `key`; never logged, never the
     /// secret — the access key id in it is not one.
     pub fn presign_get(&self, key: &str, valid_for: Duration, now: DateTime<Utc>) -> String {
+        self.presign(key, valid_for, &[], now)
+    }
+
+    /// The same, but the bucket answers it as a download named
+    /// `file_name`: a browser saves it rather than playing it, which the
+    /// `download` attribute can't ask of another site's address.
+    pub fn presign_download(
+        &self,
+        key: &str,
+        file_name: &str,
+        valid_for: Duration,
+        now: DateTime<Utc>,
+    ) -> String {
+        self.presign(
+            key,
+            valid_for,
+            &[("response-content-disposition", &attachment(file_name))],
+            now,
+        )
+    }
+
+    fn presign(
+        &self,
+        key: &str,
+        valid_for: Duration,
+        extra: &[(&str, &str)],
+        now: DateTime<Utc>,
+    ) -> String {
         sigv4::presign(
             &self.creds(),
             "GET",
@@ -117,6 +145,7 @@ impl Bucket {
             &self.host,
             &self.uri(key),
             valid_for.as_secs().min(MOST_VALID),
+            extra,
             now,
         )
     }
@@ -326,9 +355,59 @@ impl Storage for Bucket {
     }
 }
 
+/// A `Content-Disposition` that saves the file as `file_name`: a plain
+/// ASCII `filename` for old browsers, and the exact name, UTF-8 and
+/// percent-encoded, in `filename*` (RFC 6266) for the rest.
+fn attachment(file_name: &str) -> String {
+    let plain: String = file_name
+        .chars()
+        .map(|c| match c {
+            '"' | '\\' => '_',
+            c if c.is_ascii_graphic() || c == ' ' => c,
+            _ => '_',
+        })
+        .collect();
+    let exact: String = file_name
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect();
+    format!("attachment; filename=\"{plain}\"; filename*=UTF-8''{exact}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_download_names_the_file_for_every_browser() {
+        assert_eq!(
+            attachment("Øresund \"bridge\".mp3"),
+            "attachment; filename=\"_resund _bridge_.mp3\"; \
+             filename*=UTF-8''%C3%98resund%20%22bridge%22.mp3"
+        );
+    }
+
+    #[test]
+    fn a_download_address_asks_the_bucket_to_save_it() {
+        let b = bucket("https://account.r2.cloudflarestorage.com");
+        let at = chrono::Utc::now();
+        let url = b.presign_download("e/7.mp3", "Bridge.mp3", Duration::from_secs(600), at);
+        assert!(
+            url.contains(
+                "response-content-disposition=attachment%3B%20filename%3D%22Bridge.mp3%22"
+            ),
+            "{url}"
+        );
+        assert!(
+            !b.presign_get("e/7.mp3", Duration::from_secs(600), at)
+                .contains("disposition")
+        );
+    }
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
