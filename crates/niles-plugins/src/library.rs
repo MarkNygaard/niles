@@ -3,8 +3,8 @@
 //!
 //! The library is one file, `index.json`, built by the registry repo
 //! [`MarkNygaard/niles-addons`](https://github.com/MarkNygaard/niles-addons)
-//! every six hours and on every merge, and served by GitHub Pages at
-//! [`INDEX_URL`]. The registry's builder needs no Niles logic: the file
+//! every six hours and on every merge, and served by GitHub Pages on the
+//! project's domain at [`INDEX_URL`]. The registry's builder needs no Niles logic: the file
 //! holds the repos in its `addons.toml` (Listed), every public repo with
 //! the GitHub topic `niles-addon` (Unreviewed), and repos taken off the
 //! list (removed, with the reason).
@@ -93,8 +93,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use url::Url;
 
-/// Where the registry's `index.json` is served.
-pub const INDEX_URL: &str = "https://marknygaard.github.io/niles-addons/index.json";
+/// Where the registry's `index.json` is served: GitHub Pages under the
+/// project's own domain, so the registry repo can move (to an
+/// organisation, say) without every Niles already out there losing it.
+pub const INDEX_URL: &str = "https://addons.getniles.app/index.json";
 /// The release asset whose download count is an add-on's install count.
 pub const MARKER: &str = "niles-installed";
 /// The marker is a few bytes; a bigger one is never downloaded.
