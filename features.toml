@@ -947,4 +947,4 @@ since_pr = 469
 id = "ui-artifact-share-menu"
 category = "ui.chat"
 summary = "A share menu on an open artifact: Share, Copy, Word for documents, plans and trips, Markdown, a podcast's MP3"
-since_pr = 9999
+since_pr = 472
