@@ -1,0 +1,114 @@
+---
+title: "Self-hosting"
+description: "What every Niles install needs, the two ways to run it, the first sign-in, the database and backups, upgrades, the ports and HTTPS."
+---
+
+Niles is one container and a Postgres database, run on a machine in your
+house. There are two ways to run it:
+
+- **[Docker Compose](/docs/self-hosting/docker-compose)** on one Linux
+  machine. Most households want this one.
+- **[Kubernetes](/docs/self-hosting/kubernetes)**, with the Kustomize
+  manifests in the repository, if you already run a cluster.
+
+This page covers what both have in common.
+
+## What every install needs
+
+- **A Linux machine or nodes with x86-64 CPUs.** The image,
+  `ghcr.io/marknygaard/niles`, is public and built for `linux/amd64` only.
+  No GPU is needed.
+- **Postgres.** Compose runs one beside Niles. On Kubernetes you bring
+  your own. Niles needs no extensions and creates its own tables.
+- **An MQTT broker and Zigbee2MQTT.** Niles reaches every Zigbee device
+  through them. See [Satellites and hardware](/docs/setting-up/satellites)
+  for the rest of what a house needs.
+- **An ElevenLabs API key** for hearing and **a Cerebras API key** for
+  thinking.
+- **Piper's HTTP server**, to speak the replies.
+
+Before its first start, Niles needs these from the environment:
+
+| Variable | What it is |
+|---|---|
+| `NILES_DATABASE_URL` | The Postgres connection string, such as `postgres://niles:password@db:5432/niles`. |
+| `NILES_SECRET_KEY` | 32 random bytes, base64 (`openssl rand -base64 32`). It seals every key typed into the app. |
+| `NILES_MQTT_USERNAME`, `NILES_MQTT_PASSWORD` | The broker's login. The broker's address goes in `niles.toml`. |
+| `ELEVENLABS_API_KEY`, `CEREBRAS_API_KEY` | Hearing and thinking. |
+
+Niles connects to the broker and builds its hearing and thinking clients
+before the app is up, which is why those four come from the environment.
+Every other setting and key is typed into the app and kept in Postgres.
+
+## The ports
+
+| Port | Direction | For |
+|---|---|---|
+| 8080 | Into Niles | The app, the API and `/healthz` |
+| 10300 | Into Niles | The satellites, which stream what they hear to it |
+| 10301 | From Niles to each satellite | Ringing timers and speaking announcements |
+
+Niles knows which room a satellite is in by the IP address it connects
+from, so the connection must reach Niles with that address intact. The
+Compose and Kubernetes pages say how. Each satellite's firmware is given
+the IP address of the machine or Service that answers on 10300.
+
+## The first sign-in
+
+A new Niles has signing in off, and the app is open to anyone who can
+reach it. Open it from the house network, at
+`http://<the machine's address>:8080`, and switch signing in on:
+
+1. Make a GitHub OAuth app on github.com under Settings → Developer
+   settings → OAuth Apps, with the callback URL
+   `https://<your niles host>/auth/github/callback`.
+2. Put its client ID and secret in the **Signing in** card under
+   **Settings → People**.
+3. Add the email address GitHub has verified for you to the list under it,
+   then press **Sign in with GitHub**.
+
+Signing in is on from then. Add the rest of the household the same way.
+[People and voices](/docs/using/people#who-can-sign-in) and
+[Security and privacy](/docs/using/security#signing-in) have the details.
+
+Then work through **Settings → Voice & AI**, whose checklist says what is
+still missing, and add each satellite under **Settings → Satellites**.
+
+## The database and backups
+
+Everything Niles keeps is in Postgres: settings, stored keys, rules,
+conversations, Saved items, voice prints and timers. Nothing else needs
+backing up. Dump it with `pg_dump`:
+
+```sh
+pg_dump -U niles niles > niles-backup.sql
+```
+
+The [Docker Compose](/docs/self-hosting/docker-compose#backing-up) page
+has the commands for its database container.
+
+Keep `NILES_SECRET_KEY` with the backups. A restored database is
+readable without it, but each key typed into the app has to be typed in
+again.
+
+## Upgrading
+
+An upgrade is a new image tag. The tags are `latest` (the newest release),
+each version (such as `0.4.0`) and `sha-<commit>`. Pin a version to choose
+when you upgrade. Niles creates the tables it needs by itself, so there is
+no migration step. The releases and what changed in
+each are on [GitHub](https://github.com/MarkNygaard/niles/releases).
+
+## HTTPS for phones
+
+Browsers send notifications only to a page served over HTTPS, so phone
+notifications and the app on an iPhone's Home Screen need Niles behind
+HTTPS. Put a reverse proxy with a certificate in front of port 8080, such
+as Caddy, Traefik, nginx or a tunnel, and have it send
+`X-Forwarded-Proto: https`. Niles then marks its session cookie secure.
+
+Niles does not need to be reachable from the internet for any of this.
+Notifications reach phones through Apple's, Google's or Mozilla's push
+service. If you do expose it, expose only 8080 and keep 10300 on the house
+network, because satellites don't sign in. See
+[If Niles can be reached from the internet](/docs/using/security#if-niles-can-be-reached-from-the-internet).

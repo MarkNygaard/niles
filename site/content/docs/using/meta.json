@@ -1,0 +1,18 @@
+{
+  "title": "Using Niles",
+  "defaultOpen": true,
+  "pages": [
+    "talking",
+    "lighting",
+    "chat",
+    "saved",
+    "approvals",
+    "automations",
+    "training",
+    "add-ons",
+    "people",
+    "notifications",
+    "podcasts",
+    "security"
+  ]
+}

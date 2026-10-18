@@ -1,197 +1,199 @@
-# Kubernetes Deployment
+# Kubernetes
 
-This directory contains a [Kustomize](https://kustomize.io/) base and overlays for deploying Niles to Kubernetes.
+This directory has a [Kustomize](https://kustomize.io/) base and two
+overlays, `dev` and `production`, for running Niles on Kubernetes. For one
+machine with Docker,
+[`deploy/compose`](https://github.com/MarkNygaard/niles/tree/main/deploy/compose)
+is simpler.
 
-## Prerequisites
+## What you need
 
-- A Kubernetes cluster (v1.28+)
-- `kubectl` configured to talk to your cluster
-- `kustomize` CLI installed (ships with `kubectl kustomize` or standalone)
-- Container image `ghcr.io/marknygaard/niles` available in your cluster (or build/push it first)
+- A Kubernetes cluster (1.28 or newer) with `linux/amd64` nodes. The image
+  `ghcr.io/marknygaard/niles` is public and built for x86-64 only.
+- `kubectl`. Kustomize is built in (`kubectl apply -k`).
+- **A Postgres database** the pod can reach. Bring your own: a Postgres
+  you already run, a managed one, or one from an operator such as
+  CloudNativePG. Niles needs a database and a role that owns it, and no
+  extensions. It creates its own tables on first use.
+- **An MQTT broker** that Zigbee2MQTT publishes to, with a login for Niles.
+- **An ElevenLabs API key** for hearing and **a Cerebras API key** for
+  thinking.
+- **Piper's HTTP server**, to speak the replies. Its address is set in the
+  app, under Settings → Voice & AI. Niles starts without it.
 
-## Quick Start
+## 1. The database
 
-### 1. Create required out-of-band resources
+On your Postgres, as a superuser:
 
-The manifests reference a Secret and (for production) a PVC that you must create yourself:
+```sql
+CREATE ROLE niles LOGIN PASSWORD 'choose-one';
+CREATE DATABASE niles OWNER niles;
+```
 
-```bash
-# Production namespace
+The connection string is then
+`postgres://niles:choose-one@<host>:5432/niles`. Use letters and digits in
+the password, or percent-encode it, because it sits inside a URL.
+
+## 2. The Secret
+
+Niles reads two values from outside on every start, and three more on the
+first:
+
+| Key in `niles-secrets` | Variable | What it is |
+|---|---|---|
+| `database-url` | `NILES_DATABASE_URL` | The Postgres connection string. Required. |
+| `secret-key` | `NILES_SECRET_KEY` | 32 random bytes, base64. Seals every key typed into the app. Required. |
+| `mqtt-username`, `mqtt-password` | `NILES_MQTT_USERNAME`, `NILES_MQTT_PASSWORD` | The broker's login. |
+| `elevenlabs-api-key` | `ELEVENLABS_API_KEY` | Hearing. |
+| `cerebras-api-key` | `CEREBRAS_API_KEY` | Thinking. |
+
+Niles connects to the broker and builds its hearing and thinking clients
+before the app is up, so those last three have to be in the Secret before
+the first start. It also exits a minute after starting when it can't reach
+the broker. Everything else is typed into the app and sealed in Postgres.
+
+```sh
 kubectl create namespace niles
 
-# Secrets (never commit these to git)
 kubectl create secret generic niles-secrets \
   --namespace niles \
-  --from-literal=mqtt-username='your-mqtt-user' \
-  --from-literal=mqtt-password='your-mqtt-pass' \
-  --from-literal=openai-api-key='your-openai-key'
-
-# The hearing and thinking providers' keys (ElevenLabs and Cerebras by
-# default) are not here: they are typed into the app, under Settings →
-# System → Voice & AI, and kept encrypted in the database.
-
-# Signing in (optional — Niles runs happily without it).
-#
-# NOTE if this cluster mounts the whole Secret with `envFrom: secretRef`
-# rather than naming each key: hyphenated keys are not valid environment
-# variable identifiers, so Kubernetes silently drops them — you get an
-# InvalidVariableNames event and nothing else. Name the keys after the
-# variables instead (NILES_GITHUB_CLIENT_ID, and so on).
-#
-# That failure looks like success: with no secrets and an empty
-# allowlist, /auth/status reports {"enabled":false} — which is also what
-# a correct install waiting for its first person reports. Check
-# "configured": true in the same response, and the startup log, which
-# says so loudly.
-#
-# github-client-id / github-client-secret come from a GitHub OAuth app
-# whose callback URL is https://<your niles host>/auth/github/callback
-#
-# session-secret is the one nobody can look up: invent it, and keep it.
-# It signs the session cookie, so changing it signs everybody out —
-# which is also the only way to revoke a single lost phone without
-# removing its owner from the allowlist.
-#
-# api-token is optional. With a database Niles makes its own API key and
-# keeps it; copy it from Settings → API access. Set one here only if the
-# deployment should own it, and name the variable in [auth] api_token_env.
-# It is not subject to the allowlist, so it is also the way back in if
-# the list is emptied.
-kubectl create secret generic niles-secrets \
-  --namespace niles --dry-run=client -o yaml \
-  --from-literal=github-client-id='Ov23li...' \
-  --from-literal=github-client-secret='...' \
-  --from-literal=session-secret="$(openssl rand -base64 48)" \
-  | kubectl apply -f -
-
-# Production data PVC (adjust storageClassName and size to your cluster)
-cat <<EOF | kubectl apply -f -
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: niles-data
-  namespace: niles
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 5Gi
-  storageClassName: standard
-EOF
+  --from-literal=database-url='postgres://niles:choose-one@postgres.example:5432/niles' \
+  --from-literal=secret-key="$(openssl rand -base64 32)" \
+  --from-literal=mqtt-username='niles' \
+  --from-literal=mqtt-password='...' \
+  --from-literal=elevenlabs-api-key='...' \
+  --from-literal=cerebras-api-key='...'
 ```
 
-For dev:
+Keep a copy of the secret key with your database backups. Lose it or
+change it, and every key stored in the app has to be typed in again.
 
-```bash
-kubectl create namespace niles-dev
-kubectl create secret generic niles-secrets \
-  --namespace niles-dev \
-  --from-literal=mqtt-username='your-mqtt-user' \
-  --from-literal=mqtt-password='your-mqtt-pass' \
-  --from-literal=openai-api-key='your-openai-key'
+The Deployment reads each key by name (`secretKeyRef`). If your cluster
+mounts the whole Secret with `envFrom: secretRef` instead, name the keys
+after the variables (`NILES_DATABASE_URL` and so on): Kubernetes drops keys
+with hyphens from `envFrom` without an error.
+
+## 3. An overlay
+
+Copy the `dev` overlay and make it yours:
+
+```sh
+cp -r deploy/kustomize/overlays/dev deploy/kustomize/overlays/home
 ```
 
-### 2. Preview changes
+- In `kustomization.yaml`, set `namespace` and the image tag.
+- In `niles.toml`, set `[mqtt] host` to your broker. The file's `*_env`
+  lines name the variables from the Secret; they hold no values.
+  Coordinates, the timezone and the lighting schedule can be set here or
+  in the app.
 
-```bash
-# Dev
-kustomize build deploy/kustomize/overlays/dev | kubectl diff -f -
+## 4. Apply
 
-# Production
-kustomize build deploy/kustomize/overlays/production | kubectl diff -f -
+```sh
+kubectl kustomize deploy/kustomize/overlays/home | kubectl diff -f -
+kubectl apply -k deploy/kustomize/overlays/home
 ```
 
-### 3. Apply
+Check that it came up:
 
-```bash
-# Dev
-kubectl apply -k deploy/kustomize/overlays/dev
-
-# Production
-kubectl apply -k deploy/kustomize/overlays/production
-```
-
-### 4. Verify
-
-```bash
-# Dev
-kubectl get pods -n niles-dev
-kubectl logs -n niles-dev -l app.kubernetes.io/name=niles
-
-# Production
+```sh
 kubectl get pods -n niles
 kubectl logs -n niles -l app.kubernetes.io/name=niles
 ```
 
-## Directory Layout
+The log says `[secrets] ... loaded from the database` and
+`[auth] made an API key and kept it` on a first start with a working
+database and key.
+
+## Reaching it
+
+The Service is a `ClusterIP` with two ports:
+
+| Name | Port | For |
+|---|---|---|
+| `http-api` | 8080 | The app and the API. `/healthz` answers the probes. |
+| `wyoming` | 10300 | The satellites, which stream audio to it. |
+
+- **The app.** Put it behind your ingress controller with TLS.
+- **The satellites.** Expose 10300 on the house network with a
+  `LoadBalancer` or `NodePort` Service that sets
+  `externalTrafficPolicy: Local`. Niles knows which room a satellite is in
+  by its IP address, and the default policy replaces that address with a
+  node's. Niles also calls each satellite on its port 10301, which needs
+  the pod to reach the satellites' network.
+
+## Signing in
+
+Sign-in is off, and the app open to anyone who reaches it, until a GitHub
+app is set up and somebody is listed. The first person opens the app from
+the house network, puts the GitHub OAuth app's client ID and secret in the
+**Signing in** card under **Settings → People**, and adds their own GitHub
+email address to the list below it.
+
+To have the deployment own them instead, add `github-client-id` and
+`github-client-secret` to the Secret and name the variables in
+`niles.toml`:
+
+```toml
+[auth]
+github_client_id_env = "NILES_GITHUB_CLIENT_ID"
+github_client_secret_env = "NILES_GITHUB_CLIENT_SECRET"
+```
+
+The OAuth app's callback URL is `https://<your niles host>/auth/github/callback`.
+
+With a database, Niles makes and keeps its own session key and API key.
+The Deployment also reads two optional Secret keys, for a deployment that
+sets them itself:
+
+- `session-secret` signs the session cookie. Changing it signs everybody
+  out.
+- `api-token` is the API key, read only when `[auth] api_token_env =
+  "NILES_API_TOKEN"` names it. Otherwise copy Niles's own from
+  **Settings → API access**.
+
+## Upgrading
+
+Pin the image tag in the overlay's `kustomization.yaml`:
+
+```yaml
+images:
+  - name: ghcr.io/marknygaard/niles
+    newTag: "0.4.0"
+```
+
+Tags are `latest` (the newest release), each version (`0.4.0`) and
+`sha-<commit>`. Change the tag, preview and apply. Niles creates the tables
+it needs by itself, so there is no migration step.
+
+## Backing up
+
+Everything Niles keeps is in Postgres, so back up the database, for
+example with `pg_dump`, and keep the secret key beside it. The pod's
+`/data` is working space for Claude Code and pi, and an `emptyDir` is
+enough.
+
+## Layout
 
 ```
 deploy/kustomize/
 ├── base/
-│   ├── kustomization.yaml      # Base resources
-│   ├── deployment.yaml         # Niles Deployment (placeholder image, config volume)
-│   ├── service.yaml            # ClusterIP Service (8080 + 10300)
-│   └── configmap.yaml          # Placeholder ConfigMap
-├── overlays/
-│   ├── production/
-│   │   ├── kustomization.yaml  # Production patches + configMapGenerator
-│   │   ├── niles.toml          # Aarhus home config, da_DK locale
-│   │   └── deployment-prod.yaml  # Bumps resources + adds PVC data volume
-│   └── dev/
-│       ├── kustomization.yaml  # Dev patches + configMapGenerator
-│       ├── deployment-dev.yaml # Adds emptyDir data volume
-│       └── niles.toml          # Dev-cluster config
+│   ├── kustomization.yaml
+│   ├── deployment.yaml     # Niles, its probes and the Secret's keys
+│   ├── service.yaml        # ClusterIP: 8080 and 10300
+│   └── configmap.yaml      # Placeholder niles.toml
+└── overlays/
+    ├── dev/                # namespace niles-dev, :latest
+    └── production/         # namespace niles, a pinned version, resource limits
 ```
 
-## Customising
+Each overlay replaces the ConfigMap with its own `niles.toml`. Both mount
+an `emptyDir` at `/data`.
 
-Create your own overlay by copying `overlays/dev/` and adjusting:
+## Not here
 
-- `niles.toml` — coordinates, locale, MQTT host, lighting schedule
-- `kustomization.yaml` — image tag, namespace, labels
-- Add patches for resource limits, node selectors, tolerations, etc.
-
-## Bumping Versions
-
-Pin the image tag in each overlay's `kustomization.yaml`:
-
-```yaml
-images:
-  - name: niles
-    newName: ghcr.io/marknygaard/niles
-    newTag: v0.2.0   # <-- bump here
-```
-
-Then preview and apply:
-
-```bash
-kustomize build deploy/kustomize/overlays/production | kubectl diff -f -
-kubectl apply -k deploy/kustomize/overlays/production
-```
-
-## What's NOT Here
-
-The following are intentionally out of scope for v1. You may add them in your own overlays or future PRs:
-
-- **GitOps / ArgoCD / FluxCD** — apply manually for now
-- **Helm** — Kustomize is the chosen tool
-- **Multi-cluster / per-region overlays**
-- **CI-driven image builds** — build and push the image separately
-- **Monitoring / observability sidecars** — no Prometheus or log shippers
-- **Network policies**
-- **HPA / VPA** — Niles runs single-replica
-- **Secrets management** — raw `kubectl create secret` is used
-- **Ingress / TLS** — wire via your existing ingress controller out-of-band
-- **Mosquitto, SearXNG, Piper manifests** — deploy independently. SearXNG is then added in the app, under Settings → Add-ons → Web search (SearXNG), with no ConfigMap edit or restart; without it Claude uses its own web search
-
-## Ports
-
-| Name | Port | Purpose |
-|------|------|---------|
-| `http-api` | 8080 | HTTP API (`/healthz`, `/devices`, etc.) |
-| `wyoming` | 10300 | Wyoming voice-protocol server |
-
-## Health Checks
-
-Both liveness and readiness probes hit `GET /healthz` on port 8080.
+- Postgres, Mosquitto, Zigbee2MQTT, Piper and SearXNG. Run them as you
+  already do. SearXNG is added in the app, under Settings → Add-ons → Web
+  search (SearXNG).
+- Ingress and TLS, which belong to your ingress controller.
+- Helm charts, and more than one replica. Niles runs as one pod.

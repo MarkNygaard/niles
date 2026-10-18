@@ -1,6 +1,6 @@
 //! What a plugin asks for, in the words the approval screen uses.
 //!
-//! The wording is `docs/integrations/permissions.md`'s, line for line.
+//! The wording is `site/content/docs/writing-add-ons/permissions.mdx`'s, line for line.
 //! Each line is a [`Grant`] with a key that names the permission itself
 //! rather than how it is worded, so an update's difference is what it
 //! may now do that it could not before — not a page label that changed,

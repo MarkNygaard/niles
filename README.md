@@ -10,12 +10,12 @@ It is set up from its own app. Settings keeps the base system — the broker you
 
 ## Documentation
 
-A navigable docs site lives at [docs/](docs/). Build locally with `mdbook serve docs` and browse at <http://localhost:3000>.
+The docs are at [getniles.app/docs](https://getniles.app/docs), built from [site/](site/). Run it locally with `cd site; bun install; bun run dev` and browse at <http://localhost:4000>.
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — the map and the rules: the crates, how a turn flows through them, the house rules and the big decisions. How to use Niles is in the docs site.
 - **[AGENTS.md](AGENTS.md)** — how to work in this repo, for AI coding agents and the people who run them.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — dev setup and PR conventions.
-- **[Naming your devices](docs/src/naming.md)** — how to name things in Zigbee2MQTT so Niles finds them, and what to call them.
+- **[Naming your devices](https://getniles.app/docs/setting-up/naming)** — how to name things in Zigbee2MQTT so Niles finds them, and what to call them.
 - **[Set up a satellite](firmware/xiao-wyoming/satellite-idf/README.md#set-up-a-satellite)** — flash a reSpeaker XVF3800 with the Niles firmware and add it to a room.
 - **[MANIFEST.md](MANIFEST.md)** — what Niles can do, generated from `features.toml`.
 

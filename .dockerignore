@@ -13,8 +13,8 @@
 # Firmware (ESP-IDF / Arduino) — unrelated to the Rust build.
 firmware
 
-# Docs site — not compiled into the binary.
-docs/book
+# The website and its docs: not compiled into the binary.
+site
 
 # Local-only working notes (also gitignored).
 ROADMAP.md
