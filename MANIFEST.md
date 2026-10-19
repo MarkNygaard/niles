@@ -106,6 +106,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `plugins-plain-errors` | Plugins' MQTT and HTTP failures read as plain reasons, such as connection refused or wrong username or password | [#393](https://github.com/MarkNygaard/niles/pull/393) |
 | `plugins-room-light` | A plugin can keep a light out of its room's lights, so room commands, scenes, presence and the curve leave it alone | [#393](https://github.com/MarkNygaard/niles/pull/393) |
 | `plugins-runtime` | Run third-party integrations as sandboxed WebAssembly components; their devices, tools and pages join the house | [#388](https://github.com/MarkNygaard/niles/pull/388) |
+| `plugins-speech-stream` | Permission-gated room speech sessions with explicit enablement, bounded work, expiry and asynchronous outcomes | [#482](https://github.com/MarkNygaard/niles/pull/482) |
 | `plugins-time-zone` | Plugins on interface 0.2.1 are told the house's time zone; 0.2.0 plugins run unchanged | [#393](https://github.com/MarkNygaard/niles/pull/393) |
 | `plugins-update-rollback` | Plugins are checked for newer releases; an update shows the permission change and rolls back if it soon fails | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `plugins-websocket` | Add-ons connect to permission-scoped WebSocket endpoints through the host, with bounded queues and reconnect callbacks | [#470](https://github.com/MarkNygaard/niles/pull/470) |

@@ -962,3 +962,10 @@ id = "ui-artifact-share-menu"
 category = "ui.chat"
 summary = "A share menu on an open artifact: Share, Copy, Word for documents, plans and trips, Markdown, a podcast's MP3"
 since_pr = 472
+
+[[feature]]
+id = "plugins-speech-stream"
+category = "runtime.plugins"
+summary = "Permission-gated room speech sessions with explicit enablement, bounded work, expiry and asynchronous outcomes"
+phrasings = []
+since_pr = 482
