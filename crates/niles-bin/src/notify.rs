@@ -30,11 +30,19 @@ impl Notify {
         self.inbox.clone()
     }
 
-    /// `notice` for `person`. Nothing for a voice nobody recognised,
-    /// which has no page to keep it on and no devices.
+    /// `notice` for `person`, kept and pushed. Nothing for a voice nobody
+    /// recognised, which has no page to keep it on and no devices.
     pub(crate) async fn person(&self, person: &str, notice: &Notice) {
+        if self.keep(person, notice).await {
+            self.push(person, notice).await;
+        }
+    }
+
+    /// Kept for the page and counted by the bell, but no device buzzes:
+    /// for something the person is already looking at.
+    pub(crate) async fn keep(&self, person: &str, notice: &Notice) -> bool {
         if !(person.starts_with("person:") || person.starts_with("email:")) {
-            return;
+            return false;
         }
         if let Some(inbox) = &self.inbox {
             match inbox.add(person, notice).await {
@@ -47,6 +55,10 @@ impl Notify {
                 Err(e) => tracing::warn!("[notify] {person}: {:?} was not kept: {e}", notice.title),
             }
         }
+        true
+    }
+
+    async fn push(&self, person: &str, notice: &Notice) {
         let Some(push) = &self.push else {
             return;
         };
@@ -115,6 +127,21 @@ mod tests {
         let notify = Notify::new(Some(inbox.clone()), None, EventBus::default());
         notify.person("email:anna@example.com", &notice()).await;
         assert_eq!(inbox.unread("email:anna@example.com").await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn kept_quietly_it_is_on_the_page_and_counted() {
+        let inbox = Arc::new(MemoryInbox::default());
+        let bus = EventBus::default();
+        let mut events = bus.subscribe();
+        let notify = Notify::new(Some(inbox.clone()), Some(push()), bus);
+        assert!(notify.keep("person:mark", &notice()).await);
+        assert_eq!(inbox.unread("person:mark").await.unwrap(), 1);
+        assert!(matches!(
+            events.try_recv(),
+            Ok(Event::NotificationAdded { .. })
+        ));
+        assert!(!notify.keep("satellite:10.0.0.2:4000", &notice()).await);
     }
 
     #[tokio::test]

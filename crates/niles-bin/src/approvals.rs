@@ -218,7 +218,17 @@ impl Approvals {
         if let Some(notify) = self.notify.clone() {
             let person = asker.person.clone();
             let notice = waiting_notice(&card);
-            tokio::spawn(async move { notify.person(&person, &notice).await });
+            // Asked in the app, the card is in front of them: the page
+            // keeps it, but their phone needn't buzz. Asked by voice,
+            // they are away from the screen, so it is pushed too.
+            let away = asked_via(asker) == Via::Voice;
+            tokio::spawn(async move {
+                if away {
+                    notify.person(&person, &notice).await;
+                } else {
+                    notify.keep(&person, &notice).await;
+                }
+            });
         }
         self.lock().insert(card.id.clone(), held);
         self.changed(&asker.person, &card);
