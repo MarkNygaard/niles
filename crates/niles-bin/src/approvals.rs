@@ -148,6 +148,8 @@ pub(crate) struct Approvals {
     bus: EventBus,
     /// What was asked and decided. None without a database.
     ledger: Option<Arc<dyn Ledger>>,
+    /// Where a person is told that something waits for them.
+    notify: Option<Arc<crate::notify::Notify>>,
 }
 
 impl Approvals {
@@ -157,6 +159,12 @@ impl Approvals {
             ledger,
             ..Self::default()
         }
+    }
+
+    /// Each call held is a notification for the person it waits for.
+    pub(crate) fn with_notify(mut self, notify: Arc<crate::notify::Notify>) -> Self {
+        self.notify = Some(notify);
+        self
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Held>> {
@@ -206,6 +214,11 @@ impl Approvals {
                     tracing::warn!("[approvals] what was asked was not logged: {e}");
                 }
             });
+        }
+        if let Some(notify) = self.notify.clone() {
+            let person = asker.person.clone();
+            let notice = waiting_notice(&card);
+            tokio::spawn(async move { notify.person(&person, &notice).await });
         }
         self.lock().insert(card.id.clone(), held);
         self.changed(&asker.person, &card);
@@ -456,6 +469,26 @@ fn asked_via(asker: &Asker) -> Via {
         Via::Voice
     } else {
         Via::App
+    }
+}
+
+/// Where the panel's Approvals tab opens from a link.
+pub(crate) const APPROVALS_URL: &str = "/#/chat?panel=approvals";
+
+/// What a held call's notification says: the card's question, and what
+/// it would do. It links to the Approvals tab, where it is answered.
+fn waiting_notice(card: &ApprovalCard) -> niles_webpush::Notice {
+    let line = summary(card);
+    niles_webpush::Notice {
+        kind: niles_webpush::inbox::Kind::Approval,
+        title: card.title.clone(),
+        body: if line.is_empty() {
+            "Waiting for your answer in Approvals.".into()
+        } else {
+            line
+        },
+        url: APPROVALS_URL.into(),
+        tag: format!("approval-{}", card.id),
     }
 }
 
@@ -896,6 +929,36 @@ mod tests {
         for _ in 0..10 {
             tokio::task::yield_now().await;
         }
+    }
+
+    #[tokio::test]
+    async fn a_held_call_is_a_notification_for_its_person_alone() {
+        use niles_webpush::Inbox;
+        let inbox = Arc::new(niles_webpush::MemoryInbox::default());
+        let bus = EventBus::default();
+        let notify = Arc::new(crate::notify::Notify::new(
+            Some(inbox.clone()),
+            None,
+            bus.clone(),
+        ));
+        let approvals = Approvals::new(bus, None).with_notify(notify);
+        let (id, _) = held_for(&approvals, "person:mark", Some(4));
+        settle_writes().await;
+
+        let kept = inbox.page("person:mark", None, 10).await.unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].kind, "approval");
+        assert_eq!(kept[0].title, "Let Linear create issue?");
+        assert_eq!(kept[0].body, "Title: x");
+        assert_eq!(kept[0].url, APPROVALS_URL);
+        assert_eq!(kept[0].tag, format!("approval-{id}"));
+        assert!(
+            inbox
+                .page("person:majse", None, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

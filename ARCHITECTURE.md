@@ -39,7 +39,7 @@ A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the res
 |---|---|
 | `niles-core` | Device ids and types, the `DeviceRegistry`, the `EventBus`. No business logic. |
 | `niles-config` | The TOML schema, its validation, and the layered `ConfigStore` (base plus overrides, hot or boot sections). |
-| `niles-db` | Every Postgres store: config overrides and their history, sealed secrets, conversations, artifacts, the approvals log, timers, waits, voice prints and more. Each creates its own table on first use. |
+| `niles-db` | Every Postgres store: config overrides and their history, sealed secrets, conversations, artifacts, the approvals log, each person's notifications, timers, waits, voice prints and more. Each creates its own table on first use. |
 | `niles-mqtt` | The MQTT client, the Zigbee2MQTT and WLED sources, and the `CommandRouter`. |
 
 **Voice**
@@ -91,7 +91,7 @@ A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the res
 | Crate | What it is |
 |---|---|
 | `niles-api` | The HTTP API, sign-in, `/events/stream`, and the web app's routes. |
-| `niles-webpush` | Web Push to a person's devices, RFC 8291 and 8292 in pure Rust. |
+| `niles-webpush` | Web Push to a person's devices, RFC 8291 and 8292 in pure Rust, and the record of what each person was told, for their Notifications page. |
 | `niles-websearch` | The SearXNG client, and the fetcher that goes only to the public internet. |
 | `niles-mcp` | Niles as an MCP client, for remote tool servers such as Linear's. |
 | `niles-plugins` | Third-party plugins: WebAssembly components run in wasmtime, installed from GitHub releases and found in the add-on library. |
@@ -120,7 +120,7 @@ A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the res
 3. Without files, `dispatch_text` runs as for voice: Tier 0 first, then `dispatch_tier1`, where a chat turn goes to the assistant when one is on, and to the fast model otherwise or when the assistant can't answer (with a note under the reply saying why). A turn that runs out of time in the middle of changing one artifact goes on as a job on it instead, and says so (`Artifacts::carry_on`).
 4. With files, `dispatch::dispatch_attached` skips Tier 0 and the fast model: only the assistant can see them, and nobody else answers.
 5. The assistant's tools come over MCP with a token for that run, which is how a tool knows whose turn it is. Artifact tools are offered only there. A change is said as edits, never the whole artifact again; a big artifact, a new page and a big change are background jobs. Each tool call of a chat turn is logged with its time, never its arguments.
-6. The turn is kept with its approval card and artifacts. Later changes go to that person's connections on `/events/stream` (`approval_changed`, `artifact_changed`), and a finished job reaches their devices by Web Push.
+6. The turn is kept with its approval card and artifacts. Later changes go to that person's connections on `/events/stream` (`approval_changed`, `artifact_changed`, `notification_added`), and a finished job reaches their Notifications page and their devices by Web Push.
 
 ## How an automation flows
 

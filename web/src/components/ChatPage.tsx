@@ -65,6 +65,12 @@ export function linkedArtifact(hash: string): number | null {
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
+/** The panel tab a link asks the chat to open: `#/chat?panel=approvals`,
+    which is where a notification that something waits leads. */
+export function linkedPanel(hash: string): "approvals" | null {
+  return hashQuery(hash).get("panel") === "approvals" ? "approvals" : null;
+}
+
 /**
  * Every conversation the signed-in person has had with Niles, spoken or
  * typed, one on screen at a time, kept on the server so the next message
@@ -195,9 +201,15 @@ export function ChatPage() {
   useEffect(() => {
     const follow = () => {
       const id = linkedArtifact(window.location.hash);
-      if (id === null) return;
-      setTab("saved");
-      setOpened(id);
+      const panel = linkedPanel(window.location.hash);
+      if (id !== null) {
+        setTab("saved");
+        setOpened(id);
+      } else if (panel !== null) {
+        setTab(panel);
+      } else {
+        return;
+      }
       setPanelOpen(true);
       window.history.replaceState(null, "", "#/chat");
     };

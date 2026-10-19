@@ -64,6 +64,21 @@ describe("RoomDashboard", () => {
     expect(await screen.findByText("Kitchen")).toBeInTheDocument();
   });
 
+  it("is only the house: a person's own cards are on their Notifications page", async () => {
+    vi.spyOn(api, "scenes").mockResolvedValue([]);
+    vi.spyOn(api, "devices").mockResolvedValue([light("z2m:kitchen/bulb_1")]);
+    const run = vi.spyOn(api, "trainingToday");
+    const delivery = vi.spyOn(api, "nemligNext");
+    const phone = vi.spyOn(api, "deviceStatus");
+
+    renderDashboard();
+
+    expect(await screen.findByText("Kitchen")).toBeInTheDocument();
+    expect(run).not.toHaveBeenCalled();
+    expect(delivery).not.toHaveBeenCalled();
+    expect(phone).not.toHaveBeenCalled();
+  });
+
   it("shows a scene once one is saved", async () => {
     vi.spyOn(api, "scenes").mockResolvedValue(["cosy"]);
     vi.spyOn(api, "devices").mockResolvedValue([light("z2m:kitchen/bulb_1")]);

@@ -1,10 +1,45 @@
 ---
 title: "Notifications"
-description: "What Niles says out loud at a satellite, and what it sends to your phone or computer."
+description: "Your Notifications page, what Niles sends to your phone or computer, and what it says out loud at a satellite."
 ---
 
-Niles tells you things two ways: out loud through a satellite, and as a
-notification on your phone or computer.
+Niles tells you things three ways: on your own Notifications page in the
+app, as a notification on your phone or computer, and out loud through a
+satellite.
+
+## Your Notifications page
+
+The bell at the top of the app, next to your avatar, opens it. It is
+there on a phone and on a computer, whenever you are signed in. A number
+on the bell counts what you have not seen yet, up to 9+, and changes as
+things arrive, without a reload.
+
+The page is yours alone. Nobody else in the house sees it, and the
+house's spoken announcements are not on it.
+
+At the top, under **Now**, is what matters today:
+
+- today's run, while you have a training plan (see
+  [Training](/docs/using/training))
+- when a nemlig.com grocery order arrives, on the day it comes
+- **This is my phone**, until you have paired a phone (see
+  [People](/docs/using/people))
+
+**Now** is left out when none of these has anything to show. The Home
+page is only the house: the scenes, the house bar, add-ons' cards and the
+rooms.
+
+Under **Earlier** is everything Niles told you, newest first: each
+notification below, whether or not it reached a device. Each has an icon
+for what it is about, when it came, and a link to the thing itself. A
+newer one about the same thing, such as the page for a plan after the
+plan itself, replaces the older one. The newest 200 are kept.
+
+Opening the page marks what is on it as seen, and the bell clears on your
+other devices too. What was new keeps a dot until you leave the page.
+
+Without a database, Niles keeps no history. The page says so, and **Now**
+still shows.
 
 ## On your phone or computer
 
@@ -18,10 +53,19 @@ the app opens on it. Niles sends one when:
 - someone shares something with you: "\{name\} shared "\{title\}" with you."
 - your training plan changed after a run: "Your \{title\} changed after your
   run.", with the coach's note
+- a workout was counted on your training plan: "Your 8.2 km run on
+  Saturday was counted as the long run."
+- something waits for your yes, such as a mail Niles wrote or an add-on's
+  action set to ask first (see [Approvals](/docs/using/approvals))
+
+The title of each is the name of the plan or document it is about, or for
+an approval, the question. Tapping one about a document or plan opens it.
+Tapping a counted workout or an approval opens your Notifications page,
+where the item links on to the plan or to **Approvals** in Niles's panel.
 
 Each item under [Saved](/docs/using/saved) has a **Tell me when it's ready** switch,
-on by default, that covers all of these except a share. There is no
-notification for an approval waiting or for a timer.
+on by default, that covers all of these about it except a share. There is
+no notification for a timer.
 
 There is nothing to set up on the server beyond what Niles already needs:
 its database and its secrets key. Notifications go out from Niles to

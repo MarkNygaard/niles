@@ -14,7 +14,7 @@ use crate::satellites::SatelliteRegistry;
 use crate::timers::spawn_timer_driver;
 use crate::voice::{hush_on_wake, spawn_dispatch_task};
 use crate::wiring::accounts::{
-    build_calendars, build_push, build_secret_store, build_strava, build_tado_tokens,
+    build_calendars, build_notify, build_push, build_secret_store, build_strava, build_tado_tokens,
     build_weather_client, ensure_session_key, forget_retired_provider_keys,
 };
 use crate::wiring::automations::{
@@ -187,10 +187,12 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     );
     // Remote tool servers put their tools beside the plugins'. After the
     // secrets are loaded, since each connects with its key.
-    let approvals = Arc::new(approvals::Approvals::new(
-        bus.clone(),
-        build_approval_log(&cfg),
-    ));
+    let push = build_push(&cfg);
+    let notify = build_notify(&cfg, push.clone(), bus.clone());
+    let approvals = Arc::new(
+        approvals::Approvals::new(bus.clone(), build_approval_log(&cfg))
+            .with_notify(notify.clone()),
+    );
     let _approvals_sweep = approvals.clone().spawn_sweep();
     let tool_servers =
         tool_servers::ToolServers::start(store.clone(), plugin_tools.clone(), approvals.clone());
@@ -451,7 +453,6 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let (arrivals, mut arrived) = tokio::sync::mpsc::unbounded_channel();
     let strava = build_strava(&cfg, arrivals);
     let chat_log = build_chat_log(&cfg);
-    let push = build_push(&cfg);
     // Made by the assistant, which runs their jobs: the runner is handed
     // the assistant once it has started serving the tools.
     let artifact_runner = Arc::new(artifacts::AssistantRunner {
@@ -465,7 +466,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         chat_log.clone(),
         search.clone(),
         strava.as_ref().map(|s| s.store().clone()),
-        push.clone(),
+        notify.clone(),
     );
     if let (Some(strava), Ok(tz)) = (&strava, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
         let imperial = cfg.home.resolved_units() == niles_config::Units::Imperial;
@@ -764,6 +765,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_calendars(calendars.clone())
     .with_strava(strava.clone())
     .with_push(push.clone())
+    .with_notifications(notify.inbox())
     .with_artifacts(
         artifacts.as_ref().map(|a| a.store().clone()),
         artifacts

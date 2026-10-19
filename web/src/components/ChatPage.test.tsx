@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ChatPage, landingOn, linkedArtifact, panelStatus } from "@/components/ChatPage";
+import {
+  ChatPage,
+  landingOn,
+  linkedArtifact,
+  linkedPanel,
+  panelStatus,
+} from "@/components/ChatPage";
 import { ApiError, api } from "@/lib/api";
 import type {
   Artifact,
@@ -192,6 +198,14 @@ describe("linkedArtifact", () => {
     expect(linkedArtifact("#/chat?artifact=")).toBeNull();
     expect(linkedArtifact("#/chat?artifact=abc")).toBeNull();
     expect(linkedArtifact("#/chat?artifact=-3")).toBeNull();
+  });
+});
+
+describe("linkedPanel", () => {
+  it("is the Approvals tab a waiting notification links to, and nothing else", () => {
+    expect(linkedPanel("#/chat?panel=approvals")).toBe("approvals");
+    expect(linkedPanel("#/chat")).toBeNull();
+    expect(linkedPanel("#/chat?panel=saved")).toBeNull();
   });
 });
 
