@@ -20,7 +20,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | Feature | Summary | Since |
 | --- | --- | --- |
 | `api-events-approval-changed` | approval_changed on /events/stream when one is held, answered or lapses, to its person only | [#455](https://github.com/MarkNygaard/niles/pull/455) |
-| `api-events-notifications` | notification_added and notifications_read on /events/stream, to their person only | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `api-events-notifications` | notification_added and notifications_read on /events/stream, to their person only | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `api-events-stream` | WebSocket /events/stream pushes real-time device and system events | [#86](https://github.com/MarkNygaard/niles/pull/86) |
 | `events-artifact-status` | artifact_changed on /events/stream, to its owner and whoever it is shared with only: the status line follows a job | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `api-artifact-images` | GET /me/artifacts/{id}/images/{image}: a picture an artifact keeps, its owner's only; GET lists them | [#442](https://github.com/MarkNygaard/niles/pull/442) |
@@ -35,7 +35,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `api-artifact-shares` | GET/PUT/DELETE /me/artifacts/{id}/shares, its owner's only; every artifact route answers by owner, edit or view | [#452](https://github.com/MarkNygaard/niles/pull/452) |
 | `api-chat-attachments` | POST /chat takes a multipart body with up to 5 files of 10 MB; GET …/attachments/{a} serves one to its owner | [#449](https://github.com/MarkNygaard/niles/pull/449) |
 | `api-me-approvals` | GET /me/approvals, POST /me/approvals/{id}, GET /me/approvals/history?before=; the caller's own only | [#455](https://github.com/MarkNygaard/niles/pull/455) |
-| `api-me-notifications` | GET /me/notifications?before= (50 a page, with unread) and POST /me/notifications/read; the signed-in person's own only | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `api-me-notifications` | GET /me/notifications?before= (50 a page, with unread) and POST /me/notifications/read; the signed-in person's own only | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `api-plugins-manage` | POST /plugins/install/preview and /plugins/install; update, rollback, enable, disable and DELETE per plugin | [#390](https://github.com/MarkNygaard/niles/pull/390) |
 | `api-post-device` | POST /rooms/{room}/{device} sets one light, in whichever source it comes from | [#59](https://github.com/MarkNygaard/niles/pull/59) |
 | `api-post-lights` | POST /lights sets every light in the house in one request | [#189](https://github.com/MarkNygaard/niles/pull/189) |
@@ -79,7 +79,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | Feature | Summary | Since |
 | --- | --- | --- |
 | `approval-log` | Every approval logged when asked and answered, lapses included; one summary line, never the arguments | [#455](https://github.com/MarkNygaard/niles/pull/455) |
-| `notify-approval-waiting` | A notification when something waits for your yes, linking to Approvals in Niles's panel | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `notify-approval-waiting` | A notification when something waits for your yes, linking to Approvals in Niles's panel | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `artifacts-documents` | Claude or ChatGPT saves documents for you, with versions, and writes a big one in the background | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `artifacts-edits` | Small changes to a saved item or its page made in the chat as edits; big or slow ones finish in the background | [#474](https://github.com/MarkNygaard/niles/pull/474) |
 | `artifacts-pages` | Ask Claude or ChatGPT for a page for any saved artifact: HTML that draws its data, and draws again as the data changes | [#440](https://github.com/MarkNygaard/niles/pull/440) |
@@ -92,7 +92,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `web-search-live` | Adding, changing or removing the SearXNG address takes hold with the next search, without a restart | [#451](https://github.com/MarkNygaard/niles/pull/451) |
 | `notification-history` | What Niles says unprompted is kept in Postgres, so "what did I miss" still knows after a restart | [#466](https://github.com/MarkNygaard/niles/pull/466) |
 | `notifications-for-the-house` | An announcement with no room is spoken in every room with a satellite, still under quiet hours | [#466](https://github.com/MarkNygaard/niles/pull/466) |
-| `notifications-kept` | Every notification to a person kept, pushed or not: the newest 200, a newer one about the same thing replacing the last | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `notifications-kept` | Every notification to a person kept, pushed or not: the newest 200, a newer one about the same thing replacing the last | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `push-artifact-ready` | A notification on your phone or computer when a document written in the background is ready; a tap opens it | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `push-artifact-shared` | A notification when someone shares an artifact with you, from the app or by asking: Mark shared “Thailand trip” with you | [#452](https://github.com/MarkNygaard/niles/pull/452) |
 | `observability-command-log` | Structured command-history log for every voice and API request | [#70](https://github.com/MarkNygaard/niles/pull/70) |
@@ -115,7 +115,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `plugins-websocket` | Add-ons connect to permission-scoped WebSocket endpoints through the host, with bounded queues and reconnect callbacks | [#470](https://github.com/MarkNygaard/niles/pull/470) |
 | `providers-default-elevenlabs-cerebras` | A new install hears with ElevenLabs and thinks with Cerebras; stored Groq settings fall back to them and say so | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `artifacts-training-plan` | A training plan toward a race, made from your own Strava runs: weeks, a countdown and today's session under Saved | [#430](https://github.com/MarkNygaard/niles/pull/430) |
-| `notify-workout-counted` | A notification once per workout counted on your plan: Your 8.2 km run on Saturday was counted as the long run | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `notify-workout-counted` | A notification once per workout counted on your plan: Your 8.2 km run on Saturday was counted as the long run | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `training-plan-follows-runs` | A training plan follows your Strava runs: each marks its session done, and Claude or ChatGPT adjusts what is to come | [#436](https://github.com/MarkNygaard/niles/pull/436) |
 | `training-strava-sync` | Each person's own Strava: 180 days on connect, then a poll every 15 minutes within Strava's rate limits | [#418](https://github.com/MarkNygaard/niles/pull/418) |
 
@@ -203,8 +203,8 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-room-card-blinds` | A room card with lights and blinds has separate Lights and Blinds buttons beside Heating, each opening its own sheet | [#404](https://github.com/MarkNygaard/niles/pull/404) |
 | `ui-room-dashboard` | Web dashboard of every room, switching a whole room or one light | [#178](https://github.com/MarkNygaard/niles/pull/178) |
 | `ui-room-hidden` | Hide a room from the dashboard's grid in Settings → Rooms; voice, rules, the API and the house's counts still reach it | [#404](https://github.com/MarkNygaard/niles/pull/404) |
-| `ui-notifications-bell` | The bell counts what is unread, 9+ over nine, live; opening the page reads what is on it, and every bell of yours clears | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
-| `ui-notifications-page` | Notifications, by the avatar: Now (today's run, a delivery, pair this phone), then all Niles told you; Home is the house | [#9999](https://github.com/MarkNygaard/niles/pull/9999) |
+| `ui-notifications-bell` | The bell counts what is unread, 9+ over nine, live; opening the page reads what is on it, and every bell of yours clears | [#483](https://github.com/MarkNygaard/niles/pull/483) |
+| `ui-notifications-page` | Notifications, by the avatar: Now (today's run, a delivery, pair this phone), then all Niles told you; Home is the house | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `ui-todays-run-card` | Today's run under Now on your Notifications page: the session, the next, the week's km, the coach's note, Done, Skipped | [#438](https://github.com/MarkNygaard/niles/pull/438) |
 | `ui-api-access` | Settings → API access: the key masked, with reveal, copy, a curl example and New key, for a signed-in person only | [#405](https://github.com/MarkNygaard/niles/pull/405) |
 | `ui-profile-sections` | My profile laid out like Settings: About you, My phone, Notifications, each add-on a page, Approvals | [#455](https://github.com/MarkNygaard/niles/pull/455) |
