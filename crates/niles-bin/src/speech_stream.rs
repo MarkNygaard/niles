@@ -534,10 +534,13 @@ mod tests {
                 output.prepare(&other, "text").await?;
                 output.deliver(()).await
             };
-            tokio::select! { biased; _ = lease.cancelled() => Err(()), result = work => result }
+            tokio::select! { biased; _ = lease.cancelled() => Err(niles_tts::speech_session::SpeechOutputError), result = work => result }
         });
         started.notified().await;
         let _voice = arbiter.enter_conversation(room);
-        assert_eq!(task.await.unwrap(), Err(()));
+        assert_eq!(
+            task.await.unwrap(),
+            Err(niles_tts::speech_session::SpeechOutputError)
+        );
     }
 }

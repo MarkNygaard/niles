@@ -90,6 +90,11 @@ pub enum SessionError {
     Closed,
 }
 
+/// The output callback could not prepare or deliver an utterance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("speech output failed")]
+pub struct SpeechOutputError;
+
 pub type PrepareFuture<Prepared> =
     Pin<Box<dyn Future<Output = Result<Prepared, ()>> + Send + 'static>>;
 pub type DeliverFuture = Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'static>>;
@@ -139,12 +144,20 @@ impl<Prepared: Send + 'static> SpeechOutput<Prepared> {
         }
     }
 
-    pub async fn prepare(&self, room: &RoomName, text: &str) -> Result<Prepared, ()> {
-        (self.prepare)(room.clone(), text.to_owned()).await
+    pub async fn prepare(
+        &self,
+        room: &RoomName,
+        text: &str,
+    ) -> Result<Prepared, SpeechOutputError> {
+        (self.prepare)(room.clone(), text.to_owned())
+            .await
+            .map_err(|()| SpeechOutputError)
     }
 
-    pub async fn deliver(&self, prepared: Prepared) -> Result<(), ()> {
-        (self.deliver)(prepared).await
+    pub async fn deliver(&self, prepared: Prepared) -> Result<(), SpeechOutputError> {
+        (self.deliver)(prepared)
+            .await
+            .map_err(|()| SpeechOutputError)
     }
 }
 
@@ -392,7 +405,7 @@ async fn session_worker<Prepared: Send + 'static>(
                         request = newest;
                         if request.queued_at.elapsed() >= QUEUED_UTTERANCE_TTL {
                             finish(&request.result, TerminalResult::Expired);
-                            break 'preparation Err(());
+                            break 'preparation Err(SpeechOutputError);
                         }
                     }
                 }
@@ -418,7 +431,7 @@ async fn session_worker<Prepared: Send + 'static>(
         }
         let terminal = match output.deliver(prepared).await {
             Ok(()) => TerminalResult::DeliveredToOutput,
-            Err(()) => TerminalResult::Failed,
+            Err(SpeechOutputError) => TerminalResult::Failed,
         };
         finish(&request.result, terminal);
     }
@@ -442,6 +455,17 @@ impl<Prepared: Send + 'static> Drop for SpeechSessionManager<Prepared> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn output_callback_failures_have_a_typed_error() {
+        let output =
+            super::SpeechOutput::<()>::new(|_, _| async { Err(()) }, |_| async { Err(()) });
+        let room = niles_core::RoomName::parse("office").unwrap();
+        assert_eq!(
+            output.prepare(&room, "dart").await,
+            Err(super::SpeechOutputError)
+        );
+        assert_eq!(output.deliver(()).await, Err(super::SpeechOutputError));
+    }
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::Notify;
