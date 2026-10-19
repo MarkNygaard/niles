@@ -146,6 +146,9 @@ impl Artifacts {
             tracked.reason()
         );
         self.announce(&saved);
+        if saved.notify && !tracked.done.is_empty() {
+            self.notifier.counted(&saved, &tracked.done, today).await;
+        }
         let runs: Vec<Done> = tracked
             .done
             .into_iter()
@@ -524,7 +527,7 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct Told(Mutex<Vec<(i64, String)>>);
+    struct Told(Mutex<Vec<(i64, String)>>, Mutex<Vec<String>>);
 
     #[async_trait]
     impl Notifier for Told {
@@ -532,6 +535,13 @@ mod tests {
 
         async fn changed(&self, artifact: &Artifact, note: &str) {
             self.0.lock().unwrap().push((artifact.id, note.into()));
+        }
+
+        async fn counted(&self, plan: &Artifact, done: &[Done], today: NaiveDate) {
+            self.1.lock().unwrap().extend(
+                done.iter()
+                    .map(|d| crate::artifacts::counted_notice(plan, d, today).body),
+            );
         }
     }
 
@@ -728,6 +738,39 @@ mod tests {
         f.artifacts.follow(MAJSE, &[], today).await;
         let a = f.store.get(MAJSE, 1).await.unwrap().unwrap();
         assert_eq!(a.current_revision, 2);
+    }
+
+    #[tokio::test]
+    async fn a_workout_that_marks_a_session_is_told_once() {
+        let f = fixture(Arc::new(FakeCoach {
+            off: true,
+            ..FakeCoach::default()
+        }));
+        made(&f, TRAINING_PLAN, plan()).await;
+        let today = day("2026-10-14");
+        f.artifacts.follow(MAJSE, &[tuesday_run()], today).await;
+        f.artifacts.follow(MAJSE, &[tuesday_run()], today).await;
+        assert_eq!(
+            *f.told.1.lock().unwrap(),
+            ["Your 6.2 km run yesterday was counted as the easy run."]
+        );
+    }
+
+    #[tokio::test]
+    async fn sessions_only_missed_tell_nothing() {
+        let f = fixture(FakeCoach::doing(vec![]));
+        made(&f, TRAINING_PLAN, plan()).await;
+        f.artifacts.follow(MAJSE, &[], day("2026-10-17")).await;
+        assert_eq!(
+            f.store
+                .get(MAJSE, 1)
+                .await
+                .unwrap()
+                .unwrap()
+                .current_revision,
+            2
+        );
+        assert!(f.told.1.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -164,6 +164,32 @@ pub(crate) fn build_push(cfg: &Config) -> Option<Arc<niles_webpush::WebPush>> {
     }
 }
 
+/// Telling each person something: kept for their Notifications page
+/// whenever there is a database, and pushed when `push` is there too.
+pub(crate) fn build_notify(
+    cfg: &Config,
+    push: Option<Arc<niles_webpush::WebPush>>,
+    bus: niles_core::EventBus,
+) -> Arc<crate::notify::Notify> {
+    let inbox = cfg
+        .database
+        .as_ref()
+        .and_then(|database| {
+            let url = database.resolve_url().ok()?;
+            niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()
+        })
+        .map(|backend| {
+            Arc::new(niles_db::PostgresPersonNotifications::new(
+                backend.pool(),
+                backend.describe_target(),
+            )) as Arc<dyn niles_webpush::Inbox>
+        });
+    if inbox.is_none() {
+        tracing::warn!("[notify] no database; nobody's notifications are kept");
+    }
+    Arc::new(crate::notify::Notify::new(inbox, push, bus))
+}
+
 /// Each person's Strava and the workouts it brings, when there is a
 /// database and a secrets key to seal their app secrets and tokens
 /// with. A person connecting their own Strava is the switch.

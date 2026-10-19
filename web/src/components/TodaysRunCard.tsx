@@ -27,8 +27,8 @@ import { cn } from "@/lib/utils";
 export const TRAINING_TODAY = [...ARTIFACTS, "training-today"];
 
 /**
- * Today's run from the signed-in person's training plan, on the
- * dashboard: the race and how long to go, today's session large, the
+ * Today's run from the signed-in person's training plan, at the top of
+ * their Notifications page: the race and how long to go, today's session large, the
  * next one small, how far the week has gone, and the coach's note while
  * it is news. A tap opens the plan in Niles's panel. Somebody with no
  * plan, or a Niles without a database, gets no card at all.

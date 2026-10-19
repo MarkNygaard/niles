@@ -271,6 +271,8 @@ pub fn router(state: AppState) -> Router {
                 .delete(crate::push::unsubscribe),
         )
         .route("/me/push/test", post(crate::push::test))
+        .route("/me/notifications", get(crate::notifications::list))
+        .route("/me/notifications/read", post(crate::notifications::read))
         .route(
             "/me/strava",
             get(crate::training::status).delete(crate::training::remove),

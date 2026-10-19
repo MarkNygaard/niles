@@ -20,7 +20,7 @@ export interface PairPhoneCardProps {
  * and the dashboard used to offer to make the laptop somebody's phone.
  *
  * `undefined` — the answer has not arrived — is deliberately *not* a
- * reason to show it. A dashboard that offers this and then withdraws it
+ * reason to show it. A page that offers this and then withdraws it
  * a moment later has lied about the state of the house, and this is the
  * one thing on the page that appears unprompted.
  */

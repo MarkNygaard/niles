@@ -859,3 +859,53 @@ async fn an_approval_is_logged_when_asked_and_again_when_decided() {
     assert_eq!(after[0].entry.approval, tag(5));
     assert_eq!(after[0].entry.status, "lapsed");
 }
+
+fn notice(tag: &str) -> niles_webpush::Notice {
+    niles_webpush::Notice {
+        kind: niles_webpush::inbox::Kind::Workout,
+        title: "Hellerup plan".into(),
+        body: "Your 6.2 km run today was counted as the easy run.".into(),
+        url: "/#/chat?artifact=1".into(),
+        tag: tag.into(),
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn a_persons_notifications_are_theirs_capped_and_replaced_by_tag() {
+    use niles_webpush::Inbox;
+    let Some(backend) = backend() else {
+        return;
+    };
+    let inbox = niles_db::PostgresPersonNotifications::new(backend.pool(), "test".into());
+    let person = format!("person:notified-{}", std::process::id());
+    let other = format!("person:other-{}", std::process::id());
+
+    let first = inbox.add(&person, &notice("a")).await.expect("add");
+    let second = inbox.add(&person, &notice("b")).await.expect("add");
+    inbox.add(&other, &notice("a")).await.expect("another's");
+    assert_eq!(inbox.unread(&person).await.unwrap(), 2);
+
+    assert_eq!(inbox.read(&person, Some(first.id)).await.unwrap(), 1);
+    assert_eq!(inbox.unread(&person).await.unwrap(), 1);
+
+    // The same tag again: one row, newest, unread.
+    let again = inbox.add(&person, &notice("a")).await.expect("again");
+    assert!(again.id > second.id);
+    let page = inbox.page(&person, None, 50).await.unwrap();
+    assert_eq!(page.len(), 2);
+    assert_eq!(page[0].id, again.id);
+    assert!(page[0].read_at.is_none());
+
+    let older = inbox.page(&person, Some(again.id), 50).await.unwrap();
+    assert_eq!(older.len(), 1);
+    assert_eq!(older[0].id, second.id);
+
+    for n in 0..niles_webpush::inbox::KEPT_PER_PERSON {
+        inbox.add(&person, &notice(&format!("w{n}"))).await.unwrap();
+    }
+    let all = inbox.page(&person, None, 1_000).await.unwrap();
+    assert_eq!(all.len() as i64, niles_webpush::inbox::KEPT_PER_PERSON);
+    assert_eq!(inbox.page(&other, None, 50).await.unwrap().len(), 1);
+    assert_eq!(inbox.read(&other, None).await.unwrap(), 1);
+}
