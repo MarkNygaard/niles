@@ -134,7 +134,7 @@ fields. `callback` and `webhook` need `interface = "0.3"`; see
 [accounts and webhooks](/docs/writing-add-ons/accounts).
 WebSocket grants need `interface = "0.4"`; see [WebSockets](/docs/writing-add-ons/websocket).
 `speech_stream` needs `interface = "0.5"`, a `room` setting reference, and the explicitly enabled `speech_stream_enabled` boolean setting; see [frequent spoken commentary](/docs/writing-add-ons/permissions#frequent-spoken-commentary).
-`interface = "0.6"` adds `notify.request` and `notify.status`; it is not yet a released compatibility promise. Notifications use a household-selected `type = "room"` setting when a room is named. An omitted room targets the whole house. See [notify](/docs/writing-add-ons/host-api#notify).
+`interface = "0.6"` adds `notify.request` and `notify.status`; it is not yet a released compatibility promise. Add-on authors should expose a `type = "room"` setting for the household to choose the notification audience and pass its saved value. The notification host validates the supplied room and satellite route, but does not bind it to that setting as `speech_stream` does. An omitted room targets the whole house. See [notify](/docs/writing-add-ons/host-api#notify).
 
 ## Settings
 

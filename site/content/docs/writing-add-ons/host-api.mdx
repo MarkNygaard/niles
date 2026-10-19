@@ -357,7 +357,9 @@ or was heard. A request is accepted before delivery begins and times out after
 20 seconds as `failed`. Each plugin instance can retain at most 32 records,
 including pending requests; terminal records are retained for five minutes.
 Request ownership is isolated to the instance. Teardown cancels outstanding
-work and removes its records; audio already written cannot be retracted.
+work and removes its records. A socket write already in progress may still
+finish after cancellation or timeout; neither those bytes nor already-buffered
+audio can be retracted. A failed result is not proof that no audio was sent.
 Quiet-hours handling does not promise replay later.
 
 ### `speech-stream`
