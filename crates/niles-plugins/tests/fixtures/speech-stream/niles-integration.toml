@@ -9,10 +9,16 @@ keywords = ["speech"]
 
 [permissions]
 tools = true
-speech_stream = true
+speech_stream = { room = "room" }
 
 [[settings]]
 key = "speech_stream_enabled"
 label = "Enable speech stream"
 type = "boolean"
 default = false
+
+[[settings]]
+key = "room"
+label = "Room"
+type = "room"
+required = true

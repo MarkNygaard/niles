@@ -337,28 +337,42 @@ notify::say("The washing machine is done.", notify::Priority::Normal, Some("kitc
 ### `speech-stream`
 
 Interface 0.5 adds room-bound commentary, separate from `notify`. It needs
-`speech_stream = true` in `[permissions]` and a boolean setting named
-`speech_stream_enabled` with no default or `default = false`. The household
-must turn that setting on. See [permissions](/docs/writing-add-ons/permissions#frequent-spoken-commentary).
+`speech_stream = { room = "room" }` in `[permissions]` and a boolean setting named
+`speech_stream_enabled` with no default or `default = false`. The permission
+must reference a declared `type = "room"`
+setting. The household must turn the boolean on and choose that room. `open`
+accepts only the current saved room value. See [permissions](/docs/writing-add-ons/permissions#frequent-spoken-commentary).
 
 ```rust
-let session = speech_stream::open("kitchen")?;
+let room = match config::get("room") {
+    Some(config::SettingValue::Text(room)) => room,
+    _ => return Err("The room is not set.".into()),
+};
+let session = speech_stream::open(&room)?;
 let request = speech_stream::submit(session, "The printer finished.")?;
 // Poll speech_stream::poll(session) until this request has a terminal outcome.
 speech_stream::close(session);
 ```
 
 `open` reserves one session for the plugin instance and fixes its room. A
-successful open does not guarantee that the room can play audio. `submit`
+successful open confirms that the household-selected room has a configured
+satellite route. It does not guarantee that the satellite is connected or that
+audio will be heard. Busy and quiet-hour policy is checked when work is submitted.
+`submit`
 returns a request id when the host accepts work, not when it finishes or is
 heard. Poll for ordered terminal outcomes: `delivered`, `busy`, `quiet`,
-`disabled`, `unavailable`, `overload`, `expired`, `failed` or `cancelled`.
+`disabled`, `unavailable`, `overload`, `expired`, `failed`, `cancelled`,
+`replaced`, `rate-limited` or `no-satellite`.
 `delivered` means the host completed its transport write, not that a person
 heard it. Poll consumes completed records; pending records stay queued.
 
-Text must be nonblank and no more than 256 characters. A session retains at
-most 32 uncollected request results, and accepts at most four requests waiting
-behind active output. Requests expire after three seconds in the queue.
+Text must be nonblank and no more than 120 characters. A session retains at
+most 32 uncollected request results. A newer accepted request replaces older
+work that has not started transport, including speech still being synthesized;
+the replaced request reports `replaced`. Transport already started is not replaced.
+Requests expire after three seconds if transport has not started. The host limits
+each add-on owner to 120 admitted requests per rolling 60 seconds; closing and
+reopening a session does not reset that quota. Excess work reports `rate-limited`.
 Excess submissions fail with `limit`; invalid text fails with `invalid`.
 Permission and ownership errors are `not-permitted`; disabled, busy, quiet
 hours and unavailable output are reported as `unavailable` host errors.

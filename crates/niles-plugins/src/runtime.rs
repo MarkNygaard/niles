@@ -376,12 +376,11 @@ impl Runtime {
         Ok(Self { inner })
     }
 
-    pub fn with_speech_stream(
-        self,
+    pub fn connect_speech_stream(
+        &self,
         speech_stream: Arc<dyn crate::speech_stream::SpeechStreamHost>,
-    ) -> Self {
+    ) {
         let _ = self.inner.house.speech_stream.set(speech_stream);
-        self
     }
 
     /// Let plugins speak, once the notification centre exists.

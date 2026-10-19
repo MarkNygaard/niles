@@ -50,8 +50,11 @@ pub enum SpeechOutcome {
     Expired,
     Failed,
     Cancelled,
+    Replaced,
+    RateLimited,
+    NoSatellite,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SpeechError {
     Disabled,
@@ -59,6 +62,7 @@ pub enum SpeechError {
     QuietHours,
 
     Unavailable,
+    NoSatellite(RoomName),
     Limit,
     Invalid,
     Closed,
@@ -67,14 +71,13 @@ pub enum SpeechError {
 
 /// Production adapter; explicitly constructed/injected with the shared
 /// `niles-tts` manager. No default service or fallback is created by plugins.
-pub struct SessionSpeechHost<
-    O: niles_tts::speech_session::SpeechOutput,
-    P: niles_tts::speech_session::SpeechEligibility,
-> {
-    manager: Arc<SpeechSessionManager<O, P>>,
+pub struct SessionSpeechHost<Prepared: Send + 'static> {
+    manager: Arc<SpeechSessionManager<Prepared>>,
     handle: Handle,
+    route_is_configured: Arc<dyn Fn(&RoomName) -> bool + Send + Sync>,
     sessions: Mutex<BTreeMap<(String, u32), Arc<SessionSlot>>>,
-    next: Mutex<u32>,
+    next_session: Mutex<u32>,
+    next_request: Mutex<u64>,
     owner_token: String,
 }
 struct SessionSlot {
@@ -91,17 +94,24 @@ enum Command {
         deadline: tokio::time::Instant,
     },
 }
-impl<O, P> SessionSpeechHost<O, P>
-where
-    O: niles_tts::speech_session::SpeechOutput,
-    P: niles_tts::speech_session::SpeechEligibility,
-{
-    pub fn new(manager: Arc<SpeechSessionManager<O, P>>, handle: Handle) -> Self {
+impl<Prepared: Send + 'static> SessionSpeechHost<Prepared> {
+    #[cfg(test)]
+    fn new(manager: Arc<SpeechSessionManager<Prepared>>, handle: Handle) -> Self {
+        Self::with_route_validator(manager, handle, |_| true)
+    }
+
+    pub fn with_route_validator(
+        manager: Arc<SpeechSessionManager<Prepared>>,
+        handle: Handle,
+        route_is_configured: impl Fn(&RoomName) -> bool + Send + Sync + 'static,
+    ) -> Self {
         Self {
             manager,
             handle,
+            route_is_configured: Arc::new(route_is_configured),
             sessions: Mutex::new(BTreeMap::new()),
-            next: Mutex::new(1),
+            next_session: Mutex::new(1),
+            next_request: Mutex::new(1),
             owner_token: format!("plugin-instance-{}", rand::random::<u128>()),
         }
     }
@@ -118,6 +128,8 @@ fn map_rejection(reason: Rejection) -> SpeechOutcome {
         Rejection::QuietHours => SpeechOutcome::Quiet,
         Rejection::Disabled => SpeechOutcome::Disabled,
         Rejection::Unavailable => SpeechOutcome::Unavailable,
+        Rejection::NoSatellite => SpeechOutcome::NoSatellite,
+        Rejection::RateLimited => SpeechOutcome::RateLimited,
         Rejection::QueueFull => SpeechOutcome::Overload,
         Rejection::Closed => SpeechOutcome::Cancelled,
         _ => SpeechOutcome::Failed,
@@ -128,6 +140,7 @@ fn map_terminal(result: TerminalResult) -> SpeechOutcome {
         TerminalResult::DeliveredToOutput => SpeechOutcome::Delivered,
         TerminalResult::Rejected(reason) => map_rejection(reason),
         TerminalResult::Cancelled => SpeechOutcome::Cancelled,
+        TerminalResult::Replaced => SpeechOutcome::Replaced,
         TerminalResult::Expired => SpeechOutcome::Expired,
         _ => SpeechOutcome::Failed,
     }
@@ -136,7 +149,6 @@ fn map_session_outcome(error: SessionError) -> SpeechOutcome {
     match error {
         SessionError::Ineligible(reason) => map_rejection(reason),
         SessionError::OwnerHasSession => SpeechOutcome::Busy,
-        SessionError::Disabled => SpeechOutcome::Disabled,
         _ => SpeechOutcome::Failed,
     }
 }
@@ -148,6 +160,9 @@ fn map_error(error: SpeechError) -> HostError {
             HostError::Unavailable("speech is suppressed during quiet hours".into())
         }
         SpeechError::Unavailable => HostError::Unavailable("speech output is unavailable".into()),
+        SpeechError::NoSatellite(room) => {
+            HostError::Unavailable(format!("no satellite is configured for room {room}"))
+        }
         SpeechError::Limit => HostError::Limit("speech stream is at capacity".into()),
         SpeechError::Invalid => HostError::Invalid("invalid room or speech text".into()),
         SpeechError::Closed => HostError::Unavailable("speech stream session is closed".into()),
@@ -156,14 +171,9 @@ fn map_error(error: SpeechError) -> HostError {
         }
     }
 }
-impl<O, P> SessionSpeechHost<O, P>
-where
-    O: niles_tts::speech_session::SpeechOutput,
-    P: niles_tts::speech_session::SpeechEligibility,
-{
+impl<Prepared: Send + 'static> SessionSpeechHost<Prepared> {
     fn map_session(error: SessionError) -> SpeechError {
         match error {
-            SessionError::Disabled => SpeechError::Disabled,
             SessionError::OwnerHasSession => SpeechError::Busy,
             SessionError::Closed => SpeechError::Closed,
             SessionError::InvalidOwner => SpeechError::Invalid,
@@ -178,34 +188,42 @@ where
             Rejection::QueueFull => SpeechError::Limit,
             Rejection::Closed => SpeechError::Closed,
             Rejection::InvalidText => SpeechError::Invalid,
+            Rejection::RateLimited => SpeechError::Limit,
             _ => SpeechError::Unavailable,
         }
     }
-    fn owner(&self, owner: &str, session: u32) -> Result<(), SpeechError> {
+    fn owned_slot(&self, owner: &str, session: u32) -> Result<Arc<SessionSlot>, SpeechError> {
         self.sessions
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&(owner.to_owned(), session))
-            .filter(|slot| slot.accepting.load(Ordering::Acquire))
-            .map(|_| ())
+            .cloned()
             .ok_or(SpeechError::NotOwned)
     }
+
+    fn allocate_session(&self, used: impl Fn(u32) -> bool) -> Result<u32, SpeechError> {
+        let mut next = self.next_session.lock().unwrap_or_else(|e| e.into_inner());
+        let start = *next;
+        loop {
+            let candidate = *next;
+            *next = next.wrapping_add(1).max(1);
+            if !used(candidate) {
+                return Ok(candidate);
+            }
+            if *next == start {
+                return Err(SpeechError::Limit);
+            }
+        }
+    }
 }
-impl<O, P> SpeechStreamHost for SessionSpeechHost<O, P>
-where
-    O: niles_tts::speech_session::SpeechOutput,
-    P: niles_tts::speech_session::SpeechEligibility,
-{
+impl<Prepared: Send + 'static> SpeechStreamHost for SessionSpeechHost<Prepared> {
     fn open(&self, owner: &str, room: RoomName) -> Result<u32, SpeechError> {
+        if !(self.route_is_configured)(&room) {
+            return Err(SpeechError::NoSatellite(room));
+        }
         let owner_id =
             PluginOwner::new(format!("{}:{owner}", self.owner_token)).map_err(Self::map_session)?;
-        let raw = {
-            let mut next = self.next.lock().unwrap_or_else(|e| e.into_inner());
-            let id = *next;
-            *next = next.checked_add(1).ok_or(SpeechError::Limit)?;
-            id
-        };
-        let key = (owner.to_owned(), raw);
+        let raw;
         let (tx, mut rx) = tokio::sync::mpsc::channel(MAX_RETAINED_RESULTS);
         let results = Arc::new(Mutex::new(VecDeque::new()));
         let (cancel, mut cancelled) = tokio::sync::watch::channel(false);
@@ -223,9 +241,14 @@ where
             if sessions.len() >= MAX_LIVE_SESSIONS {
                 return Err(SpeechError::Limit);
             }
-            if sessions.keys().any(|(existing, _)| existing == owner) {
+            if sessions.iter().any(|((existing, _), slot)| {
+                existing == owner && !slot.finished.load(Ordering::Acquire)
+            }) {
                 return Err(SpeechError::Busy);
             }
+            raw =
+                self.allocate_session(|candidate| sessions.keys().any(|(_, id)| *id == candidate))?;
+            let key = (owner.to_owned(), raw);
             let slot = Arc::new(SessionSlot {
                 accepting: AtomicBool::new(true),
                 commands: tx,
@@ -238,38 +261,43 @@ where
         let manager = Arc::clone(&self.manager);
         self.handle.spawn(async move {
             let mut id = None;
+            let mut completions = tokio::task::JoinSet::new();
             let work = async {
-                while let Some(Command::Submit {
-                    request,
-                    text,
-                    deadline,
-                }) = rx.recv().await
-                {
-                    if tokio::time::Instant::now() >= deadline {
-                        push_status(&results, (request, SpeechOutcome::Expired));
-                        continue;
+                loop {
+                    if rx.is_closed() && completions.is_empty() {
+                        break;
                     }
-                    if id.is_none() {
-                        match manager.open(owner_id.clone(), room.clone()).await {
-                            Ok(opened) => id = Some(opened),
-                            Err(error) => {
-                                push_status(&results, (request, map_session_outcome(error)));
+                    tokio::select! {
+                        command = rx.recv(), if !rx.is_closed() => {
+                            let Some(Command::Submit { request, text, deadline }) = command else { continue; };
+                            if tokio::time::Instant::now() >= deadline {
+                                push_status(&results, (request, SpeechOutcome::Expired));
                                 continue;
                             }
+                            if id.is_none() {
+                                match manager.open(owner_id.clone(), room.clone()).await {
+                                    Ok(opened) => id = Some(opened),
+                                    Err(error) => {
+                                        push_status(&results, (request, map_session_outcome(error)));
+                                        continue;
+                                    }
+                                }
+                            }
+                            match tokio::time::timeout_at(deadline, manager.submit(id.unwrap(), &text)).await {
+                                Ok(Ok((_, terminal))) => {
+                                    completions.spawn(async move {
+                                        let outcome = terminal.await.map(map_terminal).unwrap_or(SpeechOutcome::Cancelled);
+                                        (request, outcome)
+                                    });
+                                }
+                                Ok(Err(reason)) => push_status(&results, (request, map_rejection(reason))),
+                                Err(_) => push_status(&results, (request, SpeechOutcome::Expired)),
+                            }
+                        }
+                        Some(Ok((request, outcome))) = completions.join_next(), if !completions.is_empty() => {
+                            push_status(&results, (request, outcome));
                         }
                     }
-                    let outcome =
-                        match tokio::time::timeout_at(deadline, manager.submit(id.unwrap(), &text))
-                            .await
-                        {
-                            Ok(Ok((_, terminal))) => terminal
-                                .await
-                                .map(map_terminal)
-                                .unwrap_or(SpeechOutcome::Cancelled),
-                            Ok(Err(reason)) => map_rejection(reason),
-                            Err(_) => SpeechOutcome::Expired,
-                        };
-                    push_status(&results, (request, outcome));
                 }
             };
             tokio::select! {
@@ -277,6 +305,7 @@ where
                 _ = cancelled.changed() => {},
                 () = work => {},
             }
+            completions.abort_all();
             if let Some(id) = id {
                 manager.close(id).await;
             }
@@ -290,14 +319,7 @@ where
         Ok(raw)
     }
     fn submit(&self, owner: &str, session: u32, text: String) -> Result<u64, SpeechError> {
-        self.owner(owner, session)?;
-        let slot = self
-            .sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&(owner.to_owned(), session))
-            .cloned()
-            .ok_or(SpeechError::NotOwned)?;
+        let slot = self.owned_slot(owner, session)?;
         let mut queue = slot.results.lock().unwrap_or_else(|e| e.into_inner());
         if queue.len() >= MAX_RETAINED_RESULTS {
             return Err(SpeechError::Limit);
@@ -306,8 +328,8 @@ where
             return Err(SpeechError::Closed);
         }
         let raw = {
-            let mut next = self.next.lock().unwrap_or_else(|e| e.into_inner());
-            let raw = u64::from(*next);
+            let mut next = self.next_request.lock().unwrap_or_else(|e| e.into_inner());
+            let raw = *next;
             *next = next.checked_add(1).ok_or(SpeechError::Limit)?;
             raw
         };
@@ -392,7 +414,7 @@ impl Drop for HostState {
 
 impl HostState {
     fn speech_enabled(&self) -> Result<(), HostError> {
-        if !self.plugin.manifest.permissions.speech_stream {
+        if self.plugin.manifest.permissions.speech_stream.is_none() {
             return Err(HostError::NotPermitted(
                 "the manifest does not ask for speech_stream".into(),
             ));
@@ -430,6 +452,32 @@ impl HostState {
 impl speech_stream::Host for HostState {
     fn open(&mut self, room: String) -> Result<u32, HostError> {
         self.speech_enabled()?;
+        let grant = self
+            .plugin
+            .manifest
+            .permissions
+            .speech_stream
+            .as_ref()
+            .ok_or_else(|| {
+                HostError::NotPermitted("the manifest does not ask for speech_stream".into())
+            })?;
+        let setting = self.plugin.manifest.setting(&grant.room).ok_or_else(|| {
+            HostError::Invalid("speech_stream room setting is not declared".into())
+        })?;
+        let configured = setting
+            .value(&self.settings)
+            .and_then(|value| match value {
+                SettingValue::Text(room) => Some(room),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                HostError::Unavailable("the household has not selected a speech room".into())
+            })?;
+        if room != configured {
+            return Err(HostError::NotPermitted(
+                "the requested room does not match the household-selected speech room".into(),
+            ));
+        }
         let room = RoomName::parse(room.as_str()).map_err(|e| HostError::Invalid(e.to_string()))?;
 
         let service = self.house.speech_stream.get().ok_or_else(|| {
@@ -439,11 +487,9 @@ impl speech_stream::Host for HostState {
     }
     fn submit(&mut self, session: u32, text: String) -> Result<u64, HostError> {
         self.speech_enabled()?;
-        if text.trim().is_empty()
-            || text.chars().count() > niles_tts::speech_session::MAX_UTTERANCE_CHARS
-        {
+        if text.trim().is_empty() || text.chars().count() > 120 {
             return Err(HostError::Invalid(
-                "speech text must contain 1..=256 characters".into(),
+                "speech text must contain 1..=120 characters".into(),
             ));
         }
         self.house
@@ -480,6 +526,9 @@ impl speech_stream::Host for HostState {
                     SpeechOutcome::Expired => Outcome::Expired,
                     SpeechOutcome::Failed => Outcome::Failed,
                     SpeechOutcome::Cancelled => Outcome::Cancelled,
+                    SpeechOutcome::Replaced => Outcome::Replaced,
+                    SpeechOutcome::RateLimited => Outcome::RateLimited,
+                    SpeechOutcome::NoSatellite => Outcome::NoSatellite,
                 },
             })
             .collect())

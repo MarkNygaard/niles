@@ -10,7 +10,10 @@ use tokio::sync::Notify;
 #[tokio::test]
 async fn owner_teardown_discards_unpolled_results_and_allows_replacement() {
     tokio::time::timeout(Duration::from_secs(5), async {
-        let manager = Arc::new(SpeechSessionManager::new(true, Output::default(), Policy));
+        let manager = Arc::new(SpeechSessionManager::new(
+            callbacks(Arc::new(Output::default())),
+            policy(),
+        ));
         let host = SessionSpeechHost::new(manager, Handle::current());
         let room = RoomName::parse("office").unwrap();
         let session = host.open("addon", room.clone()).unwrap();
@@ -32,11 +35,8 @@ async fn owner_teardown_discards_unpolled_results_and_allows_replacement() {
     .unwrap();
 }
 
-struct Policy;
-impl SpeechEligibility for Policy {
-    async fn check(&self, _: &PluginOwner, _: &RoomName) -> Eligibility {
-        Eligibility::Eligible
-    }
+fn policy() -> SpeechEligibility {
+    SpeechEligibility::new(|_: PluginOwner, _: RoomName| async { Eligibility::Eligible })
 }
 struct Output {
     started: Arc<Notify>,
@@ -44,6 +44,32 @@ struct Output {
     delivered: Arc<Mutex<Vec<(String, String)>>>,
     fail: bool,
 }
+
+#[tokio::test]
+async fn open_requires_a_configured_route_and_names_the_selected_room() {
+    let host = SessionSpeechHost::with_route_validator(
+        Arc::new(SpeechSessionManager::new(
+            callbacks(Arc::new(Output::default())),
+            policy(),
+        )),
+        Handle::current(),
+        |room| room.as_str() == "office",
+    );
+    let room = RoomName::parse("study").unwrap();
+    let error = host.open("addon", room.clone()).unwrap_err();
+    assert_eq!(error, SpeechError::NoSatellite(room));
+    assert!(matches!(
+        map_error(error),
+        HostError::Unavailable(message) if message.contains("study")
+    ));
+
+    let session = host
+        .open("addon", RoomName::parse("office").unwrap())
+        .unwrap();
+    host.close_owner("addon");
+    assert_ne!(session, 0);
+}
+
 impl Default for Output {
     fn default() -> Self {
         Self {
@@ -54,18 +80,24 @@ impl Default for Output {
         }
     }
 }
-impl SpeechOutput for Output {
-    async fn render_and_deliver(&self, room: &RoomName, text: &str) -> Result<(), ()> {
-        self.started.notify_one();
-        if let Some(gate) = &self.gate {
-            gate.acquire().await.unwrap().forget();
+fn callbacks(output: Arc<Output>) -> SpeechOutput<(String, String)> {
+    let prepare = |room: RoomName, text: String| async move { Ok((room.to_string(), text)) };
+    let deliver_output = output;
+    SpeechOutput::new(prepare, move |(room, text): (String, String)| {
+        let output = deliver_output.clone();
+        async move {
+            output.started.notify_one();
+            if let Some(gate) = &output.gate {
+                gate.acquire().await.unwrap().forget();
+            }
+            output
+                .delivered
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push((room, text));
+            if output.fail { Err(()) } else { Ok(()) }
         }
-        self.delivered
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push((room.to_string(), text.to_owned()));
-        if self.fail { Err(()) } else { Ok(()) }
-    }
+    })
 }
 
 struct LivePolicy {
@@ -84,18 +116,21 @@ impl LivePolicy {
         }
     }
 }
-impl SpeechEligibility for LivePolicy {
-    async fn check(&self, _: &PluginOwner, _: &RoomName) -> Eligibility {
-        if self.checks.fetch_add(1, Ordering::SeqCst) == 2 {
-            self.delivery_check_started.notify_one();
-            self.delivery_check_gate.notified().await;
+fn live_policy(policy: Arc<LivePolicy>) -> SpeechEligibility {
+    SpeechEligibility::new(move |_: PluginOwner, _: RoomName| {
+        let policy = policy.clone();
+        async move {
+            if policy.checks.fetch_add(1, Ordering::SeqCst) == 2 {
+                policy.delivery_check_started.notify_one();
+                policy.delivery_check_gate.notified().await;
+            }
+            policy.eligibility.lock().await.clone()
         }
-        self.eligibility.lock().await.clone()
-    }
+    })
 }
 
-async fn statuses_until<P: SpeechEligibility>(
-    host: &SessionSpeechHost<Output, P>,
+async fn statuses_until(
+    host: &SessionSpeechHost<(String, String)>,
     owner: &str,
     session: u32,
     expected: usize,
@@ -111,7 +146,10 @@ async fn statuses_until<P: SpeechEligibility>(
 #[tokio::test]
 async fn current_thread_calls_return_and_close_preserves_all_results() {
     tokio::time::timeout(Duration::from_secs(5), async {
-        let manager = Arc::new(SpeechSessionManager::new(true, Output::default(), Policy));
+        let manager = Arc::new(SpeechSessionManager::new(
+            callbacks(Arc::new(Output::default())),
+            policy(),
+        ));
         let host = SessionSpeechHost::new(manager, Handle::current());
         let session = host
             .open("addon", RoomName::parse("office").unwrap())
@@ -121,7 +159,10 @@ async fn current_thread_calls_return_and_close_preserves_all_results() {
         assert!(host.poll("addon", session).unwrap().is_empty());
         let second = host.submit("addon", session, "total forty".into()).unwrap();
         host.close("addon", session);
-        assert!(host.submit("addon", session, "late".into()).is_err());
+        assert_eq!(
+            host.submit("addon", session, "late".into()),
+            Err(SpeechError::Closed)
+        );
         let mut observed = Vec::new();
         while observed.len() < 2 {
             observed.extend(host.poll("addon", session).unwrap());
@@ -140,9 +181,64 @@ async fn current_thread_calls_return_and_close_preserves_all_results() {
 }
 
 #[tokio::test]
+async fn closed_session_is_closed_for_its_owner_but_not_owned_by_another() {
+    let host = SessionSpeechHost::new(
+        Arc::new(SpeechSessionManager::new(
+            callbacks(Arc::new(Output::default())),
+            policy(),
+        )),
+        Handle::current(),
+    );
+    let session = host
+        .open("owner-a", RoomName::parse("office").unwrap())
+        .unwrap();
+    host.close("owner-a", session);
+    assert_eq!(
+        host.submit("owner-a", session, "late".into()),
+        Err(SpeechError::Closed)
+    );
+    assert_eq!(
+        host.submit("owner-b", session, "foreign".into()),
+        Err(SpeechError::NotOwned)
+    );
+}
+
+#[tokio::test]
+async fn session_ids_wrap_without_reusing_retained_closed_sessions_and_requests_are_u64() {
+    let host = SessionSpeechHost::new(
+        Arc::new(SpeechSessionManager::new(
+            callbacks(Arc::new(Output::default())),
+            policy(),
+        )),
+        Handle::current(),
+    );
+    *host.next_session.lock().unwrap() = u32::MAX;
+    *host.next_request.lock().unwrap() = u64::from(u32::MAX) + 1;
+    let room = RoomName::parse("office").unwrap();
+    let first = host.open("owner-a", room.clone()).unwrap();
+    let request = host
+        .submit("owner-a", first, "wide request id".into())
+        .unwrap();
+    assert_eq!(request, u64::from(u32::MAX) + 1);
+    host.close("owner-a", first);
+    let replacement = loop {
+        match host.open("owner-a", room.clone()) {
+            Ok(id) => break id,
+            Err(SpeechError::Busy) => tokio::task::yield_now().await,
+            other => panic!("unexpected reopen: {other:?}"),
+        }
+    };
+    assert_ne!(replacement, first);
+    host.close_owner("owner-a");
+}
+
+#[tokio::test]
 async fn plain_thread_calls_need_no_current_runtime_and_capacity_is_bounded() {
     tokio::time::timeout(Duration::from_secs(5), async {
-        let manager = Arc::new(SpeechSessionManager::new(true, Output::default(), Policy));
+        let manager = Arc::new(SpeechSessionManager::new(
+            callbacks(Arc::new(Output::default())),
+            policy(),
+        ));
         let host = Arc::new(SessionSpeechHost::new(manager, Handle::current()));
         let other = host.clone();
         let session = std::thread::spawn(move || {
@@ -186,7 +282,10 @@ async fn accepted_requests_report_ordered_ids_and_exact_room_text_delivery() {
         };
         let gate = output.gate.clone().unwrap();
         let delivered = output.delivered.clone();
-        let manager = Arc::new(SpeechSessionManager::new(true, output, Policy));
+        let manager = Arc::new(SpeechSessionManager::new(
+            callbacks(Arc::new(output)),
+            policy(),
+        ));
         let host = SessionSpeechHost::new(manager, Handle::current());
         let session = host
             .open("addon", RoomName::parse("office").unwrap())
@@ -202,16 +301,13 @@ async fn accepted_requests_report_ordered_ids_and_exact_room_text_delivery() {
         assert_eq!(
             statuses_until(&host, "addon", session, 2).await,
             [
-                (first, SpeechOutcome::Delivered),
+                (first, SpeechOutcome::Replaced),
                 (second, SpeechOutcome::Delivered)
             ]
         );
         assert_eq!(
             *delivered.lock().unwrap_or_else(|error| error.into_inner()),
-            [
-                ("office".into(), "first exact text".into()),
-                ("office".into(), "second exact text".into())
-            ]
+            [("office".into(), "second exact text".into())]
         );
         assert!(host.poll("addon", session).unwrap().is_empty());
         host.close_owner("addon");
@@ -227,7 +323,10 @@ async fn queued_host_request_expires_behind_gated_output_and_reports_once_in_ord
         let gate = output.gate.clone().unwrap();
         let started = output.started.clone();
         let delivered = output.delivered.clone();
-        let manager = Arc::new(SpeechSessionManager::new(true, output, Policy));
+        let manager = Arc::new(SpeechSessionManager::new(
+            callbacks(Arc::new(output)),
+            policy(),
+        ));
         let host = SessionSpeechHost::new(manager, Handle::current());
         let session = host
             .open("addon", RoomName::parse("office").unwrap())
@@ -267,7 +366,10 @@ async fn overload_preserves_accepted_statuses_and_draining_allows_later_submissi
         let output = Output::default();
         let gate = output.gate.clone().unwrap();
         let delivered = output.delivered.clone();
-        let manager = Arc::new(SpeechSessionManager::new(true, output, Policy));
+        let manager = Arc::new(SpeechSessionManager::new(
+            callbacks(Arc::new(output)),
+            policy(),
+        ));
         let host = SessionSpeechHost::new(manager, Handle::current());
         let session = host
             .open("addon", RoomName::parse("office").unwrap())
@@ -290,7 +392,17 @@ async fn overload_preserves_accepted_statuses_and_draining_allows_later_submissi
             accepted
                 .iter()
                 .copied()
-                .map(|request| (request, SpeechOutcome::Delivered))
+                .enumerate()
+                .map(|(index, request)| {
+                    (
+                        request,
+                        if index + 1 == MAX_RETAINED_RESULTS {
+                            SpeechOutcome::Delivered
+                        } else {
+                            SpeechOutcome::Replaced
+                        },
+                    )
+                })
                 .collect::<Vec<_>>()
         );
         assert!(host.poll("addon", session).unwrap().is_empty());
@@ -308,7 +420,7 @@ async fn overload_preserves_accepted_statuses_and_draining_allows_later_submissi
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .len(),
-            MAX_RETAINED_RESULTS + 1
+            2
         );
         host.close_owner("addon");
     })
@@ -327,7 +439,10 @@ async fn close_during_blocked_delivery_eligibility_cancels_and_releases_reservat
             ..Output::default()
         };
         let delivered = output.delivered.clone();
-        let manager = Arc::new(SpeechSessionManager::new(true, output, policy));
+        let manager = Arc::new(SpeechSessionManager::new(
+            callbacks(Arc::new(output)),
+            live_policy(Arc::new(policy)),
+        ));
         let host = SessionSpeechHost::new(manager, Handle::current());
         let room = RoomName::parse("office").unwrap();
         let session = host.open("addon", room.clone()).unwrap();
@@ -378,6 +493,64 @@ async fn close_during_blocked_delivery_eligibility_cancels_and_releases_reservat
 }
 
 #[tokio::test]
+async fn rate_limit_is_reported_with_the_submission_correlation_id() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let output = Output {
+            gate: None,
+            ..Output::default()
+        };
+        let manager = Arc::new(SpeechSessionManager::new(
+            callbacks(Arc::new(output)),
+            policy(),
+        ));
+        let host = SessionSpeechHost::new(manager, Handle::current());
+        let room = RoomName::parse("office").unwrap();
+        let mut accepted = 0;
+        while accepted < niles_tts::speech_session::OWNER_RATE_LIMIT {
+            let session = loop {
+                match host.open("addon", room.clone()) {
+                    Ok(id) => break id,
+                    Err(SpeechError::Busy) => tokio::task::yield_now().await,
+                    other => panic!("unexpected open result: {other:?}"),
+                }
+            };
+            let count =
+                (niles_tts::speech_session::OWNER_RATE_LIMIT - accepted).min(MAX_RETAINED_RESULTS);
+            let ids: Vec<_> = (0..count)
+                .map(|_| host.submit("addon", session, "quota".into()).unwrap())
+                .collect();
+            let statuses = statuses_until(&host, "addon", session, count).await;
+            assert_eq!(
+                statuses
+                    .iter()
+                    .map(|(request, _)| *request)
+                    .collect::<Vec<_>>(),
+                ids
+            );
+            accepted += count;
+            host.close("addon", session);
+        }
+        let session = loop {
+            match host.open("addon", room.clone()) {
+                Ok(id) => break id,
+                Err(SpeechError::Busy) => tokio::task::yield_now().await,
+                other => panic!("unexpected open result after quota: {other:?}"),
+            }
+        };
+        let request = host
+            .submit("addon", session, "rate limited".into())
+            .unwrap();
+        assert_eq!(
+            statuses_until(&host, "addon", session, 1).await,
+            [(request, SpeechOutcome::RateLimited)]
+        );
+        host.close_owner("addon");
+    })
+    .await
+    .expect("rate-limit correlation exceeded its ten-second test budget");
+}
+
+#[tokio::test]
 async fn output_transport_failure_is_a_single_terminal_failed_status() {
     tokio::time::timeout(Duration::from_secs(5), async {
         let output = Output {
@@ -387,7 +560,10 @@ async fn output_transport_failure_is_a_single_terminal_failed_status() {
         };
         let gate = output.gate.clone().unwrap();
         let delivered = output.delivered.clone();
-        let manager = Arc::new(SpeechSessionManager::new(true, output, Policy));
+        let manager = Arc::new(SpeechSessionManager::new(
+            callbacks(Arc::new(output)),
+            policy(),
+        ));
         let host = SessionSpeechHost::new(manager, Handle::current());
         let session = host
             .open("addon", RoomName::parse("office").unwrap())
@@ -426,7 +602,10 @@ async fn live_policy_changes_are_terminal_and_rejected_text_never_reaches_output
             let eligibility_state = policy.eligibility.clone();
             let output = Output::default();
             let delivered = output.delivered.clone();
-            let manager = Arc::new(SpeechSessionManager::new(true, output, policy));
+            let manager = Arc::new(SpeechSessionManager::new(
+                callbacks(Arc::new(output)),
+                live_policy(Arc::new(policy)),
+            ));
             let host = SessionSpeechHost::new(manager, Handle::current());
             let session = host
                 .open("addon", RoomName::parse("office").unwrap())
@@ -465,7 +644,10 @@ async fn unrelated_owner_cannot_poll_submit_or_close_another_sessions_work() {
         };
         let gate = output.gate.clone().unwrap();
         let delivered = output.delivered.clone();
-        let manager = Arc::new(SpeechSessionManager::new(true, output, Policy));
+        let manager = Arc::new(SpeechSessionManager::new(
+            callbacks(Arc::new(output)),
+            policy(),
+        ));
         let host = SessionSpeechHost::new(manager, Handle::current());
         let session = host
             .open("owner-a", RoomName::parse("office").unwrap())

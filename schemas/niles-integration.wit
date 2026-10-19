@@ -754,15 +754,18 @@ interface speech-stream {
     use types.{host-error};
     type session-id = u32;
     type request-id = u64;
-    enum outcome { pending, delivered, busy, quiet, disabled, unavailable, overload, expired, failed, cancelled }
+    enum outcome { pending, delivered, busy, quiet, disabled, unavailable, overload, expired, failed, cancelled, replaced, rate-limited, no-satellite }
     record request-status { request: request-id, outcome: outcome }
     /// Open one stream in the selected room. Requires the speech-stream
-    /// permission and a user-enabled boolean `speech_stream_enabled` setting.
+    /// permission, its declared household room setting, and a user-enabled
+    /// boolean `speech_stream_enabled` setting. The room must match that setting.
     open: func(room: string) -> result<session-id, host-error>;
     /// Queue one short utterance without waiting for synthesis or output.
     /// At most 32 uncollected requests per session; excess is `limit`.
     submit: func(session: session-id, text: string) -> result<request-id, host-error>;
-    /// Results are ordered and bounded to 32 retained records per session.
+    /// Results stay correlated with submissions and ordered by request id.
+    /// Until transport starts, a newer accepted submission replaces older
+    /// pending work and reports `replaced`; expiry is checked at transport start.
     poll: func(session: session-id) -> result<list<request-status>, host-error>;
     /// Idempotently close an owned session and cancel its pending work.
     close: func(session: session-id);

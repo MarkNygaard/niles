@@ -98,7 +98,14 @@ pub struct Permissions {
     pub websocket: Vec<WebSocketGrant>,
     /// Permission to use Niles's room-bound text speech stream (interface 0.5).
     #[serde(default)]
-    pub speech_stream: bool,
+    pub speech_stream: Option<SpeechStreamGrant>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpeechStreamGrant {
+    /// The declared room setting whose current value fixes the session room.
+    pub room: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -630,8 +637,27 @@ impl Manifest {
         {
             out.push("websocket: WebSockets are in interface 0.4; set interface = \"0.4\" and build against its WIT".into());
         }
-        if self.permissions.speech_stream && self.interface != "0.5" {
+        if self.permissions.speech_stream.is_some() && self.interface != "0.5" {
             out.push("speech_stream: the speech stream is in interface 0.5; set interface = \"0.5\" and build against its WIT".into());
+        }
+        if let Some(grant) = &self.permissions.speech_stream {
+            match self.setting(&grant.room) {
+                Some(setting) if setting.kind == SettingKind::Room => {}
+                Some(_) => out.push(format!(
+                    "speech_stream: room setting {:?} must have type room",
+                    grant.room
+                )),
+                None => out.push(format!(
+                    "speech_stream: room setting {:?} is not declared",
+                    grant.room
+                )),
+            }
+            match self.setting("speech_stream_enabled") {
+                Some(setting) if setting.kind == SettingKind::Boolean
+                    && setting.default.as_ref().is_none_or(|v| matches!(v, toml::Value::Boolean(false))) => {}
+                Some(_) => out.push("speech_stream: speech_stream_enabled must be a boolean setting with no default or default = false".into()),
+                None => out.push("speech_stream: requires a boolean speech_stream_enabled setting with no default or default = false".into()),
+            }
         }
     }
 
@@ -978,6 +1004,48 @@ room = "setting:room"
         assert_eq!(spotprice().problems(), Vec::<String>::new());
         assert_eq!(spotprice().source(), "x_spotprice");
         assert_eq!(spotprice().memory_mb(), DEFAULT_MEMORY_MB);
+    }
+
+    #[test]
+    fn speech_stream_requires_false_or_absent_boolean_and_room_settings() {
+        let valid = format!(
+            "{}\n[[settings]]\nkey = \"speech_stream_enabled\"\nlabel = \"Enabled\"\ntype = \"boolean\"\ndefault = false\n\n[[settings]]\nkey = \"room\"\nlabel = \"Room\"\ntype = \"room\"",
+            SPOTPRICE
+                .replace(
+                    "devices = true",
+                    "devices = true\nspeech_stream = { room = \"room\" }"
+                )
+                .replace("interface = \"0.1\"", "interface = \"0.5\"")
+        );
+        let manifest = Manifest::parse(&valid).unwrap();
+        assert!(manifest.problems().is_empty(), "{:?}", manifest.problems());
+
+        for (needle, replacement, expected) in [
+            (
+                "\nkey = \"speech_stream_enabled\"",
+                "\nkey = \"other_enabled\"",
+                "speech_stream_enabled",
+            ),
+            (
+                "type = \"boolean\"",
+                "type = \"string\"",
+                "speech_stream_enabled",
+            ),
+            ("default = false", "default = true", "speech_stream_enabled"),
+            ("type = \"room\"", "type = \"string\"", "room"),
+            ("key = \"room\"", "key = \"other_room\"", "room setting"),
+        ] {
+            let invalid = valid.replacen(needle, replacement, 1);
+            let parsed = Manifest::parse(&invalid).expect("invalid declarations still parse");
+            assert!(
+                parsed
+                    .problems()
+                    .iter()
+                    .any(|problem| problem.contains(expected)),
+                "{expected}: {:?}",
+                parsed.problems()
+            );
+        }
     }
 
     #[test]

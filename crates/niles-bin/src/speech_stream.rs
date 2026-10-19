@@ -12,7 +12,7 @@ use niles_core::RoomName;
 use niles_notifications::QuietHoursConfig;
 use niles_tts::{
     PiperClient,
-    speech_session::{Eligibility, PluginOwner, SpeechEligibility, SpeechOutput},
+    speech_session::{Eligibility, PluginOwner},
 };
 use std::{
     collections::HashMap,
@@ -30,6 +30,7 @@ pub(crate) struct RoomArbiter {
 struct RoomState {
     conversations: usize,
     commentary: Option<watch::Sender<bool>>,
+    notifications: usize,
 }
 
 /// Held from wake until the voice dispatch task has finished its reply.
@@ -64,6 +65,19 @@ impl Drop for CommentaryLease {
         }
     }
 }
+
+pub(crate) struct NotificationLease {
+    arbiter: Arc<RoomArbiter>,
+    room: RoomName,
+}
+impl Drop for NotificationLease {
+    fn drop(&mut self) {
+        let mut rooms = self.arbiter.rooms.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(state) = rooms.get_mut(&self.room) {
+            state.notifications = state.notifications.saturating_sub(1);
+        }
+    }
+}
 impl RoomArbiter {
     pub(crate) fn enter_conversation(self: &Arc<Self>, room: RoomName) -> ConversationLease {
         let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
@@ -80,7 +94,7 @@ impl RoomArbiter {
     fn try_start_commentary(self: &Arc<Self>, room: &RoomName) -> Result<CommentaryLease, ()> {
         let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
         let state = rooms.entry(room.clone()).or_default();
-        if state.conversations != 0 || state.commentary.is_some() {
+        if state.conversations != 0 || state.notifications != 0 || state.commentary.is_some() {
             return Err(());
         }
         let (cancel, cancelled) = watch::channel(false);
@@ -91,11 +105,23 @@ impl RoomArbiter {
             cancelled,
         })
     }
+    pub(crate) fn reserve_notification(self: &Arc<Self>, room: &RoomName) -> NotificationLease {
+        let mut rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
+        let state = rooms.entry(room.clone()).or_default();
+        state.notifications += 1;
+        if let Some(cancel) = &state.commentary {
+            let _ = cancel.send(true);
+        }
+        NotificationLease {
+            arbiter: self.clone(),
+            room: room.clone(),
+        }
+    }
     fn busy(&self, room: &RoomName) -> bool {
         let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
-        rooms
-            .get(room)
-            .is_some_and(|state| state.conversations != 0 || state.commentary.is_some())
+        rooms.get(room).is_some_and(|state| {
+            state.conversations != 0 || state.notifications != 0 || state.commentary.is_some()
+        })
     }
 }
 
@@ -110,11 +136,20 @@ pub(crate) fn spawn_conversation_task<T: Send + 'static>(
     })
 }
 
-pub(crate) fn drop_conversation_for_peer(
+pub(crate) fn take_conversation_after_audio(
     conversations: &mut HashMap<SocketAddr, ConversationLease>,
     peer: SocketAddr,
-) {
-    conversations.remove(&peer);
+    audio_stop: bool,
+    accepted: bool,
+) -> Option<ConversationLease> {
+    if accepted {
+        conversations.remove(&peer)
+    } else if audio_stop {
+        conversations.remove(&peer);
+        None
+    } else {
+        None
+    }
 }
 
 /// The production policy. It is deliberately separate from notification
@@ -138,12 +173,12 @@ impl CommentaryPolicy {
         }
     }
 }
-impl SpeechEligibility for CommentaryPolicy {
-    async fn check(&self, _: &PluginOwner, room: &RoomName) -> Eligibility {
+impl CommentaryPolicy {
+    pub(crate) async fn check(&self, _: &PluginOwner, room: &RoomName) -> Eligibility {
         if self.quiet.is_active(Utc::now()) {
             Eligibility::QuietHours
         } else if self.satellites.ip_for(room).is_none() {
-            Eligibility::Unavailable
+            Eligibility::NoSatellite
         } else if self.arbiter.busy(room) {
             Eligibility::Busy
         } else {
@@ -173,8 +208,18 @@ impl CommentaryOutput {
         }
     }
 }
-impl SpeechOutput for CommentaryOutput {
-    async fn render_and_deliver(&self, room: &RoomName, text: &str) -> Result<(), ()> {
+pub(crate) struct PreparedCommentary {
+    ip: std::net::IpAddr,
+    pcm: Vec<u8>,
+    format: niles_wyoming::AudioFormat,
+    lease: CommentaryLease,
+}
+impl CommentaryOutput {
+    pub(crate) async fn prepare(
+        &self,
+        room: &RoomName,
+        text: &str,
+    ) -> Result<PreparedCommentary, ()> {
         let mut lease = self.arbiter.try_start_commentary(room)?;
         let Some(ip) = self.satellites.ip_for(room) else {
             return Err(());
@@ -185,12 +230,21 @@ impl SpeechOutput for CommentaryOutput {
             let (pcm, format) = for_satellite(pcm, format);
             let peer = SocketAddr::new(ip, 0);
             let volume = self.satellites.volume_for(peer);
-            let pcm = at_volume(&pcm, format.bits_per_sample, volume);
-            crate::push::speak_to(ip, &pcm, format)
-                .await
-                .map_err(|_| ())
+            let pcm = at_volume(&pcm, format.bits_per_sample, volume).into_owned();
+            Ok::<_, ()>((pcm, format))
         };
-        tokio::select! { biased; _ = lease.cancelled() => Err(()), result = work => result }
+        let (pcm, format) = tokio::select! { biased; _ = lease.cancelled() => return Err(()), result = work => result }?;
+        Ok(PreparedCommentary {
+            ip,
+            pcm,
+            format,
+            lease,
+        })
+    }
+
+    pub(crate) async fn deliver(&self, mut prepared: PreparedCommentary) -> Result<(), ()> {
+        let work = crate::push::speak_to(prepared.ip, &prepared.pcm, prepared.format);
+        tokio::select! { biased; _ = prepared.lease.cancelled() => Err(()), result = work => result.map_err(|_| ()) }
     }
 }
 
@@ -198,6 +252,7 @@ impl SpeechOutput for CommentaryOutput {
 mod tests {
     use super::*;
     use niles_tts::speech_session::SpeechOutput;
+
     use tokio::sync::Notify;
 
     #[tokio::test]
@@ -275,11 +330,166 @@ mod tests {
     async fn disconnect_drops_pending_session_reservation() {
         let arbiter = Arc::new(RoomArbiter::default());
         let room = RoomName::parse("office").unwrap();
-        let peer = "127.0.0.1:43210".parse().unwrap();
+        let peer: SocketAddr = "127.0.0.1:43210".parse().unwrap();
         let mut conversations = HashMap::from([(peer, arbiter.enter_conversation(room.clone()))]);
 
         assert!(arbiter.try_start_commentary(&room).is_err());
-        drop_conversation_for_peer(&mut conversations, peer);
+        conversations.remove(&peer);
+        assert!(arbiter.try_start_commentary(&room).is_ok());
+    }
+
+    #[tokio::test]
+    async fn notification_preempts_commentary_and_blocks_new_commentary() {
+        let arbiter = Arc::new(RoomArbiter::default());
+        let room = RoomName::parse("office").unwrap();
+        let mut commentary = arbiter.try_start_commentary(&room).unwrap();
+        let notification = arbiter.reserve_notification(&room);
+        tokio::time::timeout(std::time::Duration::from_secs(1), commentary.cancelled())
+            .await
+            .unwrap();
+        assert!(arbiter.try_start_commentary(&room).is_err());
+        drop(commentary);
+        drop(notification);
+        assert!(arbiter.try_start_commentary(&room).is_ok());
+    }
+
+    #[tokio::test]
+    async fn rejected_audio_stop_releases_but_valid_session_transfers_lease() {
+        let arbiter = Arc::new(RoomArbiter::default());
+        let room = RoomName::parse("office").unwrap();
+        let peer: SocketAddr = "127.0.0.1:43210".parse().unwrap();
+        let mut conversations = HashMap::from([(peer, arbiter.enter_conversation(room.clone()))]);
+        assert!(take_conversation_after_audio(&mut conversations, peer, true, false).is_none());
+        assert!(arbiter.try_start_commentary(&room).is_ok());
+        conversations.insert(peer, arbiter.enter_conversation(room.clone()));
+        let transferred = take_conversation_after_audio(&mut conversations, peer, true, true);
+        assert!(arbiter.try_start_commentary(&room).is_err());
+        drop(transferred);
+        assert!(arbiter.try_start_commentary(&room).is_ok());
+    }
+
+    #[test]
+    fn invalid_format_and_oversize_session_stops_release_the_actual_wake_lease() {
+        use niles_wyoming::{Event, EventKind, SessionTracker, server::IncomingEvent};
+        use serde_json::json;
+
+        fn incoming(
+            peer: SocketAddr,
+            kind: EventKind,
+            data: serde_json::Value,
+            payload: Vec<u8>,
+        ) -> IncomingEvent {
+            IncomingEvent {
+                from: peer,
+                event: Event {
+                    kind,
+                    data,
+                    payload,
+                    version: None,
+                },
+            }
+        }
+
+        let arbiter = Arc::new(RoomArbiter::default());
+        let room = RoomName::parse("office").unwrap();
+        let peer: SocketAddr = "127.0.0.1:43210".parse().unwrap();
+        let mut conversations = HashMap::new();
+        let mut tracker = SessionTracker::new();
+
+        conversations.insert(peer, arbiter.enter_conversation(room.clone()));
+        let accepted = tracker.feed(incoming(peer, EventKind::AudioStart, json!({}), vec![]));
+        take_conversation_after_audio(&mut conversations, peer, false, accepted.is_some());
+        let accepted = tracker.feed(incoming(peer, EventKind::AudioStop, json!({}), vec![]));
+        take_conversation_after_audio(&mut conversations, peer, true, accepted.is_some());
+        assert!(arbiter.try_start_commentary(&room).is_ok());
+
+        conversations.insert(peer, arbiter.enter_conversation(room.clone()));
+        let accepted = tracker.feed(incoming(
+            peer,
+            EventKind::AudioStart,
+            json!({"rate":16000,"width":2,"channels":1}),
+            vec![],
+        ));
+        take_conversation_after_audio(&mut conversations, peer, false, accepted.is_some());
+        let accepted = tracker.feed(incoming(
+            peer,
+            EventKind::AudioChunk,
+            json!({}),
+            vec![0; 5 * 1024 * 1024 + 1],
+        ));
+        take_conversation_after_audio(&mut conversations, peer, false, accepted.is_some());
+        let accepted = tracker.feed(incoming(peer, EventKind::AudioStop, json!({}), vec![]));
+        take_conversation_after_audio(&mut conversations, peer, true, accepted.is_some());
+        assert!(arbiter.try_start_commentary(&room).is_ok());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn commentary_stays_busy_through_playback_and_satellite_follow_up_window() {
+        let arbiter = Arc::new(RoomArbiter::default());
+        let room = RoomName::parse("office").unwrap();
+        let mut config = niles_config::SatellitesConfig::default();
+        config.satellites.insert(
+            "office".into(),
+            niles_config::SatelliteConfig {
+                ip: "127.0.0.1".into(),
+                room: "office".into(),
+                volume: 100,
+            },
+        );
+        let satellites = Arc::new(SatelliteRegistry::from_config(&config));
+        let policy =
+            CommentaryPolicy::new(arbiter.clone(), satellites, QuietHoursConfig::default());
+        let owner = PluginOwner::new("synthetic-test").unwrap();
+        let conversation = arbiter.enter_conversation(room.clone());
+        let started = Arc::new(Notify::new());
+        let task_started = started.clone();
+        let playback_done = Arc::new(Notify::new());
+        let playback_finished = playback_done.clone();
+        let pcm = vec![0; 48_000 * 2 * 6];
+        let task = spawn_conversation_task(Some(conversation), async move {
+            crate::speak::send_audio_and_wait(
+                &pcm,
+                niles_wyoming::AudioFormat::new(48_000, 16, 1),
+                true,
+                async {
+                    task_started.notify_one();
+                    Ok::<(), ()>(())
+                },
+            )
+            .await
+            .unwrap();
+            playback_finished.notify_one();
+            tokio::time::sleep(crate::follow_up::WAITING).await;
+        });
+        started.notified().await;
+        assert_eq!(policy.check(&owner, &room).await, Eligibility::Busy);
+        tokio::time::advance(std::time::Duration::from_millis(5_999)).await;
+        assert_eq!(policy.check(&owner, &room).await, Eligibility::Busy);
+        tokio::time::advance(std::time::Duration::from_millis(1)).await;
+        playback_done.notified().await;
+        assert_eq!(policy.check(&owner, &room).await, Eligibility::Busy);
+        tokio::time::advance(crate::follow_up::WAITING - std::time::Duration::from_millis(1)).await;
+        assert_eq!(policy.check(&owner, &room).await, Eligibility::Busy);
+        tokio::time::advance(std::time::Duration::from_millis(1)).await;
+        task.await.unwrap();
+        assert_eq!(policy.check(&owner, &room).await, Eligibility::Eligible);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_speak_back_does_not_retain_the_conversation_lease() {
+        let arbiter = Arc::new(RoomArbiter::default());
+        let room = RoomName::parse("office").unwrap();
+        let conversation = arbiter.enter_conversation(room.clone());
+        let task = spawn_conversation_task(Some(conversation), async {
+            crate::speak::send_audio_and_wait(
+                &[0; 48_000 * 2 * 6],
+                niles_wyoming::AudioFormat::new(48_000, 16, 1),
+                true,
+                async { Err::<(), _>(()) },
+            )
+            .await
+        });
+        assert_eq!(task.await.unwrap(), Err(()));
         assert!(arbiter.try_start_commentary(&room).is_ok());
     }
 
@@ -287,28 +497,38 @@ mod tests {
         started: Arc<Notify>,
         gate: Arc<Notify>,
     }
-    impl SpeechOutput for GatedOutput {
-        async fn render_and_deliver(&self, _: &RoomName, _: &str) -> Result<(), ()> {
-            self.started.notify_one();
-            self.gate.notified().await;
-            Ok(())
-        }
-    }
 
     #[tokio::test]
     async fn arbitration_cancels_a_synthesis_or_delivery_wait() {
         let arbiter = Arc::new(RoomArbiter::default());
         let room = RoomName::parse("office").unwrap();
-        let output = GatedOutput {
+        let output = Arc::new(GatedOutput {
             started: Arc::new(Notify::new()),
             gate: Arc::new(Notify::new()),
-        };
+        });
+        let output_prepare = output.clone();
+        let output_deliver = output.clone();
+        let output = SpeechOutput::new(
+            move |_room: RoomName, _text: String| async { Ok(()) },
+            move |()| {
+                let output = output_deliver.clone();
+                async move {
+                    output.started.notify_one();
+                    output.gate.notified().await;
+                    Ok(())
+                }
+            },
+        );
         let lease = arbiter.try_start_commentary(&room).unwrap();
-        let started = output.started.clone();
+        let started = output_prepare.started.clone();
         let task = tokio::spawn(async move {
             let mut lease = lease;
             let other = RoomName::parse("other").unwrap();
-            tokio::select! { biased; _ = lease.cancelled() => Err(()), result = output.render_and_deliver(&other, "text") => result }
+            let work = async {
+                output.prepare(&other, "text").await?;
+                output.deliver(()).await
+            };
+            tokio::select! { biased; _ = lease.cancelled() => Err(()), result = work => result }
         });
         started.notified().await;
         let _voice = arbiter.enter_conversation(room);

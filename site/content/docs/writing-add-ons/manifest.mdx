@@ -122,7 +122,7 @@ mqtt = [                 # interface 0.2
 callback = true          # interface 0.3
 webhook = true           # interface 0.3
 websocket = [{ name = "feed", host = "stream.example.com", tls = true }] # 0.4
-speech_stream = true     # 0.5
+speech_stream = { room = "room" } # 0.5; room names a type = "room" setting
 ```
 
 All are optional; leave out what you do not use. `mqtt` needs
@@ -130,8 +130,7 @@ All are optional; leave out what you do not use. `mqtt` needs
 fields. `callback` and `webhook` need `interface = "0.3"`; see
 [accounts and webhooks](/docs/writing-add-ons/accounts).
 WebSocket grants need `interface = "0.4"`; see [WebSockets](/docs/writing-add-ons/websocket).
-`speech_stream` needs `interface = "0.5"` and the explicitly enabled
-`speech_stream_enabled` boolean setting; see [frequent spoken commentary](/docs/writing-add-ons/permissions#frequent-spoken-commentary).
+`speech_stream` needs `interface = "0.5"`, a `room` setting reference, and the explicitly enabled `speech_stream_enabled` boolean setting; see [frequent spoken commentary](/docs/writing-add-ons/permissions#frequent-spoken-commentary).
 
 ## Settings
 

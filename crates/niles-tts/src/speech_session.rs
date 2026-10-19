@@ -1,19 +1,30 @@
 //! Bounded, host-owned text speech sessions.
 //!
-//! Acceptance is separate from [`TerminalResult`]. Callers supply the live
-//! eligibility policy; this module never invents a production policy.
+//! Acceptance is separate from [`TerminalResult`]. A new accepted request
+//! replaces the single not-yet-transporting request, including one in prepare.
+//! Expiry is checked immediately before entering `deliver`; transport that has
+//! started is never replaced. Callers supply the live eligibility policy.
 
 use niles_core::RoomName;
-use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    time::Duration,
+};
 use thiserror::Error;
 use tokio::{
-    sync::{Mutex, mpsc, oneshot},
+    sync::{Mutex, Notify, oneshot},
     task::JoinHandle,
 };
 
-pub const MAX_PENDING_UTTERANCES: usize = 4;
-pub const MAX_UTTERANCE_CHARS: usize = 256;
+pub const MAX_PENDING_UTTERANCES: usize = 1;
+pub const MAX_UTTERANCE_CHARS: usize = 120;
 pub const QUEUED_UTTERANCE_TTL: Duration = Duration::from_secs(3);
+pub const OWNER_RATE_LIMIT: usize = 120;
+pub const OWNER_RATE_WINDOW: Duration = Duration::from_secs(60);
+const MAX_RATE_TRACKED_OWNERS: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PluginOwner(String);
@@ -42,6 +53,8 @@ pub enum Rejection {
     QueueFull,
     Closed,
     InvalidText,
+    RateLimited,
+    NoSatellite,
 }
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +64,7 @@ pub enum TerminalResult {
     Cancelled,
     Rejected(Rejection),
     Failed,
+    Replaced,
 }
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +74,7 @@ pub enum Eligibility {
     QuietHours,
     Disabled,
     Unavailable,
+    NoSatellite,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -68,32 +83,72 @@ pub enum SessionError {
     InvalidOwner,
     #[error("a session already exists for this plugin owner")]
     OwnerHasSession,
-    #[error("speech is disabled")]
-    Disabled,
+
     #[error("session is unavailable: {0:?}")]
     Ineligible(Rejection),
     #[error("session was closed")]
     Closed,
 }
 
-/// Supplies live policy when opening, submitting, and immediately before delivery.
-pub trait SpeechEligibility: Send + Sync + 'static {
-    fn check(
-        &self,
-        owner: &PluginOwner,
-        room: &RoomName,
-    ) -> impl Future<Output = Eligibility> + Send;
+pub type PrepareFuture<Prepared> =
+    Pin<Box<dyn Future<Output = Result<Prepared, ()>> + Send + 'static>>;
+pub type DeliverFuture = Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'static>>;
+pub type EligibilityFuture = Pin<Box<dyn Future<Output = Eligibility> + Send + 'static>>;
+type PrepareCallback<Prepared> =
+    dyn Fn(RoomName, String) -> PrepareFuture<Prepared> + Send + Sync + 'static;
+type DeliverCallback<Prepared> = dyn Fn(Prepared) -> DeliverFuture + Send + Sync + 'static;
+type EligibilityCallback =
+    dyn Fn(PluginOwner, RoomName) -> EligibilityFuture + Send + Sync + 'static;
+
+/// Callable policy boundary for live speech eligibility.
+pub struct SpeechEligibility {
+    check: Arc<EligibilityCallback>,
 }
-/// Injectable output boundary; successful completion means delivery operation completed.
-pub trait SpeechOutput: Send + Sync + 'static {
-    fn render_and_deliver(
-        &self,
-        room: &RoomName,
-        text: &str,
-    ) -> impl Future<Output = Result<(), ()>> + Send;
+impl SpeechEligibility {
+    pub fn new<F, Fut>(check: F) -> Self
+    where
+        F: Fn(PluginOwner, RoomName) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Eligibility> + Send + 'static,
+    {
+        Self {
+            check: Arc::new(move |owner, room| Box::pin(check(owner, room))),
+        }
+    }
+
+    pub async fn check(&self, owner: &PluginOwner, room: &RoomName) -> Eligibility {
+        (self.check)(owner.clone(), room.clone()).await
+    }
 }
 
-type Sender = Arc<Mutex<Option<oneshot::Sender<TerminalResult>>>>;
+/// Callable output boundary; successful completion means delivery completed.
+pub struct SpeechOutput<Prepared: Send + 'static> {
+    prepare: Arc<PrepareCallback<Prepared>>,
+    deliver: Arc<DeliverCallback<Prepared>>,
+}
+impl<Prepared: Send + 'static> SpeechOutput<Prepared> {
+    pub fn new<Prepare, PrepareFut, Deliver, DeliverFut>(prepare: Prepare, deliver: Deliver) -> Self
+    where
+        Prepare: Fn(RoomName, String) -> PrepareFut + Send + Sync + 'static,
+        PrepareFut: Future<Output = Result<Prepared, ()>> + Send + 'static,
+        Deliver: Fn(Prepared) -> DeliverFut + Send + Sync + 'static,
+        DeliverFut: Future<Output = Result<(), ()>> + Send + 'static,
+    {
+        Self {
+            prepare: Arc::new(move |room, text| Box::pin(prepare(room, text))),
+            deliver: Arc::new(move |prepared| Box::pin(deliver(prepared))),
+        }
+    }
+
+    pub async fn prepare(&self, room: &RoomName, text: &str) -> Result<Prepared, ()> {
+        (self.prepare)(room.clone(), text.to_owned()).await
+    }
+
+    pub async fn deliver(&self, prepared: Prepared) -> Result<(), ()> {
+        (self.deliver)(prepared).await
+    }
+}
+
+type Sender = Arc<std::sync::Mutex<Option<oneshot::Sender<TerminalResult>>>>;
 struct Request {
     text: String,
     queued_at: tokio::time::Instant,
@@ -101,7 +156,7 @@ struct Request {
 }
 impl Drop for Request {
     fn drop(&mut self) {
-        if let Ok(mut slot) = self.result.try_lock()
+        if let Ok(mut slot) = self.result.lock()
             && let Some(sender) = slot.take()
         {
             let _ = sender.send(TerminalResult::Cancelled);
@@ -111,24 +166,24 @@ impl Drop for Request {
 struct Session {
     owner: PluginOwner,
     room: RoomName,
-    sender: mpsc::Sender<Request>,
-    receiver: Option<mpsc::Receiver<Request>>,
+    pending: Arc<std::sync::Mutex<Option<Request>>>,
+    notify: Arc<Notify>,
     task: Option<JoinHandle<()>>,
 }
 struct State {
-    enabled: bool,
     shutdown: bool,
     next_id: u64,
     sessions: HashMap<SessionId, Session>,
     by_owner: HashMap<PluginOwner, SessionId>,
+    rate_history: HashMap<PluginOwner, VecDeque<tokio::time::Instant>>,
 }
 
 /// Owns session tasks. Explicit async shutdown/close resolves accepted requests.
 /// Dropping the manager aborts tasks synchronously; requests dropped with their
 /// worker resolve as [`TerminalResult::Cancelled`].
-pub struct SpeechSessionManager<O: SpeechOutput, P: SpeechEligibility> {
-    output: Arc<O>,
-    policy: Arc<P>,
+pub struct SpeechSessionManager<Prepared: Send + 'static> {
+    output: SpeechOutput<Prepared>,
+    policy: SpeechEligibility,
     state: Mutex<State>,
 }
 
@@ -139,41 +194,27 @@ fn rejection(reason: Eligibility) -> Option<Rejection> {
         Eligibility::QuietHours => Some(Rejection::QuietHours),
         Eligibility::Disabled => Some(Rejection::Disabled),
         Eligibility::Unavailable => Some(Rejection::Unavailable),
+        Eligibility::NoSatellite => Some(Rejection::NoSatellite),
     }
 }
-async fn finish(slot: &Sender, result: TerminalResult) {
-    if let Some(tx) = slot.lock().await.take() {
+fn finish(slot: &Sender, result: TerminalResult) {
+    if let Some(tx) = slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
         let _ = tx.send(result);
     }
 }
 
-impl<O: SpeechOutput, P: SpeechEligibility> SpeechSessionManager<O, P> {
-    pub fn new(enabled: bool, output: O, policy: P) -> Self {
+impl<Prepared: Send + 'static> SpeechSessionManager<Prepared> {
+    pub fn new(output: SpeechOutput<Prepared>, policy: SpeechEligibility) -> Self {
         Self {
-            output: Arc::new(output),
-            policy: Arc::new(policy),
+            output,
+            policy,
             state: Mutex::new(State {
-                enabled,
                 shutdown: false,
                 next_id: 1,
                 sessions: HashMap::new(),
                 by_owner: HashMap::new(),
+                rate_history: HashMap::new(),
             }),
-        }
-    }
-
-    pub async fn set_enabled(&self, enabled: bool) {
-        let ids = {
-            let mut state = self.state.lock().await;
-            state.enabled = enabled;
-            if enabled {
-                Vec::new()
-            } else {
-                state.sessions.keys().copied().collect()
-            }
-        };
-        for id in ids {
-            self.close(id).await;
         }
     }
 
@@ -182,15 +223,11 @@ impl<O: SpeechOutput, P: SpeechEligibility> SpeechSessionManager<O, P> {
         owner: PluginOwner,
         room: RoomName,
     ) -> Result<SessionId, SessionError> {
-        let enabled = {
+        {
             let state = self.state.lock().await;
             if state.shutdown {
                 return Err(SessionError::Closed);
             }
-            state.enabled
-        };
-        if !enabled {
-            return Err(SessionError::Disabled);
         }
         if let Some(reason) = rejection(self.policy.check(&owner, &room).await) {
             return Err(SessionError::Ineligible(reason));
@@ -199,23 +236,22 @@ impl<O: SpeechOutput, P: SpeechEligibility> SpeechSessionManager<O, P> {
         if state.shutdown {
             return Err(SessionError::Closed);
         }
-        if !state.enabled {
-            return Err(SessionError::Disabled);
-        }
+
         if state.by_owner.contains_key(&owner) {
             return Err(SessionError::OwnerHasSession);
         }
         let id = SessionId(state.next_id);
         state.next_id = state.next_id.wrapping_add(1).max(1);
-        let (sender, receiver) = mpsc::channel(MAX_PENDING_UTTERANCES);
+        let pending = Arc::new(std::sync::Mutex::new(None));
+        let notify = Arc::new(Notify::new());
         state.by_owner.insert(owner.clone(), id);
         state.sessions.insert(
             id,
             Session {
                 owner,
                 room,
-                sender,
-                receiver: Some(receiver),
+                pending,
+                notify,
                 task: None,
             },
         );
@@ -230,18 +266,11 @@ impl<O: SpeechOutput, P: SpeechEligibility> SpeechSessionManager<O, P> {
         if text.trim().is_empty() || text.chars().count() > MAX_UTTERANCE_CHARS {
             return Err(Rejection::InvalidText);
         }
-        let (owner, room, enabled) = {
+        let (owner, room) = {
             let state = self.state.lock().await;
             let session = state.sessions.get(&id).ok_or(Rejection::Closed)?;
-            (
-                session.owner.clone(),
-                session.room.clone(),
-                state.enabled && !state.shutdown,
-            )
+            (session.owner.clone(), session.room.clone())
         };
-        if !enabled {
-            return Err(Rejection::Disabled);
-        }
         if let Some(reason) = rejection(self.policy.check(&owner, &room).await) {
             return Err(reason);
         }
@@ -249,19 +278,42 @@ impl<O: SpeechOutput, P: SpeechEligibility> SpeechSessionManager<O, P> {
         if state.shutdown {
             return Err(Rejection::Closed);
         }
-        if !state.enabled {
-            return Err(Rejection::Disabled);
+
+        if !state.sessions.contains_key(&id) {
+            return Err(Rejection::Closed);
+        }
+        let now = tokio::time::Instant::now();
+        state.rate_history.retain(|_, history| {
+            while history
+                .front()
+                .is_some_and(|at| now.duration_since(*at) >= OWNER_RATE_WINDOW)
+            {
+                history.pop_front();
+            }
+            !history.is_empty()
+        });
+        let history_len = state.rate_history.get(&owner).map_or(0, VecDeque::len);
+        if history_len >= OWNER_RATE_LIMIT
+            || (!state.rate_history.contains_key(&owner)
+                && state.rate_history.len() >= MAX_RATE_TRACKED_OWNERS)
+        {
+            return Err(Rejection::RateLimited);
         }
         let request_id = RequestId(state.next_id);
         state.next_id = state.next_id.wrapping_add(1).max(1);
         let session = state.sessions.get_mut(&id).ok_or(Rejection::Closed)?;
         if session.task.is_none() {
-            let receiver = session.receiver.take().ok_or(Rejection::Closed)?;
             session.task = Some(tokio::spawn(session_worker(
-                receiver,
-                Arc::clone(&self.output),
-                Arc::clone(&self.policy),
-                owner,
+                Arc::clone(&session.pending),
+                Arc::clone(&session.notify),
+                SpeechOutput {
+                    prepare: Arc::clone(&self.output.prepare),
+                    deliver: Arc::clone(&self.output.deliver),
+                },
+                SpeechEligibility {
+                    check: Arc::clone(&self.policy.check),
+                },
+                owner.clone(),
                 room,
             )));
         }
@@ -269,15 +321,19 @@ impl<O: SpeechOutput, P: SpeechEligibility> SpeechSessionManager<O, P> {
         let request = Request {
             text: text.to_owned(),
             queued_at: tokio::time::Instant::now(),
-            result: Arc::new(Mutex::new(Some(tx))),
+            result: Arc::new(std::sync::Mutex::new(Some(tx))),
         };
-        session
-            .sender
-            .try_send(request)
-            .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => Rejection::QueueFull,
-                mpsc::error::TrySendError::Closed(_) => Rejection::Closed,
-            })?;
+        if let Some(previous) = session
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(request)
+        {
+            finish(&previous.result, TerminalResult::Replaced);
+            drop(previous);
+        }
+        session.notify.notify_one();
+        state.rate_history.entry(owner).or_default().push_back(now);
         Ok((request_id, rx))
     }
 
@@ -289,13 +345,6 @@ impl<O: SpeechOutput, P: SpeechEligibility> SpeechSessionManager<O, P> {
                 let _ = task.await;
             }
             state.by_owner.remove(&session.owner);
-        }
-    }
-
-    pub async fn shutdown_owner(&self, owner: &PluginOwner) {
-        let id = self.state.lock().await.by_owner.get(owner).copied();
-        if let Some(id) = id {
-            self.close(id).await;
         }
     }
 
@@ -311,46 +360,75 @@ impl<O: SpeechOutput, P: SpeechEligibility> SpeechSessionManager<O, P> {
         }
         state.by_owner.clear();
     }
-
-    pub async fn room(&self, id: SessionId) -> Option<RoomName> {
-        self.state
-            .lock()
-            .await
-            .sessions
-            .get(&id)
-            .map(|session| session.room.clone())
-    }
 }
 
-async fn session_worker<O: SpeechOutput, P: SpeechEligibility>(
-    mut receiver: mpsc::Receiver<Request>,
-    output: Arc<O>,
-    policy: Arc<P>,
+async fn session_worker<Prepared: Send + 'static>(
+    pending: Arc<std::sync::Mutex<Option<Request>>>,
+    notify: Arc<Notify>,
+    output: SpeechOutput<Prepared>,
+    policy: SpeechEligibility,
     owner: PluginOwner,
     room: RoomName,
 ) {
-    while let Some(request) = receiver.recv().await {
+    loop {
+        let Some(mut request) = take_pending(&pending) else {
+            notify.notified().await;
+            continue;
+        };
         if request.queued_at.elapsed() >= QUEUED_UTTERANCE_TTL {
-            finish(&request.result, TerminalResult::Expired).await;
+            finish(&request.result, TerminalResult::Expired);
             continue;
         }
         if let Some(reason) = rejection(policy.check(&owner, &room).await) {
-            finish(&request.result, TerminalResult::Rejected(reason)).await;
+            finish(&request.result, TerminalResult::Rejected(reason));
+            continue;
+        }
+        let prepared = 'preparation: loop {
+            tokio::select! {
+                biased;
+                _ = notify.notified() => {
+                    if let Some(newest) = take_pending(&pending) {
+                        finish(&request.result, TerminalResult::Replaced);
+                        request = newest;
+                        if request.queued_at.elapsed() >= QUEUED_UTTERANCE_TTL {
+                            finish(&request.result, TerminalResult::Expired);
+                            break 'preparation Err(());
+                        }
+                    }
+                }
+                prepared = output.prepare(&room, &request.text) => break 'preparation prepared,
+            }
+        };
+        let Ok(prepared) = prepared else {
+            finish(&request.result, TerminalResult::Failed);
+            continue;
+        };
+        // A prepared request remains replaceable until this final expiry check
+        // and synchronous entry into deliver; only then is transport active.
+        if pending.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+            finish(&request.result, TerminalResult::Replaced);
+            drop(prepared);
+            // Leave the slot in place: taking and restoring it could overwrite
+            // a newer submission accepted between the two lock acquisitions.
             continue;
         }
         if request.queued_at.elapsed() >= QUEUED_UTTERANCE_TTL {
-            finish(&request.result, TerminalResult::Expired).await;
+            finish(&request.result, TerminalResult::Expired);
             continue;
         }
-        let terminal = match output.render_and_deliver(&room, &request.text).await {
+        let terminal = match output.deliver(prepared).await {
             Ok(()) => TerminalResult::DeliveredToOutput,
             Err(()) => TerminalResult::Failed,
         };
-        finish(&request.result, terminal).await;
+        finish(&request.result, terminal);
     }
 }
 
-impl<O: SpeechOutput, P: SpeechEligibility> Drop for SpeechSessionManager<O, P> {
+fn take_pending(pending: &std::sync::Mutex<Option<Request>>) -> Option<Request> {
+    pending.lock().unwrap_or_else(|e| e.into_inner()).take()
+}
+
+impl<Prepared: Send + 'static> Drop for SpeechSessionManager<Prepared> {
     fn drop(&mut self) {
         if let Ok(state) = self.state.try_lock() {
             for session in state.sessions.values() {
@@ -375,17 +453,49 @@ mod tests {
         started: Option<Arc<Notify>>,
         fail: bool,
     }
-    impl SpeechOutput for FakeOutput {
-        async fn render_and_deliver(&self, _: &RoomName, text: &str) -> Result<(), ()> {
-            if let Some(started) = &self.started {
-                started.notify_one();
+    fn fake_output(output: Arc<FakeOutput>) -> SpeechOutput<String> {
+        let prepare = |_room: RoomName, text: String| async move { Ok(text) };
+        let deliver_output = output.clone();
+        SpeechOutput::new(prepare, move |text| {
+            let output = deliver_output.clone();
+            async move {
+                if let Some(started) = &output.started {
+                    started.notify_one();
+                }
+                if let Some(gate) = &output.gate {
+                    gate.notified().await;
+                }
+                output.delivered.lock().await.push(text);
+                if output.fail { Err(()) } else { Ok(()) }
             }
-            if let Some(gate) = &self.gate {
-                gate.notified().await;
-            }
-            self.delivered.lock().await.push(text.into());
-            if self.fail { Err(()) } else { Ok(()) }
-        }
+        })
+    }
+
+    struct PreparationOutput {
+        started: Arc<Notify>,
+        gate: Arc<tokio::sync::Semaphore>,
+        delivered: Arc<Mutex<Vec<String>>>,
+    }
+    fn preparation_output(output: Arc<PreparationOutput>) -> SpeechOutput<String> {
+        let prepare_output = output.clone();
+        let deliver_output = output;
+        SpeechOutput::new(
+            move |_room: RoomName, text: String| {
+                let output = prepare_output.clone();
+                async move {
+                    output.started.notify_one();
+                    output.gate.acquire().await.unwrap().forget();
+                    Ok(text)
+                }
+            },
+            move |text| {
+                let output = deliver_output.clone();
+                async move {
+                    output.delivered.lock().await.push(text);
+                    Ok(())
+                }
+            },
+        )
     }
 
     struct Policy {
@@ -407,22 +517,25 @@ mod tests {
             *self.eligibility.lock().await = eligibility;
         }
     }
-    impl SpeechEligibility for Policy {
-        async fn check(&self, _: &PluginOwner, _: &RoomName) -> Eligibility {
-            let check = self.checks.fetch_add(1, Ordering::SeqCst);
+    fn callable_policy(policy: Arc<Policy>) -> SpeechEligibility {
+        SpeechEligibility::new(move |_: PluginOwner, _: RoomName| {
+            let policy = policy.clone();
+            async move {
+                let check = policy.checks.fetch_add(1, Ordering::SeqCst);
 
-            if let Some(started) = &self.check_started
-                && check == 2
-            {
-                started.notify_one();
+                if let Some(started) = &policy.check_started
+                    && check == 2
+                {
+                    started.notify_one();
+                }
+                if let Some(gate) = &policy.gate_on_check
+                    && check == 2
+                {
+                    gate.notified().await;
+                }
+                policy.eligibility.lock().await.clone()
             }
-            if let Some(gate) = &self.gate_on_check
-                && check == 2
-            {
-                gate.notified().await;
-            }
-            self.eligibility.lock().await.clone()
-        }
+        })
     }
 
     fn owner() -> PluginOwner {
@@ -434,26 +547,157 @@ mod tests {
     fn room() -> RoomName {
         RoomName::parse("office").unwrap()
     }
-    fn manager(output: FakeOutput, policy: Policy) -> SpeechSessionManager<FakeOutput, Policy> {
-        SpeechSessionManager::new(true, output, policy)
+    struct TestManager {
+        manager: SpeechSessionManager<String>,
+        output: Arc<FakeOutput>,
+        policy: Arc<Policy>,
+    }
+    impl std::ops::Deref for TestManager {
+        type Target = SpeechSessionManager<String>;
+        fn deref(&self) -> &Self::Target {
+            &self.manager
+        }
+    }
+    fn manager(output: FakeOutput, policy: Policy) -> TestManager {
+        let output = Arc::new(output);
+        let policy = Arc::new(policy);
+        TestManager {
+            manager: SpeechSessionManager::new(
+                fake_output(output.clone()),
+                callable_policy(policy.clone()),
+            ),
+            output,
+            policy,
+        }
     }
 
     #[tokio::test]
-    async fn accepted_requests_are_delivered_in_order_through_output_boundary() {
+    async fn short_sentence_limit_counts_unicode_characters() {
+        let m = manager(FakeOutput::default(), Policy::eligible());
+        let session = m.open(owner(), room()).await.unwrap();
+        assert_eq!(
+            m.submit(session, &"ø".repeat(120))
+                .await
+                .unwrap()
+                .1
+                .await
+                .unwrap(),
+            TerminalResult::DeliveredToOutput
+        );
+        for text in ["ø".repeat(121), " ".repeat(120), String::new()] {
+            assert_eq!(
+                m.submit(session, &text).await.unwrap_err(),
+                Rejection::InvalidText
+            );
+        }
+        m.close(session).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limit_survives_reopen_and_recovers_at_window_boundary() {
+        let m = manager(FakeOutput::default(), Policy::eligible());
+        let session = m.open(owner(), room()).await.unwrap();
+        for _ in 0..OWNER_RATE_LIMIT {
+            assert_eq!(
+                m.submit(session, "dart").await.unwrap().1.await.unwrap(),
+                TerminalResult::DeliveredToOutput
+            );
+        }
+        assert_eq!(
+            m.submit(session, "limited").await.unwrap_err(),
+            Rejection::RateLimited
+        );
+        m.close(session).await;
+        let reopened = m.open(owner(), room()).await.unwrap();
+        assert_eq!(
+            m.submit(reopened, "still limited").await.unwrap_err(),
+            Rejection::RateLimited
+        );
+        let other = m.open(named_owner("other"), room()).await.unwrap();
+        assert_eq!(
+            m.submit(other, "independent")
+                .await
+                .unwrap()
+                .1
+                .await
+                .unwrap(),
+            TerminalResult::DeliveredToOutput
+        );
+        tokio::time::advance(OWNER_RATE_WINDOW - Duration::from_millis(1)).await;
+        assert_eq!(
+            m.submit(reopened, "too soon").await.unwrap_err(),
+            Rejection::RateLimited
+        );
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert_eq!(
+            m.submit(reopened, "recovered")
+                .await
+                .unwrap()
+                .1
+                .await
+                .unwrap(),
+            TerminalResult::DeliveredToOutput
+        );
+        assert_eq!(m.state.lock().await.rate_history[&owner()].len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_history_is_bounded_during_continuous_use() {
+        let m = manager(FakeOutput::default(), Policy::eligible());
+        let session = m.open(owner(), room()).await.unwrap();
+        for _ in 0..180 {
+            assert_eq!(
+                m.submit(session, "dart").await.unwrap().1.await.unwrap(),
+                TerminalResult::DeliveredToOutput
+            );
+            tokio::time::advance(Duration::from_secs(1)).await;
+        }
+        assert_eq!(m.state.lock().await.rate_history[&owner()].len(), 60);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn invalid_and_denied_requests_do_not_consume_rate_allowance() {
+        let m = manager(FakeOutput::default(), Policy::eligible());
+        let session = m.open(owner(), room()).await.unwrap();
+        for _ in 0..OWNER_RATE_LIMIT {
+            assert_eq!(
+                m.submit(session, " ").await.unwrap_err(),
+                Rejection::InvalidText
+            );
+            m.policy.set(Eligibility::Busy).await;
+            assert_eq!(
+                m.submit(session, "busy").await.unwrap_err(),
+                Rejection::Busy
+            );
+            m.policy.set(Eligibility::Eligible).await;
+        }
+        for _ in 0..OWNER_RATE_LIMIT {
+            assert_eq!(
+                m.submit(session, "allowed").await.unwrap().1.await.unwrap(),
+                TerminalResult::DeliveredToOutput
+            );
+        }
+        assert_eq!(
+            m.submit(session, "limited").await.unwrap_err(),
+            Rejection::RateLimited
+        );
+    }
+
+    #[tokio::test]
+    async fn sequential_submissions_each_deliver_after_prior_completion() {
         let m = manager(FakeOutput::default(), Policy::eligible());
         let session = m.open(owner(), room()).await.unwrap();
         let mut results = Vec::new();
         for text in ["one", "two", "three"] {
-            results.push(m.submit(session, text).await.unwrap().1);
-        }
-        for result in results {
+            let result = m.submit(session, text).await.unwrap().1;
             assert_eq!(result.await.unwrap(), TerminalResult::DeliveredToOutput);
+            results.push(text);
         }
-        assert_eq!(*m.output.delivered.lock().await, ["one", "two", "three"]);
+        assert_eq!(*m.output.delivered.lock().await, results);
     }
 
     #[tokio::test]
-    async fn active_request_plus_four_queued_are_allowed_and_fifth_queued_is_rejected() {
+    async fn active_transport_is_preserved_and_only_latest_pending_is_delivered() {
         let started = Arc::new(Notify::new());
         let output = FakeOutput {
             gate: Some(Arc::new(Notify::new())),
@@ -464,24 +708,64 @@ mod tests {
         let session = m.open(owner(), room()).await.unwrap();
         let (_, active) = m.submit(session, "active").await.unwrap();
         started.notified().await;
-        let mut queued = Vec::new();
-        for index in 0..MAX_PENDING_UTTERANCES {
-            queued.push(
-                m.submit(session, &format!("queued-{index}"))
-                    .await
-                    .unwrap()
-                    .1,
-            );
-        }
-        assert_eq!(
-            m.submit(session, "fifth").await.unwrap_err(),
-            Rejection::QueueFull
-        );
+        let (_, replaced) = m.submit(session, "older pending").await.unwrap();
+        let (_, latest) = m.submit(session, "latest pending").await.unwrap();
+        assert_eq!(replaced.await.unwrap(), TerminalResult::Replaced);
+        m.output.gate.as_ref().unwrap().notify_one();
+        assert_eq!(active.await.unwrap(), TerminalResult::DeliveredToOutput);
+        started.notified().await;
+        m.output.gate.as_ref().unwrap().notify_one();
+        assert_eq!(latest.await.unwrap(), TerminalResult::DeliveredToOutput);
         m.close(session).await;
-        assert_eq!(active.await.unwrap(), TerminalResult::Cancelled);
-        for result in queued {
-            assert_eq!(result.await.unwrap(), TerminalResult::Cancelled);
-        }
+        assert_eq!(
+            *m.output.delivered.lock().await,
+            ["active", "latest pending"]
+        );
+    }
+
+    #[tokio::test]
+    async fn newest_submission_replaces_work_blocked_in_preparation() {
+        let started = Arc::new(Notify::new());
+        let output = Arc::new(PreparationOutput {
+            started: started.clone(),
+            gate: Arc::new(tokio::sync::Semaphore::new(0)),
+            delivered: Arc::new(Mutex::new(Vec::new())),
+        });
+        let delivered = output.delivered.clone();
+        let m = SpeechSessionManager::new(
+            preparation_output(output.clone()),
+            callable_policy(Arc::new(Policy::eligible())),
+        );
+        let session = m.open(owner(), room()).await.unwrap();
+        let (_, old) = m.submit(session, "old synthesis").await.unwrap();
+        started.notified().await;
+        let (_, newest) = m.submit(session, "new synthesis").await.unwrap();
+        assert_eq!(old.await.unwrap(), TerminalResult::Replaced);
+        output.gate.add_permits(2);
+        assert_eq!(newest.await.unwrap(), TerminalResult::DeliveredToOutput);
+        assert_eq!(*delivered.lock().await, ["new synthesis"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn request_expiring_during_synthesis_never_enters_transport() {
+        let started = Arc::new(Notify::new());
+        let output = Arc::new(PreparationOutput {
+            started: started.clone(),
+            gate: Arc::new(tokio::sync::Semaphore::new(0)),
+            delivered: Arc::new(Mutex::new(Vec::new())),
+        });
+        let delivered = output.delivered.clone();
+        let m = SpeechSessionManager::new(
+            preparation_output(output.clone()),
+            callable_policy(Arc::new(Policy::eligible())),
+        );
+        let session = m.open(owner(), room()).await.unwrap();
+        let (_, result) = m.submit(session, "stale synthesis").await.unwrap();
+        started.notified().await;
+        tokio::time::advance(QUEUED_UTTERANCE_TTL).await;
+        output.gate.add_permits(1);
+        assert_eq!(result.await.unwrap(), TerminalResult::Expired);
+        assert!(delivered.lock().await.is_empty());
     }
 
     #[tokio::test(start_paused = true)]
@@ -600,27 +884,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disabling_closes_sessions_and_rejects_new_open() {
-        let started = Arc::new(Notify::new());
-        let output = FakeOutput {
-            gate: Some(Arc::new(Notify::new())),
-            started: Some(started.clone()),
-            ..Default::default()
-        };
-        let m = manager(output, Policy::eligible());
-        let session = m.open(owner(), room()).await.unwrap();
-        let (_, result) = m.submit(session, "active").await.unwrap();
-        started.notified().await;
-        m.set_enabled(false).await;
-        assert_eq!(result.await.unwrap(), TerminalResult::Cancelled);
-        assert_eq!(m.open(owner(), room()).await, Err(SessionError::Disabled));
-        assert_eq!(
-            m.submit(session, "later").await.unwrap_err(),
-            Rejection::Closed
-        );
-    }
-
-    #[tokio::test]
     async fn owner_shutdown_cancels_requests_without_affecting_another_owner() {
         let started = Arc::new(Notify::new());
         let output = FakeOutput {
@@ -636,7 +899,7 @@ mod tests {
         let (_, cancelled) = m.submit(session_a, "a").await.unwrap();
         started.notified().await;
         let (_, kept) = m.submit(session_b, "b").await.unwrap();
-        m.shutdown_owner(&owner_a).await;
+        m.close(session_a).await;
         assert_eq!(cancelled.await.unwrap(), TerminalResult::Cancelled);
         m.output.gate.as_ref().unwrap().notify_one();
         assert_eq!(kept.await.unwrap(), TerminalResult::DeliveredToOutput);
@@ -673,12 +936,10 @@ mod tests {
         let a = m.open(named_owner("a"), room()).await.unwrap();
         let b = m.open(named_owner("b"), room()).await.unwrap();
         assert_ne!(a, b);
-        assert_eq!(m.room(a).await, Some(room()));
-        assert_eq!(m.room(b).await, Some(room()));
     }
 
     #[tokio::test]
-    async fn manager_drop_cancels_active_and_queued_requests() {
+    async fn manager_drop_cancels_active_and_pending_requests() {
         let started = Arc::new(Notify::new());
         let output = FakeOutput {
             gate: Some(Arc::new(Notify::new())),
@@ -689,10 +950,47 @@ mod tests {
         let session = m.open(owner(), room()).await.unwrap();
         let (_, active) = m.submit(session, "active").await.unwrap();
         started.notified().await;
-        let (_, queued) = m.submit(session, "queued").await.unwrap();
+        let (_, pending) = m.submit(session, "pending").await.unwrap();
         drop(m);
         assert_eq!(active.await.unwrap(), TerminalResult::Cancelled);
-        assert_eq!(queued.await.unwrap(), TerminalResult::Cancelled);
+        assert_eq!(pending.await.unwrap(), TerminalResult::Cancelled);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn replacements_consume_quota_for_every_accepted_request() {
+        let started = Arc::new(Notify::new());
+        let m = manager(
+            FakeOutput {
+                gate: Some(Arc::new(Notify::new())),
+                started: Some(started.clone()),
+                ..Default::default()
+            },
+            Policy::eligible(),
+        );
+        let session = m.open(owner(), room()).await.unwrap();
+        let (_, active) = m.submit(session, "active").await.unwrap();
+        started.notified().await;
+        let mut previous: Option<oneshot::Receiver<TerminalResult>> = None;
+        for index in 1..OWNER_RATE_LIMIT {
+            let (_, result) = m
+                .submit(session, &format!("pending-{index}"))
+                .await
+                .unwrap();
+            if let Some(previous) = previous.replace(result) {
+                assert_eq!(previous.await.unwrap(), TerminalResult::Replaced);
+            }
+        }
+        assert_eq!(
+            m.state.lock().await.rate_history[&owner()].len(),
+            OWNER_RATE_LIMIT
+        );
+        assert_eq!(
+            m.submit(session, "over quota").await.unwrap_err(),
+            Rejection::RateLimited
+        );
+        m.close(session).await;
+        assert_eq!(active.await.unwrap(), TerminalResult::Cancelled);
+        assert_eq!(previous.unwrap().await.unwrap(), TerminalResult::Cancelled);
     }
 
     #[tokio::test]

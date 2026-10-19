@@ -115,10 +115,14 @@ impl Home {
 struct FakeSpeech {
     delivered: Mutex<Vec<(String, String)>>,
     room: Mutex<Option<String>>,
+    missing_route: Mutex<bool>,
 }
 
 impl SpeechStreamHost for FakeSpeech {
     fn open(&self, _owner: &str, room: RoomName) -> Result<u32, SpeechError> {
+        if *self.missing_route.lock().unwrap() {
+            return Err(SpeechError::NoSatellite(room));
+        }
         *self.room.lock().unwrap() = Some(room.to_string());
         Ok(7)
     }
@@ -184,6 +188,7 @@ async fn speech_stream_wasm_routes_real_imports_and_checks_both_gates() {
             "speech_stream_enabled".into(),
             toml::Value::Boolean(enabled),
         );
+        settings.insert("room".into(), toml::Value::String("office".into()));
         let fake = Arc::new(FakeSpeech::default());
         let house = House::new(
             Arc::new(DeviceRegistry::new()),
@@ -191,12 +196,15 @@ async fn speech_stream_wasm_routes_real_imports_and_checks_both_gates() {
             Arc::new(MemoryStore::new()),
         )
         .with_settings(Arc::new(move |_| settings.clone()));
-        let runtime = Runtime::new(house, quick())
-            .unwrap()
-            .with_speech_stream(fake.clone());
+        let runtime = Runtime::new(house, quick()).unwrap();
+        runtime.connect_speech_stream(fake.clone());
         let manifest = SPEECH_MANIFEST.replace(
-            "speech_stream = true",
-            &format!("speech_stream = {permission}"),
+            "speech_stream = { room = \"room\" }",
+            if permission {
+                "speech_stream = { room = \"room\" }"
+            } else {
+                ""
+            },
         );
         runtime
             .install(&manifest, SPEECH_COMPONENT.to_vec())
@@ -213,19 +221,50 @@ async fn speech_stream_wasm_routes_real_imports_and_checks_both_gates() {
             assert!(Instant::now() < until, "speech fixture did not start");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let result = runtime
-            .call_tool(
-                "speechfixture",
-                "journey",
-                &json!({"room":"office","text":"fixture says hello"}).to_string(),
-            )
-            .await;
         if let Some(expected) = expected_error {
+            let result = runtime
+                .call_tool(
+                    "speechfixture",
+                    "journey",
+                    &json!({"room":"office","text":"fixture says hello"}).to_string(),
+                )
+                .await;
             let error = result.unwrap_err();
             assert!(error.contains(expected), "{error}");
             assert!(fake.delivered.lock().unwrap().is_empty());
             assert!(fake.room.lock().unwrap().is_none());
         } else {
+            let mismatch = runtime
+                .call_tool(
+                    "speechfixture",
+                    "journey",
+                    &json!({"room":"kitchen","text":"must not open"}).to_string(),
+                )
+                .await
+                .unwrap_err();
+            assert!(mismatch.contains("household-selected"), "{mismatch}");
+            assert!(fake.room.lock().unwrap().is_none());
+
+            *fake.missing_route.lock().unwrap() = true;
+            let missing_route = runtime
+                .call_tool(
+                    "speechfixture",
+                    "journey",
+                    &json!({"room":"office","text":"must not submit"}).to_string(),
+                )
+                .await
+                .unwrap_err();
+            assert!(missing_route.contains("office"), "{missing_route}");
+            assert!(fake.room.lock().unwrap().is_none());
+            *fake.missing_route.lock().unwrap() = false;
+
+            let result = runtime
+                .call_tool(
+                    "speechfixture",
+                    "journey",
+                    &json!({"room":"office","text":"fixture says hello"}).to_string(),
+                )
+                .await;
             let result = result.unwrap();
             let result: serde_json::Value = serde_json::from_str(&result).unwrap();
             assert_eq!(result["outcome"], "Outcome::Delivered");

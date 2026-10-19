@@ -179,7 +179,7 @@ pub fn grants(manifest: &Manifest, tools: Option<&[String]>) -> Vec<Grant> {
             "Speak through your satellites, even during quiet hours".into(),
         ),
     }
-    if p.speech_stream {
+    if p.speech_stream.is_some() {
         add(
             "speech_stream".into(),
             "Speak frequent commentary in a selected room when you explicitly enable it".into(),
@@ -297,7 +297,9 @@ room = "living_room"
     fn speech_stream_is_a_distinct_approval_grant() {
         let before = Manifest::parse(BASE).unwrap();
         let mut after = before.clone();
-        after.permissions.speech_stream = true;
+        after.permissions.speech_stream = Some(crate::manifest::SpeechStreamGrant {
+            room: "room".into(),
+        });
         let change = diff(&grants(&before, None), &grants(&after, None));
         assert_eq!(
             change.added,
