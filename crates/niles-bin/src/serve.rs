@@ -840,6 +840,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // nothing else.
     let _plugin_settings = match &plugin_runtime {
         Some(runtime) => {
+            runtime.connect_notification_rooms(satellites.rooms());
             runtime.connect_notifications(notifications.clone());
             let started = runtime.load_installed().await;
             if started > 0 {

@@ -136,7 +136,7 @@ impl Notifier for CenterNotifier {
                 niles_notifications::Priority::Routine
             }
         };
-        self.center.deliver(body, room.map(String::from), p);
+        self.center.deliver(body, room.map(String::from), p).await;
     }
 }
 

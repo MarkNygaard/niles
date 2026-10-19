@@ -31,8 +31,10 @@ impl Priority {
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryOutcome {
-    /// Delivered successfully.
+    /// Transport completed for every targeted room; this is not playback acknowledgement.
     Delivered,
+    /// Transport completed for some, but not all, targeted rooms.
+    Partial,
     /// Suppressed due to quiet hours.
     Suppressed,
     /// Delivery mechanism failed.

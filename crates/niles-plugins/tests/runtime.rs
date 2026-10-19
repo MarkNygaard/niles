@@ -6,6 +6,7 @@ use niles_core::{
     Device, DeviceClass, DeviceId, DeviceRegistry, DeviceState, Event, EventBus, PresenceState,
 };
 use niles_mqtt::CommandRouter;
+use niles_notifications::{NotificationCenter, NotificationDelivery, Priority, TransportOutcome};
 use niles_plugins::{
     ActionValue, Context, House, Limits, MemoryStore, PluginStore, Runtime, Status, SurfaceError,
 };
@@ -40,6 +41,20 @@ struct Home {
     tools: DynamicTools,
     store: Arc<MemoryStore>,
     settings: Arc<Mutex<toml::Table>>,
+}
+
+struct TestNotificationDelivery;
+
+#[async_trait::async_trait]
+impl NotificationDelivery for TestNotificationDelivery {
+    async fn deliver(
+        &self,
+        _text: &str,
+        _room: Option<&str>,
+        _priority: Priority,
+    ) -> TransportOutcome {
+        TransportOutcome::Completed
+    }
 }
 
 impl Home {
@@ -631,6 +646,9 @@ async fn subscribed_events_reach_the_plugin_and_others_do_not() {
 #[tokio::test(flavor = "multi_thread")]
 async fn notifications_are_rate_limited_and_urgent_needs_its_own_permission() {
     let house = Home::running().await;
+    house.runtime.connect_notifications(Arc::new(
+        NotificationCenter::new(8).with_delivery(Arc::new(TestNotificationDelivery)),
+    ));
     for _ in 0..6 {
         assert_eq!(
             house.tool("say", json!({"message": "Hi."})).await.unwrap(),

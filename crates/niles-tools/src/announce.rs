@@ -83,10 +83,14 @@ impl Tool for AnnounceTool {
             }
         };
 
-        let notification = self.center.deliver(text, room.clone(), priority);
+        let notification = self.center.deliver(text, room.clone(), priority).await;
 
         let (status, reason) = match notification.outcome {
             niles_notifications::DeliveryOutcome::Delivered => ("delivered", None),
+            niles_notifications::DeliveryOutcome::Partial => (
+                "partial",
+                Some("delivery completed in only some rooms".to_string()),
+            ),
             niles_notifications::DeliveryOutcome::Suppressed => {
                 ("suppressed", Some("quiet hours active".to_string()))
             }

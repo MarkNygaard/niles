@@ -948,7 +948,7 @@ impl notify::Host for HostState {
             }
             _ => {}
         }
-        let message = message.trim();
+        let message = message.trim().to_owned();
         if message.is_empty() || message.chars().count() > MAX_MESSAGE {
             return Err(HostError::Invalid(format!(
                 "a message is 1 to {MAX_MESSAGE} characters"
@@ -961,6 +961,31 @@ impl notify::Host for HostState {
                 "{room:?} is not a room id like living_room"
             )));
         }
+        if let Some(room) = &room {
+            let parsed = RoomName::parse(room)
+                .map_err(|_| HostError::Invalid(format!("{room:?} is not a valid room")))?;
+            let known_from_devices = self
+                .house
+                .registry
+                .list_all()
+                .iter()
+                .any(|device| device.id.room() == &parsed);
+            let routes = self.house.notification_rooms.get();
+            let configured_route = routes.is_some_and(|rooms| rooms.contains(&parsed));
+            if !known_from_devices && !configured_route {
+                return Err(HostError::Invalid(format!("unknown room {room:?}")));
+            }
+            if !configured_route {
+                return Err(HostError::Invalid(format!(
+                    "room {room:?} has no configured satellite"
+                )));
+            }
+        }
+        let Some(center) = self.house.notifications.get() else {
+            return Err(HostError::Unavailable(
+                "notifications are not connected".into(),
+            ));
+        };
         if !self.plugin.may_notify(NOTIFICATIONS_PER_HOUR) {
             return Err(HostError::Limit(format!(
                 "at most {NOTIFICATIONS_PER_HOUR} notifications an hour"
@@ -971,19 +996,13 @@ impl notify::Host for HostState {
             notify::Priority::Normal => niles_notifications::Priority::Important,
             notify::Priority::Urgent => niles_notifications::Priority::Urgent,
         };
-        match self.house.notifications.get() {
-            Some(center) => {
-                // Delivery spawns the speaking onto the runtime; this
-                // thread is not one of its workers.
-                let _runtime = self.house.handle.enter();
-                center.deliver(message, room, priority);
-            }
-            None => tracing::info!(
-                plugin = %self.plugin.id,
-                "would say {message:?} ({priority:?}) in {}",
-                room.as_deref().unwrap_or("the room Niles picks")
-            ),
-        }
+        // WIT's legacy `say` is synchronous: accept the request here and
+        // let the existing runtime handle perform delivery asynchronously.
+        let center = center.clone();
+        let handle = self.house.handle.clone();
+        handle.spawn(async move {
+            center.deliver(message, room, priority).await;
+        });
         Ok(())
     }
 }
@@ -1080,6 +1099,131 @@ impl ui::Host for HostState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest::Manifest;
+    use crate::policy::{HttpPolicy, MqttPolicy};
+    use crate::runtime::{House, Plugin};
+    use crate::store::MemoryStore;
+    use async_trait::async_trait;
+    use niles_core::{Device, DeviceId, DeviceName, DeviceRegistry, EventBus};
+    use niles_notifications::{NotificationCenter, NotificationDelivery, TransportOutcome};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct SayCounter {
+        calls: AtomicUsize,
+        rooms: Mutex<Vec<Option<String>>>,
+        calls_done: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl NotificationDelivery for SayCounter {
+        async fn deliver(
+            &self,
+            _text: &str,
+            room: Option<&str>,
+            _priority: niles_notifications::Priority,
+        ) -> TransportOutcome {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.rooms.lock().unwrap().push(room.map(str::to_owned));
+            self.calls_done.notify_one();
+            TransportOutcome::Completed
+        }
+    }
+
+    fn notification_host() -> (HostState, Arc<SayCounter>) {
+        let manifest = Manifest::parse(include_str!(
+            "../tests/fixtures/hello/niles-integration.toml"
+        ))
+        .unwrap();
+        let plugin = Arc::new(Plugin::new(manifest.clone()));
+        let registry = Arc::new(DeviceRegistry::new());
+        let office = RoomName::parse("office").unwrap();
+        registry.upsert(Device::new(
+            DeviceId::new("test", office, DeviceName::parse("lamp").unwrap()).unwrap(),
+            DeviceState::default(),
+            DeviceClass::Unknown,
+        ));
+        let house = House::new(registry, EventBus::new(8), Arc::new(MemoryStore::new()));
+        house
+            .notification_rooms
+            .set([RoomName::parse("kitchen").unwrap()].into())
+            .unwrap();
+        let house = Arc::new(house);
+        let counter = Arc::new(SayCounter {
+            calls: AtomicUsize::new(0),
+            rooms: Mutex::new(Vec::new()),
+            calls_done: tokio::sync::Notify::new(),
+        });
+        assert!(
+            house
+                .notifications
+                .set(Arc::new(
+                    NotificationCenter::new(8).with_delivery(counter.clone()),
+                ))
+                .is_ok()
+        );
+        let state = HostState::new(
+            plugin,
+            house,
+            toml::Table::new(),
+            HttpPolicy::new(&manifest.permissions, |_| None),
+            MqttPolicy::new(&manifest.permissions, |_| None),
+            crate::websocket::WsPolicy::new(&manifest, &toml::Table::new(), false),
+        );
+        (state, counter)
+    }
+
+    #[tokio::test]
+    async fn notify_say_rejects_unknown_room_and_existing_room_without_route() {
+        let (mut state, counter) = notification_host();
+        let unknown = notify::Host::say(
+            &mut state,
+            "hello".into(),
+            notify::Priority::Normal,
+            Some("study".into()),
+        )
+        .unwrap_err();
+        assert!(unknown.to_string().contains("study"));
+        assert!(unknown.to_string().contains("unknown room"));
+
+        let no_satellite = notify::Host::say(
+            &mut state,
+            "hello".into(),
+            notify::Priority::Normal,
+            Some("office".into()),
+        )
+        .unwrap_err();
+        assert!(no_satellite.to_string().contains("office"));
+        assert!(no_satellite.to_string().contains("no configured satellite"));
+        assert_eq!(counter.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn notify_say_accepts_configured_room_and_keeps_house_semantics() {
+        let (mut state, counter) = notification_host();
+        notify::Host::say(
+            &mut state,
+            "hello".into(),
+            notify::Priority::Normal,
+            Some("kitchen".into()),
+        )
+        .unwrap();
+        notify::Host::say(
+            &mut state,
+            "hello everyone".into(),
+            notify::Priority::Low,
+            None,
+        )
+        .unwrap();
+        while counter.calls.load(Ordering::SeqCst) < 2 {
+            counter.calls_done.notified().await;
+        }
+        assert_eq!(counter.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            *counter.rooms.lock().unwrap(),
+            [Some("kitchen".into()), None]
+        );
+    }
 
     fn state() -> types::DeviceState {
         types::DeviceState {

@@ -147,11 +147,13 @@ pub fn spawn_timer_alarms(
                             Some(n) => format!("'{n}' timer finished"),
                             None => "Timer finished".to_string(),
                         };
-                        center.deliver(
-                            text,
-                            room.map(|r| r.as_str().to_string()),
-                            niles_notifications::Priority::Important,
-                        );
+                        center
+                            .deliver(
+                                text,
+                                room.map(|r| r.as_str().to_string()),
+                                niles_notifications::Priority::Important,
+                            )
+                            .await;
                         continue;
                     };
                     let (pcm, format) = chime();

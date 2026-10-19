@@ -2,14 +2,24 @@
 
 use crate::model::{DeliveryOutcome, Notification, Priority};
 use crate::quiet::QuietHoursConfig;
+use async_trait::async_trait;
 use chrono::Utc;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportOutcome {
+    Completed,
+    Partial,
+    Failed,
+}
+
 /// Trait for concrete delivery backends (Wyoming, push, etc.).
+#[async_trait]
 pub trait NotificationDelivery: Send + Sync {
-    /// Attempt to speak/display the notification. Returns true on success.
-    fn deliver(&self, text: &str, room: Option<&str>, priority: Priority) -> bool;
+    /// Complete transport to the selected audience; this does not acknowledge playback.
+    async fn deliver(&self, text: &str, room: Option<&str>, priority: Priority)
+    -> TransportOutcome;
 }
 
 /// Where each notification is kept so "what did you say?" still knows
@@ -87,7 +97,7 @@ impl NotificationCenter {
     ///   `Important` and recorded as `Suppressed`).
     /// * `Important` → delivered even during quiet hours.
     /// * `Urgent` → always delivered.
-    pub fn deliver(
+    pub async fn deliver(
         &self,
         text: impl Into<String>,
         room: Option<String>,
@@ -103,10 +113,16 @@ impl NotificationCenter {
                 if floored != priority {
                     (floored, DeliveryOutcome::Suppressed)
                 } else {
-                    (priority, self.try_deliver(&text, room.as_deref(), priority))
+                    (
+                        priority,
+                        self.try_deliver(&text, room.as_deref(), priority).await,
+                    )
                 }
             } else {
-                (priority, self.try_deliver(&text, room.as_deref(), priority))
+                (
+                    priority,
+                    self.try_deliver(&text, room.as_deref(), priority).await,
+                )
             };
 
         let notification = Notification {
@@ -143,15 +159,18 @@ impl NotificationCenter {
             .unwrap_or(false)
     }
 
-    fn try_deliver(&self, text: &str, room: Option<&str>, priority: Priority) -> DeliveryOutcome {
+    async fn try_deliver(
+        &self,
+        text: &str,
+        room: Option<&str>,
+        priority: Priority,
+    ) -> DeliveryOutcome {
         match &self.delivery {
-            Some(d) => {
-                if d.deliver(text, room, priority) {
-                    DeliveryOutcome::Delivered
-                } else {
-                    DeliveryOutcome::Failed
-                }
-            }
+            Some(d) => match d.deliver(text, room, priority).await {
+                TransportOutcome::Completed => DeliveryOutcome::Delivered,
+                TransportOutcome::Partial => DeliveryOutcome::Partial,
+                TransportOutcome::Failed => DeliveryOutcome::Failed,
+            },
             None => DeliveryOutcome::Failed,
         }
     }
@@ -167,6 +186,59 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    struct GatedDelivery {
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl NotificationDelivery for GatedDelivery {
+        async fn deliver(&self, _: &str, _: Option<&str>, _: Priority) -> TransportOutcome {
+            self.started.notify_one();
+            self.release.notified().await;
+            TransportOutcome::Partial
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_transport_is_not_recorded_and_partial_is_recorded_once() {
+        let backend = Arc::new(GatedDelivery {
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        let kept = Arc::new(Kept::default());
+        let center = Arc::new(
+            NotificationCenter::new(10)
+                .with_delivery(backend.clone())
+                .with_history(Vec::new(), kept.clone()),
+        );
+        let task = {
+            let center = center.clone();
+            tokio::spawn(async move { center.deliver("hello", None, Priority::Important).await })
+        };
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            backend.started.notified(),
+        )
+        .await
+        .unwrap();
+        assert!(!task.is_finished());
+        assert!(center.recent(10).is_empty());
+        backend.release.notify_one();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.outcome, DeliveryOutcome::Partial);
+        let history = center.recent(10);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, result.id);
+        assert_eq!(history[0].outcome, DeliveryOutcome::Partial);
+        let persisted = kept.0.lock().unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].id, result.id);
+    }
+
     struct CountingDelivery {
         calls: AtomicUsize,
         succeed: bool,
@@ -181,10 +253,20 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl NotificationDelivery for CountingDelivery {
-        fn deliver(&self, _text: &str, _room: Option<&str>, _priority: Priority) -> bool {
+        async fn deliver(
+            &self,
+            _text: &str,
+            _room: Option<&str>,
+            _priority: Priority,
+        ) -> TransportOutcome {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            self.succeed
+            if self.succeed {
+                TransportOutcome::Completed
+            } else {
+                TransportOutcome::Failed
+            }
         }
     }
 
@@ -204,67 +286,67 @@ mod tests {
         }
     }
 
-    #[test]
-    fn delivers_routine_when_not_quiet() {
+    #[tokio::test]
+    async fn delivers_routine_when_not_quiet() {
         let delivery = Arc::new(CountingDelivery::new(true));
         let center = NotificationCenter::new(10).with_delivery(delivery.clone());
-        let n = center.deliver("hello", None, Priority::Routine);
+        let n = center.deliver("hello", None, Priority::Routine).await;
         assert_eq!(n.outcome, DeliveryOutcome::Delivered);
         assert_eq!(n.priority, Priority::Routine);
         assert_eq!(delivery.calls.load(Ordering::SeqCst), 1);
     }
 
-    #[test]
-    fn suppresses_routine_during_quiet_hours() {
+    #[tokio::test]
+    async fn suppresses_routine_during_quiet_hours() {
         let delivery = Arc::new(CountingDelivery::new(true));
         let center = NotificationCenter::new(10)
             .with_delivery(delivery.clone())
             .with_quiet_hours(quiet_now());
-        let n = center.deliver("shh", None, Priority::Routine);
+        let n = center.deliver("shh", None, Priority::Routine).await;
         assert_eq!(n.outcome, DeliveryOutcome::Suppressed);
         assert_eq!(n.priority, Priority::Important);
         assert_eq!(delivery.calls.load(Ordering::SeqCst), 0);
     }
 
-    #[test]
-    fn delivers_important_during_quiet_hours() {
+    #[tokio::test]
+    async fn delivers_important_during_quiet_hours() {
         let delivery = Arc::new(CountingDelivery::new(true));
         let center = NotificationCenter::new(10)
             .with_delivery(delivery.clone())
             .with_quiet_hours(quiet_now());
-        let n = center.deliver("hey", None, Priority::Important);
+        let n = center.deliver("hey", None, Priority::Important).await;
         assert_eq!(n.outcome, DeliveryOutcome::Delivered);
         assert_eq!(n.priority, Priority::Important);
         assert_eq!(delivery.calls.load(Ordering::SeqCst), 1);
     }
 
-    #[test]
-    fn delivers_urgent_unconditionally() {
+    #[tokio::test]
+    async fn delivers_urgent_unconditionally() {
         let delivery = Arc::new(CountingDelivery::new(true));
         let center = NotificationCenter::new(10)
             .with_delivery(delivery.clone())
             .with_quiet_hours(quiet_now());
-        let n = center.deliver("fire", None, Priority::Urgent);
+        let n = center.deliver("fire", None, Priority::Urgent).await;
         assert_eq!(n.outcome, DeliveryOutcome::Delivered);
         assert_eq!(n.priority, Priority::Urgent);
         assert_eq!(delivery.calls.load(Ordering::SeqCst), 1);
     }
 
-    #[test]
-    fn records_failed_delivery() {
+    #[tokio::test]
+    async fn records_failed_delivery() {
         let delivery = Arc::new(CountingDelivery::new(false));
         let center = NotificationCenter::new(10).with_delivery(delivery.clone());
-        let n = center.deliver("oops", None, Priority::Important);
+        let n = center.deliver("oops", None, Priority::Important).await;
         assert_eq!(n.outcome, DeliveryOutcome::Failed);
     }
 
-    #[test]
-    fn ring_buffer_evicts_oldest() {
+    #[tokio::test]
+    async fn ring_buffer_evicts_oldest() {
         let center = NotificationCenter::new(3);
-        center.deliver("a", None, Priority::Routine);
-        center.deliver("b", None, Priority::Routine);
-        center.deliver("c", None, Priority::Routine);
-        center.deliver("d", None, Priority::Routine);
+        center.deliver("a", None, Priority::Routine).await;
+        center.deliver("b", None, Priority::Routine).await;
+        center.deliver("c", None, Priority::Routine).await;
+        center.deliver("d", None, Priority::Routine).await;
         let recent = center.recent(10);
         assert_eq!(recent.len(), 3);
         assert_eq!(recent[0].text, "d");
@@ -272,20 +354,20 @@ mod tests {
         assert_eq!(recent[2].text, "b");
     }
 
-    #[test]
-    fn recent_returns_newest_first() {
+    #[tokio::test]
+    async fn recent_returns_newest_first() {
         let center = NotificationCenter::new(10);
-        center.deliver("first", None, Priority::Routine);
-        center.deliver("second", None, Priority::Routine);
+        center.deliver("first", None, Priority::Routine).await;
+        center.deliver("second", None, Priority::Routine).await;
         let recent = center.recent(2);
         assert_eq!(recent[0].text, "second");
         assert_eq!(recent[1].text, "first");
     }
 
-    #[test]
-    fn id_has_expected_shape() {
+    #[tokio::test]
+    async fn id_has_expected_shape() {
         let center = NotificationCenter::new(10);
-        let n = center.deliver("x", None, Priority::Routine);
+        let n = center.deliver("x", None, Priority::Routine).await;
         // e.g. 1750000000000-a1b2c3d4
         let parts: Vec<&str> = n.id.split('-').collect();
         assert_eq!(parts.len(), 2);
@@ -306,12 +388,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn what_was_said_before_a_restart_is_still_recalled() {
+    #[tokio::test]
+    async fn what_was_said_before_a_restart_is_still_recalled() {
         let kept = Arc::new(Kept::default());
         let center = NotificationCenter::new(10).with_history(Vec::new(), kept.clone());
-        center.deliver("first", None, Priority::Routine);
-        center.deliver("second", None, Priority::Routine);
+        center.deliver("first", None, Priority::Routine).await;
+        center.deliver("second", None, Priority::Routine).await;
 
         // The next run reads them back newest first, as the store does.
         let earlier: Vec<Notification> = kept.0.lock().unwrap().iter().rev().cloned().collect();

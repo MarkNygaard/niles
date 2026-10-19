@@ -50,7 +50,7 @@ pub async fn handle_linear(
         return StatusCode::UNAUTHORIZED;
     }
     if let Some(n) = niles_integration_linear::notification_for(&payload) {
-        wh.center.deliver(n.text, None, Priority::Important);
+        wh.center.deliver(n.text, None, Priority::Important).await;
     }
     StatusCode::OK
 }
