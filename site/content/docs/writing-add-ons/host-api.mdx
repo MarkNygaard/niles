@@ -3,12 +3,15 @@ title: "Host API"
 description: "Every import and export of the plugin interface, with examples."
 ---
 
-> Interface 0.5: 0.1 plus [`mqtt`](#mqtt) and its two exports (0.2.0),
+> Interface 0.6 is the current source contract, but is not yet a released
+> compatibility promise. It adds tracked [`notify.request`](#notify) and
+> `notify.status` to interface 0.5. Interface 0.5: 0.1 plus [`mqtt`](#mqtt) and its two exports (0.2.0),
 > `config.time-zone` and `devices.set-room-light` (0.2.1), and
 > [`secrets`](#secrets), [`inbound`](#inbound) and three exports for
 > [accounts and webhooks](/docs/writing-add-ons/accounts) (0.3),
 > [WebSockets](/docs/writing-add-ons/websocket) (0.4), and
-> [speech streams](#speech-stream) (0.5). The examples compile against
+> [speech streams](#speech-stream) (0.5). Interface 0.5 remains supported.
+> The examples compile against
 > [`niles-integration.wit`](https://github.com/MarkNygaard/niles/blob/main/schemas/niles-integration.wit) with
 > `wit-bindgen` 0.63; the WIT file is the authority. Each plugin targets one
 > interface version in its manifest and imports only the functions in that
@@ -315,24 +318,47 @@ the count is shown on your card, so keep `on_event` quick.
 
 ### `notify`
 
-Speak through the satellites, by way of Niles's notifications. Needs
+Speak through the satellites by way of Niles's notifications. This interface
+is available in 0.5 and 0.6; the tracked calls are 0.6-only. Needs
 `notify = true`; `Urgent` needs `notify = "urgent"`.
 
 ```rust
 use niles::integration::notify;
 
+// Legacy 0.5 API: Ok means accepted, not delivered.
 notify::say("The washing machine is done.", notify::Priority::Normal, Some("kitchen"));
 ```
 
-- `Low` waits out quiet hours and is replayed in the morning; `Normal` plays
-  quietly during them; `Urgent` plays at normal volume whatever the hour.
-- `room` picks the room; `None` lets Niles choose (normally the satellite
-  last spoken to).
+- `room` names a room. In interface 0.6, omitting it targets the whole house.
+  A named room must be a known, routed room; an unknown or unrouted room is
+  refused with a named explanation, not silently redirected.
 - One or two short sentences, the important part first. It is spoken by a
   text-to-speech voice: write numbers and units as words would be read
   ("twenty degrees"), skip symbols and URLs.
-- At most 6 an hour. Remember what you said (in storage) so a restart does not
-  say it again.
+- A shared quota of 6 per hour applies per plugin to `say` and `request`;
+  status reads do not consume quota. `say` is the legacy API: success means
+  accepted, not delivered.
+
+Interface 0.6 adds tracked requests:
+
+```rust
+let request = notify::request("The washing machine is done.", notify::Priority::Normal, Some("kitchen"))?;
+match notify::status(request)? {
+    notify::RequestStatus::Pending => { /* check again later */ }
+    notify::RequestStatus::Completed => { /* host transport write completed */ }
+    notify::RequestStatus::Partial | notify::RequestStatus::Suppressed
+    | notify::RequestStatus::Failed => { /* report or handle the outcome */ }
+}
+```
+
+Statuses are `pending`, `completed`, `partial`, `suppressed` and `failed`.
+`completed` means the host transport write completed, not that audio played
+or was heard. A request is accepted before delivery begins and times out after
+20 seconds as `failed`. Each plugin instance can retain at most 32 records,
+including pending requests; terminal records are retained for five minutes.
+Request ownership is isolated to the instance. Teardown cancels outstanding
+work and removes its records; audio already written cannot be retracted.
+Quiet-hours handling does not promise replay later.
 
 ### `speech-stream`
 

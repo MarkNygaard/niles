@@ -3,7 +3,8 @@ title: "Publishing"
 description: "Release layout, the add-on library, versioning and updates."
 ---
 
-> Interface 0.5, and frozen 0.1–0.4. `niles plugin check` and installing, updating and
+> Interface 0.6 is the current source contract, not a released Niles version.
+> Interface 0.5 and frozen 0.1–0.4 remain supported. `niles plugin check` and installing, updating and
 > rolling back from GitHub releases are built (Niles 0.2.0), as described
 > here. The add-on library (Browse) and install counts are built (Niles
 > 0.5.0).
@@ -208,6 +209,7 @@ anyone who installed it; publish a new release instead.
 
 | Interface | Niles | What changed |
 |---|---|---|
+| 0.6 | Not released | Source contract adds tracked `notify.request` and `notify.status`; release and minimum Niles version are not yet published. |
 | 0.5 | 0.5.0 | [Speech streams](/docs/writing-add-ons/host-api#speech-stream): the `speech-stream` interface for bounded, room-bound commentary. |
 | 0.4 | 0.5.0 | [WebSockets](/docs/writing-add-ons/websocket): the `websocket` interface and the `on-websocket-message` and `on-websocket-status` exports. Frozen at 0.4.0; supported beside 0.5. |
 | 0.3 | 0.3.0 | [Accounts and webhooks](/docs/writing-add-ons/accounts): the `secrets` and `inbound` interfaces, the exports `authorize-url`, `on-callback` and `on-webhook`, and the `callback` and `webhook` permissions. Nothing 0.2.1 had changed. |

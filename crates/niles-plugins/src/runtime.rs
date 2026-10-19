@@ -109,6 +109,8 @@ pub struct House {
     pub(crate) tools: DynamicTools,
     pub(crate) store: Arc<dyn PluginStore>,
     pub(crate) notifications: OnceLock<Arc<NotificationCenter>>,
+    pub(crate) notification_requests:
+        OnceLock<Arc<crate::notification_requests::NotificationRequests>>,
     pub(crate) notification_rooms: OnceLock<HashSet<RoomName>>,
     pub(crate) speech_stream: OnceLock<Arc<dyn crate::speech_stream::SpeechStreamHost>>,
     pub(crate) settings: SettingsFn,
@@ -135,6 +137,7 @@ impl House {
             tools: DynamicTools::new(),
             store,
             notifications: OnceLock::new(),
+            notification_requests: OnceLock::new(),
             notification_rooms: OnceLock::new(),
             speech_stream: OnceLock::new(),
             settings: Arc::new(|_| toml::Table::new()),
@@ -387,7 +390,14 @@ impl Runtime {
 
     /// Let plugins speak, once the notification centre exists.
     pub fn connect_notifications(&self, center: Arc<NotificationCenter>) {
-        let _ = self.inner.house.notifications.set(center);
+        if self.inner.house.notifications.set(center.clone()).is_ok() {
+            let _ = self.inner.house.notification_requests.set(Arc::new(
+                crate::notification_requests::NotificationRequests::new(
+                    center,
+                    self.inner.house.handle.clone(),
+                ),
+            ));
+        }
     }
 
     /// Configure the household rooms that have a notification route.

@@ -406,6 +406,9 @@ impl<Prepared: Send + 'static> SpeechStreamHost for SessionSpeechHost<Prepared> 
 
 impl Drop for HostState {
     fn drop(&mut self) {
+        if let Some(requests) = self.house.notification_requests.get() {
+            requests.close_owner(&self.plugin.id, self.notification_generation);
+        }
         if let Some(service) = self.house.speech_stream.get() {
             service.close_owner(&self.plugin.id);
         }

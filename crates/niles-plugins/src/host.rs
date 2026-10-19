@@ -11,7 +11,7 @@ use crate::bindings::niles::integration::{
     config, devices, events, http as wit_http, log, notify, storage, timers, types, ui,
 };
 use crate::bindings::{config_0_2, devices_0_2, mqtt};
-use crate::manifest::{EventPermission, Notify, SettingKind, SettingValue, TAKEN_READINGS};
+use crate::manifest::{EventPermission, SettingKind, SettingValue, TAKEN_READINGS};
 use crate::mqtt::{Connection, MAX_CONNECTIONS, RESERVED};
 use crate::policy::{HttpPolicy, MqttPolicy};
 use crate::runtime::{House, Plugin};
@@ -33,7 +33,7 @@ pub const MAX_TIMERS: usize = 32;
 pub const MAX_READINGS: usize = 32;
 pub const NOTIFICATIONS_PER_HOUR: usize = 6;
 const MAX_ACTION: usize = 64;
-const MAX_MESSAGE: usize = 1000;
+pub(crate) const MAX_MESSAGE: usize = 1000;
 const MAX_PATTERNS: usize = 64;
 
 /// A timer an instance set.
@@ -64,6 +64,7 @@ pub(crate) struct HostState {
     /// wait — HTTP, the database — never wait past it.
     pub deadline: Instant,
     pub timers: BTreeMap<String, Timer>,
+    pub(crate) notification_generation: u64,
 }
 
 impl HostState {
@@ -108,6 +109,7 @@ impl HostState {
             websocket_connections: BTreeMap::new(),
             deadline: Instant::now(),
             timers: BTreeMap::new(),
+            notification_generation: crate::notification_requests::next_generation(),
         }
     }
 
@@ -934,76 +936,78 @@ impl notify::Host for HostState {
         priority: notify::Priority,
         room: Option<String>,
     ) -> Result<(), HostError> {
-        let granted = self.plugin.manifest.permissions.notify;
-        match (granted, priority) {
-            (Notify::No, _) => {
-                return Err(HostError::NotPermitted(
-                    "the manifest does not ask for notify".into(),
-                ));
-            }
-            (Notify::Yes, notify::Priority::Urgent) => {
-                return Err(HostError::NotPermitted(
-                    "urgent needs notify = \"urgent\" in the manifest".into(),
-                ));
-            }
-            _ => {}
-        }
-        let message = message.trim().to_owned();
-        if message.is_empty() || message.chars().count() > MAX_MESSAGE {
-            return Err(HostError::Invalid(format!(
-                "a message is 1 to {MAX_MESSAGE} characters"
-            )));
-        }
-        if let Some(room) = &room
-            && !crate::manifest::is_identifier(room)
-        {
-            return Err(HostError::Invalid(format!(
-                "{room:?} is not a room id like living_room"
-            )));
-        }
-        if let Some(room) = &room {
-            let parsed = RoomName::parse(room)
-                .map_err(|_| HostError::Invalid(format!("{room:?} is not a valid room")))?;
-            let known_from_devices = self
-                .house
-                .registry
-                .list_all()
-                .iter()
-                .any(|device| device.id.room() == &parsed);
-            let routes = self.house.notification_rooms.get();
-            let configured_route = routes.is_some_and(|rooms| rooms.contains(&parsed));
-            if !known_from_devices && !configured_route {
-                return Err(HostError::Invalid(format!("unknown room {room:?}")));
-            }
-            if !configured_route {
-                return Err(HostError::Invalid(format!(
-                    "room {room:?} has no configured satellite"
-                )));
-            }
-        }
-        let Some(center) = self.house.notifications.get() else {
-            return Err(HostError::Unavailable(
-                "notifications are not connected".into(),
-            ));
+        let priority_06 = match priority {
+            notify::Priority::Low => crate::bindings::notify_0_6::Priority::Low,
+            notify::Priority::Normal => crate::bindings::notify_0_6::Priority::Normal,
+            notify::Priority::Urgent => crate::bindings::notify_0_6::Priority::Urgent,
         };
-        if !self.plugin.may_notify(NOTIFICATIONS_PER_HOUR) {
-            return Err(HostError::Limit(format!(
-                "at most {NOTIFICATIONS_PER_HOUR} notifications an hour"
-            )));
-        }
-        let priority = match priority {
-            notify::Priority::Low => niles_notifications::Priority::Routine,
-            notify::Priority::Normal => niles_notifications::Priority::Important,
-            notify::Priority::Urgent => niles_notifications::Priority::Urgent,
-        };
+        let validated = crate::notification_host::validate(self, message, priority_06, room)?;
+        crate::notification_host::charge_quota(self)?;
         // WIT's legacy `say` is synchronous: accept the request here and
         // let the existing runtime handle perform delivery asynchronously.
-        let center = center.clone();
+        let center = validated.center;
         let handle = self.house.handle.clone();
         handle.spawn(async move {
-            center.deliver(message, room, priority).await;
+            center
+                .deliver(validated.message, validated.room, validated.priority)
+                .await;
         });
         Ok(())
+    }
+}
+
+impl crate::bindings::notify_0_6::Host for HostState {
+    fn say(
+        &mut self,
+        message: String,
+        priority: crate::bindings::notify_0_6::Priority,
+        room: Option<String>,
+    ) -> Result<(), HostError> {
+        let validated = crate::notification_host::validate(self, message, priority, room)?;
+        crate::notification_host::charge_quota(self)?;
+        let center = validated.center;
+        let handle = self.house.handle.clone();
+        handle.spawn(async move {
+            center
+                .deliver(validated.message, validated.room, validated.priority)
+                .await;
+        });
+        Ok(())
+    }
+
+    fn request(
+        &mut self,
+        message: String,
+        priority: crate::bindings::notify_0_6::Priority,
+        room: Option<String>,
+    ) -> Result<u64, HostError> {
+        let validated = crate::notification_host::validate(self, message, priority, room)?;
+        let tracker = self
+            .house
+            .notification_requests
+            .get()
+            .cloned()
+            .ok_or_else(|| HostError::Unavailable("notifications are not connected".into()))?;
+        let reservation = tracker
+            .reserve(&self.plugin.id, self.notification_generation)
+            .map_err(crate::notification_host::tracker_error)?;
+        crate::notification_host::charge_quota(self)?;
+        tracker
+            .accept(
+                reservation,
+                validated.message,
+                validated.room,
+                validated.priority,
+            )
+            .map(|id| id.0)
+            .map_err(crate::notification_host::tracker_error)
+    }
+
+    fn status(
+        &mut self,
+        request: u64,
+    ) -> Result<crate::bindings::notify_0_6::RequestStatus, HostError> {
+        crate::notification_host::status(self, request)
     }
 }
 
@@ -1113,6 +1117,7 @@ mod tests {
         calls: AtomicUsize,
         rooms: Mutex<Vec<Option<String>>>,
         calls_done: tokio::sync::Notify,
+        outcome: TransportOutcome,
     }
 
     #[async_trait]
@@ -1126,11 +1131,18 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.rooms.lock().unwrap().push(room.map(str::to_owned));
             self.calls_done.notify_one();
-            TransportOutcome::Completed
+            self.outcome
         }
     }
 
     fn notification_host() -> (HostState, Arc<SayCounter>) {
+        notification_host_with(TransportOutcome::Completed, false)
+    }
+
+    fn notification_host_with(
+        outcome: TransportOutcome,
+        quiet: bool,
+    ) -> (HostState, Arc<SayCounter>) {
         let manifest = Manifest::parse(include_str!(
             "../tests/fixtures/hello/niles-integration.toml"
         ))
@@ -1153,12 +1165,29 @@ mod tests {
             calls: AtomicUsize::new(0),
             rooms: Mutex::new(Vec::new()),
             calls_done: tokio::sync::Notify::new(),
+            outcome,
         });
+        let mut center = NotificationCenter::new(8).with_delivery(counter.clone());
+        if quiet {
+            center = center.with_quiet_hours(niles_notifications::QuietHoursConfig {
+                enabled: true,
+                window: Some(niles_notifications::QuietWindow::new(
+                    chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
+                    chrono::NaiveTime::from_hms_opt(23, 59, 59).unwrap(),
+                )),
+                timezone: None,
+            });
+        }
+        let center = Arc::new(center);
+        assert!(house.notifications.set(center.clone()).is_ok());
         assert!(
             house
-                .notifications
+                .notification_requests
                 .set(Arc::new(
-                    NotificationCenter::new(8).with_delivery(counter.clone()),
+                    crate::notification_requests::NotificationRequests::new(
+                        center,
+                        house.handle.clone(),
+                    )
                 ))
                 .is_ok()
         );
@@ -1312,5 +1341,197 @@ mod tests {
             "a third memory past 1 MiB"
         );
         assert!(cap.memory_growing(300 * 1024, 400 * 1024, None).unwrap());
+    }
+
+    #[tokio::test]
+    async fn notify_request_transitions_pending_to_completed_through_the_wit_host() {
+        let (mut state, counter) = notification_host();
+        let id = crate::bindings::notify_0_6::Host::request(
+            &mut state,
+            "hello".into(),
+            crate::bindings::notify_0_6::Priority::Normal,
+            Some("kitchen".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::bindings::notify_0_6::Host::status(&mut state, id).unwrap(),
+            crate::bindings::notify_0_6::RequestStatus::Pending
+        );
+        while counter.calls.load(Ordering::SeqCst) == 0 {
+            counter.calls_done.notified().await;
+        }
+        tokio::task::yield_now().await;
+        assert_eq!(
+            crate::bindings::notify_0_6::Host::status(&mut state, id).unwrap(),
+            crate::bindings::notify_0_6::RequestStatus::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn notify_request_maps_partial_suppressed_and_failed_outcomes_through_wit() {
+        for (outcome, quiet, priority, expected) in [
+            (
+                TransportOutcome::Partial,
+                false,
+                crate::bindings::notify_0_6::Priority::Normal,
+                crate::bindings::notify_0_6::RequestStatus::Partial,
+            ),
+            (
+                TransportOutcome::Completed,
+                true,
+                crate::bindings::notify_0_6::Priority::Low,
+                crate::bindings::notify_0_6::RequestStatus::Suppressed,
+            ),
+            (
+                TransportOutcome::Failed,
+                false,
+                crate::bindings::notify_0_6::Priority::Normal,
+                crate::bindings::notify_0_6::RequestStatus::Failed,
+            ),
+        ] {
+            let (mut state, counter) = notification_host_with(outcome, quiet);
+            let id = crate::bindings::notify_0_6::Host::request(
+                &mut state,
+                "hello".into(),
+                priority,
+                None,
+            )
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if let Ok(status) = crate::bindings::notify_0_6::Host::status(&mut state, id)
+                        && status != crate::bindings::notify_0_6::RequestStatus::Pending
+                    {
+                        assert_eq!(status, expected);
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            if !quiet {
+                assert_eq!(counter.calls.load(Ordering::SeqCst), 1);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn request_validation_and_shared_quota_apply_to_say_and_request() {
+        let (mut state, _counter) = notification_host();
+        assert!(matches!(
+            crate::bindings::notify_0_6::Host::request(
+                &mut state,
+                "urgent".into(),
+                crate::bindings::notify_0_6::Priority::Urgent,
+                None,
+            ),
+            Err(HostError::NotPermitted(_))
+        ));
+        assert!(matches!(
+            crate::bindings::notify_0_6::Host::request(
+                &mut state,
+                "hello".into(),
+                crate::bindings::notify_0_6::Priority::Normal,
+                Some("study".into()),
+            ),
+            Err(HostError::Invalid(_))
+        ));
+        assert!(matches!(
+            crate::bindings::notify_0_6::Host::request(
+                &mut state,
+                "hello".into(),
+                crate::bindings::notify_0_6::Priority::Normal,
+                Some("office".into()),
+            ),
+            Err(HostError::Invalid(_))
+        ));
+        for _ in 0..3 {
+            let id = crate::bindings::notify_0_6::Host::request(
+                &mut state,
+                "hello".into(),
+                crate::bindings::notify_0_6::Priority::Normal,
+                None,
+            )
+            .unwrap();
+            for _ in 0..10 {
+                crate::bindings::notify_0_6::Host::status(&mut state, id).unwrap();
+            }
+            crate::bindings::niles::integration::notify::Host::say(
+                &mut state,
+                "hello".into(),
+                crate::bindings::niles::integration::notify::Priority::Normal,
+                None,
+            )
+            .unwrap();
+        }
+        assert!(matches!(
+            crate::bindings::notify_0_6::Host::request(
+                &mut state,
+                "seventh".into(),
+                crate::bindings::notify_0_6::Priority::Normal,
+                None,
+            ),
+            Err(HostError::Limit(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn capacity_refusal_does_not_charge_quota_and_status_is_owner_scoped() {
+        let (mut state, _) = notification_host();
+        let tracker = state.house.notification_requests.get().unwrap().clone();
+        let mut held = Vec::new();
+        for _ in 0..crate::notification_requests::MAX_REQUESTS_PER_INSTANCE {
+            held.push(
+                tracker
+                    .reserve(&state.plugin.id, state.notification_generation)
+                    .unwrap(),
+            );
+        }
+        assert!(matches!(
+            crate::bindings::notify_0_6::Host::request(
+                &mut state,
+                "blocked".into(),
+                crate::bindings::notify_0_6::Priority::Normal,
+                None,
+            ),
+            Err(HostError::Limit(_))
+        ));
+        drop(held.pop());
+        let id = crate::bindings::notify_0_6::Host::request(
+            &mut state,
+            "accepted".into(),
+            crate::bindings::notify_0_6::Priority::Normal,
+            None,
+        )
+        .unwrap();
+        let mut replacement = HostState::new(
+            state.plugin.clone(),
+            state.house.clone(),
+            toml::Table::new(),
+            HttpPolicy::new(&state.plugin.manifest.permissions, |_| None),
+            MqttPolicy::new(&state.plugin.manifest.permissions, |_| None),
+            crate::websocket::WsPolicy::new(&state.plugin.manifest, &toml::Table::new(), false),
+        );
+        assert!(matches!(
+            crate::bindings::notify_0_6::Host::status(&mut replacement, id),
+            Err(HostError::Invalid(_))
+        ));
+        let mut other_manifest = state.plugin.manifest.clone();
+        other_manifest.id = "other-plugin".into();
+        let other_plugin = Arc::new(Plugin::new(other_manifest));
+        let mut other_owner = HostState::new(
+            other_plugin.clone(),
+            state.house.clone(),
+            toml::Table::new(),
+            HttpPolicy::new(&other_plugin.manifest.permissions, |_| None),
+            MqttPolicy::new(&other_plugin.manifest.permissions, |_| None),
+            crate::websocket::WsPolicy::new(&other_plugin.manifest, &toml::Table::new(), false),
+        );
+        assert!(matches!(
+            crate::bindings::notify_0_6::Host::status(&mut other_owner, id),
+            Err(HostError::Invalid(_))
+        ));
+        drop(held);
     }
 }

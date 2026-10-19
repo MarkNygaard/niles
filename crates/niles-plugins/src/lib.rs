@@ -34,6 +34,8 @@ pub mod manifest;
 pub mod mqtt;
 #[cfg(test)]
 mod mqtt_tests;
+mod notification_host;
+pub mod notification_requests;
 mod output;
 pub mod permissions;
 pub mod policy;
