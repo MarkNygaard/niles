@@ -49,6 +49,7 @@ mod satellites;
 mod serve;
 mod speak;
 mod speakers;
+mod speech_stream;
 mod timers;
 mod tool_servers;
 mod training;

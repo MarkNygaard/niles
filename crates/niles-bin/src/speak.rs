@@ -399,9 +399,10 @@ pub async fn speak_back(
         let (pcm, format) = wav_to_pcm(&synth.audio_wav)?;
         let (pcm, format) = for_satellite(pcm, format);
         let quieted = at_volume(&pcm, format.bits_per_sample, satellites.volume_for(peer));
-        sender
-            .send_audio_then(peer, &quieted, format, listen)
-            .await?;
+        send_audio_and_wait(&quieted, format, listen, async {
+            sender.send_audio_then(peer, &quieted, format, listen).await
+        })
+        .await?;
         Ok(())
     }
     .await;
@@ -412,6 +413,25 @@ pub async fn speak_back(
         }
     }
     result
+}
+
+pub(crate) async fn send_audio_and_wait<E>(
+    pcm: &[u8],
+    format: AudioFormat,
+    _listen: bool,
+    send: impl std::future::Future<Output = std::result::Result<(), E>>,
+) -> std::result::Result<(), E> {
+    send.await?;
+    let bytes_per_second = u64::from(format.sample_rate_hz)
+        * u64::from(format.bits_per_sample / 8)
+        * u64::from(format.channels);
+    if bytes_per_second != 0 {
+        tokio::time::sleep(Duration::from_secs_f64(
+            pcm.len() as f64 / bytes_per_second as f64,
+        ))
+        .await;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

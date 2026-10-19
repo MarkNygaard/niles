@@ -3126,6 +3126,7 @@ dependencies = [
  "niles-notifications",
  "niles-tls",
  "niles-tools",
+ "niles-tts",
  "rand 0.10.3",
  "rcgen",
  "reqwest",
@@ -3323,6 +3324,7 @@ dependencies = [
 name = "niles-tts"
 version = "0.4.0"
 dependencies = [
+ "niles-core",
  "reqwest",
  "serde",
  "thiserror 2.0.21",

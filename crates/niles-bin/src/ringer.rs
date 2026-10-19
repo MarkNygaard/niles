@@ -9,6 +9,7 @@
 //! mid-chime, and cuts the chime off where it is.
 
 use crate::satellites::SatelliteRegistry;
+use crate::speech_stream::RoomArbiter;
 use niles_core::{Event, EventBus, RoomName};
 use niles_notifications::NotificationCenter;
 use niles_scheduler::{TimerId, TimerStore};
@@ -134,6 +135,7 @@ pub fn spawn_timer_alarms(
     satellites: Arc<SatelliteRegistry>,
     peer_index: Arc<Mutex<HashMap<RoomName, SocketAddr>>>,
     center: Arc<NotificationCenter>,
+    speech_arbiter: Arc<RoomArbiter>,
 ) -> tokio::task::JoinHandle<()> {
     let mut bus_rx = bus.subscribe();
     tokio::spawn(async move {
@@ -165,7 +167,9 @@ pub fn spawn_timer_alarms(
                     .into_owned();
                     let timers = timers.clone();
                     let peer_index = peer_index.clone();
+                    let reservation = speech_arbiter.reserve_notification(&room);
                     tokio::spawn(async move {
+                        let _reservation = reservation;
                         let id = TimerId(id);
                         let ended = ring(
                             || timers.list().iter().any(|t| t.id == id && t.is_ringing()),

@@ -32,6 +32,7 @@ niles-db.workspace = true
 niles-mqtt.workspace = true
 niles-notifications.workspace = true
 niles-tools.workspace = true
+niles-tts.workspace = true
 # MQTT for plugins: rumqttc's packet codec and session state, over a
 # connection Niles makes itself to the address it checked.
 rumqttc.workspace = true

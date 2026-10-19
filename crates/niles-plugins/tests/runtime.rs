@@ -2,11 +2,13 @@
 //! from `fixtures/hello/` (see its `build.sh`). No network is used; the
 //! HTTP tests are about what is refused before anything is sent.
 
+use niles_core::RoomName;
 use niles_core::{
     Device, DeviceClass, DeviceId, DeviceRegistry, DeviceState, Event, EventBus, PresenceState,
 };
 use niles_mqtt::CommandRouter;
 use niles_notifications::{NotificationCenter, NotificationDelivery, Priority, TransportOutcome};
+use niles_plugins::speech_stream::{SpeechError, SpeechOutcome, SpeechStreamHost};
 use niles_plugins::{
     ActionValue, Context, House, Limits, MemoryStore, PluginStore, Runtime, Status, SurfaceError,
 };
@@ -17,6 +19,8 @@ use std::time::{Duration, Instant};
 
 const MANIFEST: &str = include_str!("fixtures/hello/niles-integration.toml");
 const COMPONENT: &[u8] = include_bytes!("fixtures/hello.wasm");
+const SPEECH_MANIFEST: &str = include_str!("fixtures/speech-stream/niles-integration.toml");
+const SPEECH_COMPONENT: &[u8] = include_bytes!("fixtures/speech-stream.wasm");
 
 /// The spec's limits, shortened so a test that waits for a deadline or
 /// a backoff takes milliseconds.
@@ -122,6 +126,35 @@ impl Home {
     }
 }
 
+#[derive(Default)]
+struct FakeSpeech {
+    delivered: Mutex<Vec<(String, String)>>,
+    room: Mutex<Option<String>>,
+    missing_route: Mutex<bool>,
+}
+
+impl SpeechStreamHost for FakeSpeech {
+    fn open(&self, _owner: &str, room: RoomName) -> Result<u32, SpeechError> {
+        if *self.missing_route.lock().unwrap() {
+            return Err(SpeechError::NoSatellite(room));
+        }
+        *self.room.lock().unwrap() = Some(room.to_string());
+        Ok(7)
+    }
+    fn submit(&self, _owner: &str, _session: u32, text: String) -> Result<u64, SpeechError> {
+        self.delivered
+            .lock()
+            .unwrap()
+            .push((self.room.lock().unwrap().clone().unwrap(), text));
+        Ok(11)
+    }
+    fn poll(&self, _owner: &str, _session: u32) -> Result<Vec<(u64, SpeechOutcome)>, SpeechError> {
+        Ok(vec![(11, SpeechOutcome::Delivered)])
+    }
+    fn close(&self, _owner: &str, _session: u32) {}
+    fn close_owner(&self, _owner: &str) {}
+}
+
 fn table(pairs: &[(&str, &str)]) -> toml::Table {
     pairs
         .iter()
@@ -156,6 +189,107 @@ async fn init_reads_its_settings_and_secrets() {
     );
     assert!(house.device("x_hello:kitchen/lamp").is_some());
     assert_eq!(house.tool("secret", json!({})).await.unwrap(), "true");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn speech_stream_wasm_routes_real_imports_and_checks_both_gates() {
+    for (permission, enabled, expected_error) in [
+        (false, true, Some("NotPermitted")),
+        (true, false, Some("disabled")),
+        (true, true, None),
+    ] {
+        let mut settings = toml::Table::new();
+        settings.insert(
+            "speech_stream_enabled".into(),
+            toml::Value::Boolean(enabled),
+        );
+        settings.insert("room".into(), toml::Value::String("office".into()));
+        let fake = Arc::new(FakeSpeech::default());
+        let house = House::new(
+            Arc::new(DeviceRegistry::new()),
+            EventBus::new(128),
+            Arc::new(MemoryStore::new()),
+        )
+        .with_settings(Arc::new(move |_| settings.clone()));
+        let runtime = Runtime::new(house, quick()).unwrap();
+        runtime.connect_speech_stream(fake.clone());
+        let manifest = SPEECH_MANIFEST.replace(
+            "speech_stream = { room = \"room\" }",
+            if permission {
+                "speech_stream = { room = \"room\" }"
+            } else {
+                ""
+            },
+        );
+        runtime
+            .install(&manifest, SPEECH_COMPONENT.to_vec())
+            .await
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(20);
+        loop {
+            if runtime
+                .info("speechfixture")
+                .is_some_and(|info| info.status == Status::Running)
+            {
+                break;
+            }
+            assert!(Instant::now() < until, "speech fixture did not start");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        if let Some(expected) = expected_error {
+            let result = runtime
+                .call_tool(
+                    "speechfixture",
+                    "journey",
+                    &json!({"room":"office","text":"fixture says hello"}).to_string(),
+                )
+                .await;
+            let error = result.unwrap_err();
+            assert!(error.contains(expected), "{error}");
+            assert!(fake.delivered.lock().unwrap().is_empty());
+            assert!(fake.room.lock().unwrap().is_none());
+        } else {
+            let mismatch = runtime
+                .call_tool(
+                    "speechfixture",
+                    "journey",
+                    &json!({"room":"kitchen","text":"must not open"}).to_string(),
+                )
+                .await
+                .unwrap_err();
+            assert!(mismatch.contains("household-selected"), "{mismatch}");
+            assert!(fake.room.lock().unwrap().is_none());
+
+            *fake.missing_route.lock().unwrap() = true;
+            let missing_route = runtime
+                .call_tool(
+                    "speechfixture",
+                    "journey",
+                    &json!({"room":"office","text":"must not submit"}).to_string(),
+                )
+                .await
+                .unwrap_err();
+            assert!(missing_route.contains("office"), "{missing_route}");
+            assert!(fake.room.lock().unwrap().is_none());
+            *fake.missing_route.lock().unwrap() = false;
+
+            let result = runtime
+                .call_tool(
+                    "speechfixture",
+                    "journey",
+                    &json!({"room":"office","text":"fixture says hello"}).to_string(),
+                )
+                .await;
+            let result = result.unwrap();
+            let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+            assert_eq!(result["outcome"], "Outcome::Delivered");
+            assert_eq!(
+                *fake.delivered.lock().unwrap(),
+                vec![("office".into(), "fixture says hello".into())]
+            );
+        }
+        runtime.shutdown().await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

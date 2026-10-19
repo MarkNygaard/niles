@@ -18,7 +18,7 @@
 
 use crate::bindings::niles::integration::types::{DeviceState, Event, ToolDef};
 use crate::bindings::niles::integration::ui::{ActionResult, ActionValue, RenderContext, UiTree};
-use crate::bindings::{inbound, mqtt, v0_1, v0_2, v0_3, v0_4};
+use crate::bindings::{inbound, mqtt, v0_1, v0_2, v0_3, v0_4, v0_5};
 use crate::host::HostState;
 use crate::inbound::HookAnswer;
 use crate::log::Level;
@@ -37,7 +37,7 @@ use wasmtime::{Engine, Store};
 const NOTE_DROPS: Duration = Duration::from_secs(10);
 
 /// The `niles:integration` version a component was built against, by
-/// what it imports and exports: `0.1`, `0.2` or `0.3`.
+/// what it imports and exports: `0.1` through `0.5`.
 pub(crate) fn interface_of(component: &Component, engine: &Engine) -> Result<&'static str, String> {
     let ty = component.component_type();
     let mut found = BTreeSet::new();
@@ -65,12 +65,14 @@ pub(crate) fn interface_of(component: &Component, engine: &Engine) -> Result<&'s
         found.insert(*minor);
     }
     // Exports say it too, for a component that imports nothing of ours.
-    // 0.3 exports the MQTT pair as well, so its own export decides.
+    // The newest world has an otherwise ambiguous set of older exports.
     let exports: BTreeSet<String> = ty
         .exports(engine)
         .map(|(name, _)| name.to_string())
         .collect();
-    if exports.contains("on-websocket-message") || exports.contains("on-websocket-status") {
+    if found.contains("0.5") {
+        // 0.5 adds imports only; its callbacks are identical to 0.4.
+    } else if exports.contains("on-websocket-message") || exports.contains("on-websocket-status") {
         found.insert("0.4");
     } else if exports.contains("on-webhook") {
         found.insert("0.3");
@@ -113,7 +115,8 @@ pub(crate) fn prepare(
         "0.1" => Pre::V1(v0_1::PluginPre::new(pre).map_err(missing)?),
         "0.2" => Pre::V2(v0_2::PluginPre::new(pre).map_err(missing)?),
         "0.3" => Pre::V3(v0_3::PluginPre::new(pre).map_err(missing)?),
-        _ => Pre::V4(v0_4::PluginPre::new(pre).map_err(missing)?),
+        "0.4" => Pre::V4(v0_4::PluginPre::new(pre).map_err(missing)?),
+        _ => Pre::V5(v0_5::PluginPre::new(pre).map_err(missing)?),
     })
 }
 
@@ -124,6 +127,7 @@ pub(crate) enum Pre {
     V2(v0_2::PluginPre<HostState>),
     V3(v0_3::PluginPre<HostState>),
     V4(v0_4::PluginPre<HostState>),
+    V5(v0_5::PluginPre<HostState>),
 }
 
 impl Pre {
@@ -133,6 +137,7 @@ impl Pre {
             Pre::V2(pre) => Bindings::V2(pre.instantiate(store)?),
             Pre::V3(pre) => Bindings::V3(pre.instantiate(store)?),
             Pre::V4(pre) => Bindings::V4(pre.instantiate(store)?),
+            Pre::V5(pre) => Bindings::V5(pre.instantiate(store)?),
         })
     }
 }
@@ -143,6 +148,7 @@ pub(crate) enum Bindings {
     V2(v0_2::Plugin),
     V3(v0_3::Plugin),
     V4(v0_4::Plugin),
+    V5(v0_5::Plugin),
 }
 
 /// The same call on any world's bindings.
@@ -153,6 +159,7 @@ macro_rules! either {
             Bindings::V2($b) => $call,
             Bindings::V3($b) => $call,
             Bindings::V4($b) => $call,
+            Bindings::V5($b) => $call,
         }
     };
 }
@@ -231,6 +238,7 @@ impl Bindings {
             Bindings::V2(b) => b.call_on_mqtt_message(s, conn, topic, payload),
             Bindings::V3(b) => b.call_on_mqtt_message(s, conn, topic, payload),
             Bindings::V4(b) => b.call_on_mqtt_message(s, conn, topic, payload),
+            Bindings::V5(b) => b.call_on_mqtt_message(s, conn, topic, payload),
         }
     }
 
@@ -245,6 +253,7 @@ impl Bindings {
             Bindings::V2(b) => b.call_on_mqtt_status(s, conn, status),
             Bindings::V3(b) => b.call_on_mqtt_status(s, conn, status),
             Bindings::V4(b) => b.call_on_mqtt_status(s, conn, status),
+            Bindings::V5(b) => b.call_on_mqtt_status(s, conn, status),
         }
     }
 
@@ -253,7 +262,7 @@ impl Bindings {
     /// they are.
     fn older(&self) -> Option<String> {
         match self {
-            Bindings::V3(_) | Bindings::V4(_) => None,
+            Bindings::V3(_) | Bindings::V4(_) | Bindings::V5(_) => None,
             _ => Some("it is built for an interface without accounts or webhooks".into()),
         }
     }
@@ -267,6 +276,7 @@ impl Bindings {
         match self {
             Bindings::V3(b) => b.call_authorize_url(s, callback_url, state),
             Bindings::V4(b) => b.call_authorize_url(s, callback_url, state),
+            Bindings::V5(b) => b.call_authorize_url(s, callback_url, state),
             _ => Ok(Err(self.older().unwrap_or_default())),
         }
     }
@@ -281,6 +291,7 @@ impl Bindings {
         match self {
             Bindings::V3(b) => b.call_on_callback(s, callback_url, query, person),
             Bindings::V4(b) => b.call_on_callback(s, callback_url, query, person),
+            Bindings::V5(b) => b.call_on_callback(s, callback_url, query, person),
             _ => Ok(Err(self.older().unwrap_or_default())),
         }
     }
@@ -293,6 +304,7 @@ impl Bindings {
         match self {
             Bindings::V3(b) => b.call_on_webhook(s, request),
             Bindings::V4(b) => b.call_on_webhook(s, request),
+            Bindings::V5(b) => b.call_on_webhook(s, request),
             _ => Ok(inbound::InboundResponse {
                 status: 404,
                 content_type: None,

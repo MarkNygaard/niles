@@ -3,7 +3,7 @@ title: "Publishing"
 description: "Release layout, the add-on library, versioning and updates."
 ---
 
-> Interface 0.4, and 0.1–0.3. `niles plugin check` and installing, updating and
+> Interface 0.5, and frozen 0.1–0.4. `niles plugin check` and installing, updating and
 > rolling back from GitHub releases are built (Niles 0.2.0), as described
 > here. The add-on library (Browse) and install counts are built (Niles
 > 0.5.0).
@@ -202,14 +202,14 @@ anyone who installed it; publish a new release instead.
   runs any `0.2.x` component; patch versions of the interface only add.
 - `min_niles` is the oldest Niles your plugin needs: `"0.3.0"` for interface
   0.3, and later when you use a function or UI node added after that. For
-  interface 0.4, set `min_niles = "0.5.0"`, the planned first Niles release
-  with WebSocket support.
+  interfaces 0.4 and 0.5, set `min_niles = "0.5.0"` for WebSocket and speech-stream support.
 
 ### Interface versions
 
 | Interface | Niles | What changed |
 |---|---|---|
-| 0.4 | 0.5.0 (planned) | [WebSockets](/docs/writing-add-ons/websocket): the `websocket` interface and the `on-websocket-message` and `on-websocket-status` exports. |
+| 0.5 | 0.5.0 | [Speech streams](/docs/writing-add-ons/host-api#speech-stream): the `speech-stream` interface for bounded, room-bound commentary. |
+| 0.4 | 0.5.0 | [WebSockets](/docs/writing-add-ons/websocket): the `websocket` interface and the `on-websocket-message` and `on-websocket-status` exports. Frozen at 0.4.0; supported beside 0.5. |
 | 0.3 | 0.3.0 | [Accounts and webhooks](/docs/writing-add-ons/accounts): the `secrets` and `inbound` interfaces, the exports `authorize-url`, `on-callback` and `on-webhook`, and the `callback` and `webhook` permissions. Nothing 0.2.1 had changed. |
 | 0.2.1 | 0.2.1 | `config.time-zone` and `devices.set-room-light`. Any device class may `report-action`. Nothing 0.2.0 had changed. |
 | 0.2.0 | 0.2.0 | The `mqtt` interface and the exports `on-mqtt-message` and `on-mqtt-status`. Nothing else. |
@@ -260,6 +260,8 @@ fn on_mqtt_message(_conn: u32, _topic: String, _payload: Vec<u8>) {}
 fn on_mqtt_status(_conn: u32, _status: ConnectionStatus) {}
 ```
 
+Interface 0.4 is kept, frozen, as
+[`niles-integration-0.4.wit`](https://github.com/MarkNygaard/niles/blob/main/schemas/niles-integration-0.4.wit).
 The older interfaces are kept, frozen, as
 [`niles-integration-0.2.wit`](https://github.com/MarkNygaard/niles/blob/main/schemas/niles-integration-0.2.wit) and
 [`niles-integration-0.1.wit`](https://github.com/MarkNygaard/niles/blob/main/schemas/niles-integration-0.1.wit).

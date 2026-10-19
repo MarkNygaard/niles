@@ -10,7 +10,7 @@ word, because plugins already built depend on them: the WIT package is
 `integration.wasm`. For how a household installs and manages one, see
 [Add-ons and accounts](/docs/using/add-ons#add-ons-from-github).
 
-> **v0.4 of the interface, built.** Niles 0.2.0 runs plugins (the sandbox,
+> **v0.5 of the interface, built.** Niles 0.2.0 runs plugins (the sandbox,
 > every host interface, devices, tools, timers, events, pages, MQTT, and from
 > Niles 0.3.0 accounts and webhooks) and installs
 > them: **Add-on from GitHub** with its approval screen, update checks, updates
@@ -22,9 +22,10 @@ word, because plugins already built depend on them: the WIT package is
 > `niles plugin dev --live`, which would run a plugin on a running Niles, and
 > `--http`, which would serve its webhook locally. The interface
 > ([`schemas/niles-integration.wit`](https://github.com/MarkNygaard/niles/blob/main/schemas/niles-integration.wit)) is
-> v0.4: v0.1 plus MQTT (0.2), the house's time zone and lights kept out of
-> their room's (0.2.1), connecting accounts and webhooks (0.3), and WebSockets (0.4). Niles still
-> runs plugins built for 0.2 and 0.1. See
+> v0.5: v0.1 plus MQTT (0.2), the house's time zone and lights kept out of
+> their room's (0.2.1), connecting accounts and webhooks (0.3), WebSockets (0.4),
+> and room-bound speech streams (0.5). Niles still runs frozen 0.4 and older
+> worlds. See
 > [versioning](/docs/writing-add-ons/publishing#interface-versions) for what may change.
 
 Niles is an open-source home assistant, written in Rust, that you talk to. It
@@ -46,7 +47,7 @@ installs it by pasting your repo's URL into the app.
 - **WIT** (WebAssembly Interface Type) is the language those declarations are
   written in. Niles's is one file,
   [`niles-integration.wit`](https://github.com/MarkNygaard/niles/blob/main/schemas/niles-integration.wit): package
-  `niles:integration@0.4.0`, world `plugin`. A *world* is the full contract,
+  `niles:integration@0.5.0`, world `plugin`. A *world* is the full contract,
   what you import and what you export. You do not write WIT; you read it, and a
   bindings generator turns it into types and functions in your language.
 - **`cargo-component`** and **`wit-bindgen`** are the Rust tools that do that
@@ -123,6 +124,7 @@ hides and moves them in Settings → Menu like the built-in ones. People find
 | React to other devices or presence | `events.subscribe` → `on-event` | `events = [...]` | [host API](/docs/writing-add-ons/host-api#events) |
 | Talk to an MQTT device or broker | `mqtt.connect`, `subscribe`, `publish` → `on-mqtt-message`, `on-mqtt-status` | `mqtt = [{ name, host, tls }]` (0.2) | [MQTT](/docs/writing-add-ons/mqtt) |
 | Talk to a WebSocket endpoint | `websocket.connect`, `send`, `close` → `on-websocket-message`, `on-websocket-status` | `websocket = [{ name, host, tls }]` (0.4) | [WebSockets](/docs/writing-add-ons/websocket) |
+| Speak short commentary in a room | `speech-stream.open`, `submit`, `poll`, `close` | `speech_stream = true` and an explicitly enabled setting | [Host API](/docs/writing-add-ons/host-api#speech-stream) |
 | Connect an account through its sign-in page | exports `authorize-url`, `on-callback` | `callback = true` (0.3) | [accounts](/docs/writing-add-ons/accounts) |
 | Keep a token you refreshed, encrypted | `secrets.get`, `set`, `delete` | none (0.3) | [host API](/docs/writing-add-ons/host-api#secrets) |
 | Be called by a service that pushes | `inbound.hook-url` → export `on-webhook` | `webhook = true` (0.3) | [accounts](/docs/writing-add-ons/accounts#the-webhook) |

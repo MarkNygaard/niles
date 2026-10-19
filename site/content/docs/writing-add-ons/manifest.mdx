@@ -3,8 +3,9 @@ title: "The manifest"
 description: "Every field of niles-integration.toml."
 ---
 
-> Interface 0.3, and 0.2 and 0.1, which Niles still runs. Niles 0.2.0 runs them and
-> installs them from GitHub: the runtime, `niles plugin check`, `niles plugin
+> This page describes interface 0.5; earlier interfaces remain supported.
+> Plugin support started in Niles 0.2.0, including installation from GitHub:
+> the runtime, `niles plugin check`, `niles plugin
 > dev`, Add-on from GitHub with its approval screen, updates, rollback, turning
 > off and removing, and in the app the generated setup panel, the plugin's
 > log, and its pages and widgets.
@@ -26,8 +27,8 @@ A complete example is in the [worked example](/docs/writing-add-ons/example-spot
 | `description` | yes | One line, at most 120 characters. See below. |
 | `authors` | yes | List of `"Name <email>"` or `"Name"`. |
 | `homepage` | no | Usually the repo. Linked from the setup panel. |
-| `min_niles` | yes | The oldest Niles version it runs on. Niles 0.2.0 is the first with plugins, so `"0.2.0"` or later; `"0.3.0"` or later for interface 0.3. |
-| `interface` | yes | The `niles:integration` version the component targets: `"0.3"`, or `"0.2"` or `"0.1"` for a plugin built before accounts and webhooks, or before MQTT. It must match the WIT the component was built with. |
+| `min_niles` | yes | The oldest Niles version it runs on. Niles 0.2.0 is the first with plugins; use `"0.5.0"` or later for interfaces 0.4 and 0.5. |
+| `interface` | yes | The `niles:integration` version the component targets: `"0.5"`, or `"0.4"` through `"0.1"` for a plugin built against an earlier frozen world. It must match the WIT the component was built with. |
 | `group` | no | Where it sits on the Add-ons page. See [Groups](#groups). |
 | `logo` | no | Path of an SVG in the release, normally `"logo.svg"`. See [Logo](#logo). |
 | `memory_mb` | no | Memory cap, 64 by default, at most 256. JavaScript and Python plugins want 128. |
@@ -121,6 +122,7 @@ mqtt = [                 # interface 0.2
 callback = true          # interface 0.3
 webhook = true           # interface 0.3
 websocket = [{ name = "feed", host = "stream.example.com", tls = true }] # 0.4
+speech_stream = { room = "room" } # 0.5; room names a type = "room" setting
 ```
 
 All are optional; leave out what you do not use. `mqtt` needs
@@ -128,6 +130,7 @@ All are optional; leave out what you do not use. `mqtt` needs
 fields. `callback` and `webhook` need `interface = "0.3"`; see
 [accounts and webhooks](/docs/writing-add-ons/accounts).
 WebSocket grants need `interface = "0.4"`; see [WebSockets](/docs/writing-add-ons/websocket).
+`speech_stream` needs `interface = "0.5"`, a `room` setting reference, and the explicitly enabled `speech_stream_enabled` boolean setting; see [frequent spoken commentary](/docs/writing-add-ons/permissions#frequent-spoken-commentary).
 
 ## Settings
 

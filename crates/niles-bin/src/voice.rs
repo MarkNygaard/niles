@@ -8,6 +8,9 @@ use crate::prompt::{
 };
 use crate::recognition::{build_speaker_identifier, pcm_bytes_to_i16};
 use crate::satellites::SatelliteRegistry;
+use crate::speech_stream::{
+    ConversationLease, RoomArbiter, spawn_conversation_task, take_conversation_after_audio,
+};
 use crate::timers::spawn_timer_driver;
 use crate::wiring::accounts::{build_tado_tokens, build_weather_client};
 use crate::wiring::llm::{build_llm_client, build_tier2_client, build_tool_registry};
@@ -204,12 +207,13 @@ pub(crate) fn spawn_dispatch_task(
     piper: &Arc<PiperClient>,
     sender: &WyomingSender,
     session: niles_wyoming::AudioSession,
+    conversation: Option<ConversationLease>,
 ) {
     let whisper = whisper.clone();
     let ctx = ctx.clone();
     let piper = piper.clone();
     let sender = sender.clone();
-    tokio::spawn(async move {
+    spawn_conversation_task(conversation, async move {
         let follow_up = session.follow_up;
         let from = session.from;
         let mut asked = false;
@@ -390,7 +394,7 @@ pub(crate) fn spawn_dispatch_task(
             if let Some(say) = say {
                 tracing::info!("[{peer}] say: {say}");
                 let speak_started = Instant::now();
-                if let Err(e) = crate::speak::speak_back(
+                let spoken = crate::speak::speak_back(
                     &piper,
                     &sender,
                     peer,
@@ -399,11 +403,18 @@ pub(crate) fn spawn_dispatch_task(
                     &ctx.satellites,
                     listen,
                 )
-                .await
-                {
-                    tracing::warn!("[{peer}] speak-back failed: {e:#}");
-                }
+                .await;
+                let spoken_ok = match spoken {
+                    Ok(()) => true,
+                    Err(e) => {
+                        tracing::warn!("[{peer}] speak-back failed: {e:#}");
+                        false
+                    }
+                };
                 timing.speak_ms = speak_started.elapsed().as_millis();
+                if spoken_ok && listen {
+                    tokio::time::sleep(follow_up::WAITING).await;
+                }
             }
             timing.log(peer, &text);
         }
@@ -413,15 +424,24 @@ pub(crate) fn spawn_dispatch_task(
 
 /// At a satellite's wake word, quiet the room's speakers for what is
 /// about to be said — see [`speak::Hush`].
-pub(crate) fn hush_on_wake(ctx: &DispatchCtx, incoming: &niles_wyoming::server::IncomingEvent) {
+pub(crate) fn hush_on_wake(
+    ctx: &DispatchCtx,
+    arbiter: &Arc<RoomArbiter>,
+    incoming: &niles_wyoming::server::IncomingEvent,
+) -> Option<ConversationLease> {
     if incoming.event.kind != niles_wyoming::EventKind::AudioStart {
-        return;
+        return None;
     }
+    let conversation = ctx
+        .satellites
+        .room_for(incoming.from)
+        .map(|room| arbiter.enter_conversation(room.clone()));
     let ctx = ctx.clone();
     let peer = incoming.from;
     tokio::spawn(async move {
         ctx.hush.begin(&ctx.speakers, &ctx.satellites, peer).await;
     });
+    conversation
 }
 
 #[expect(
@@ -571,6 +591,7 @@ pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()
         .with_context(|| format!("binding Wyoming server on {bind}"))?;
 
     let satellites = Arc::new(SatelliteRegistry::from_config(&cfg.satellites));
+    let speech_arbiter = Arc::new(RoomArbiter::default());
     let speakers = Arc::new(speakers::SpeakerRegistry::new(store.clone()));
     let music =
         Arc::new(music::Music::new(speakers.clone(), store.clone(), build_room_music(&cfg)).await);
@@ -589,6 +610,7 @@ pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()
         satellites: satellites.clone(),
         peer_index: peer_index.clone(),
         tv: tv.clone(),
+        speech_arbiter: speech_arbiter.clone(),
     });
     notifications.set_delivery(wyoming_delivery);
     let notifications = Arc::new(notifications);
@@ -601,6 +623,7 @@ pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()
         satellites.clone(),
         peer_index.clone(),
         notifications.clone(),
+        speech_arbiter.clone(),
     );
 
     let tools = Arc::new(tools);
@@ -623,6 +646,8 @@ pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()
     let wyoming_sender = server.sender();
     let server_handle = tokio::spawn(server.run());
     let mut tracker = SessionTracker::new();
+    let speech_arbiter = Arc::new(RoomArbiter::default());
+    let mut conversations: HashMap<SocketAddr, ConversationLease> = HashMap::new();
     let ctx = DispatchCtx {
         publisher,
         registry: registry.clone(),
@@ -702,15 +727,26 @@ pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()
             biased;
             incoming = rx.recv() => match incoming {
                 Some(incoming) => {
+                    let audio_stop = incoming.event.kind == niles_wyoming::EventKind::AudioStop;
+                    let peer = incoming.from;
                     if let Some(room) = satellites.room_for(incoming.from) {
                         peer_index.lock().unwrap_or_else(|e| e.into_inner()).insert(room.clone(), incoming.from);
                     }
-                    hush_on_wake(&ctx, &incoming);
-                    if let Some(session) = tracker.feed(incoming) {
+                    if let Some(conversation) = hush_on_wake(&ctx, &speech_arbiter, &incoming) {
+                        conversations.insert(incoming.from, conversation);
+                    }
+                    let session = tracker.feed(incoming);
+                    let conversation = take_conversation_after_audio(
+                        &mut conversations,
+                        peer,
+                        audio_stop,
+                        session.is_some(),
+                    );
+                    if let Some(session) = session {
                         // Same unbounded fan-out as voice-tap — fine
                         // for a dev tool, replaced by a bounded
                         // worker pool when this becomes prod dispatch.
-                        spawn_dispatch_task(&whisper, &ctx, &piper, &wyoming_sender, session);
+                        spawn_dispatch_task(&whisper, &ctx, &piper, &wyoming_sender, session, conversation);
                     }
                 }
                 None => {
@@ -721,6 +757,7 @@ pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()
             disconnect = disconnects_rx.recv() => {
                 if let Some(peer) = disconnect {
                     tracker.drop_peer(peer);
+                    conversations.remove(&peer);
                     let mut index = peer_index.lock().unwrap_or_else(|e| e.into_inner());
                     index.retain(|_, addr| *addr != peer);
                 }

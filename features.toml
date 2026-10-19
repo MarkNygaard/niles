@@ -964,6 +964,13 @@ summary = "A share menu on an open artifact: Share, Copy, Word for documents, pl
 since_pr = 472
 
 [[feature]]
+id = "plugins-speech-stream"
+category = "runtime.plugins"
+summary = "Permission-gated room speech sessions with explicit enablement, bounded work, expiry and asynchronous outcomes"
+phrasings = []
+since_pr = 482
+
+[[feature]]
 id = "ui-notifications-page"
 category = "ui.notifications"
 summary = "Notifications, by the avatar: Now (today's run, a delivery, pair this phone), then all Niles told you; Home is the house"
