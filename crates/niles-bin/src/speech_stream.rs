@@ -119,9 +119,11 @@ impl RoomArbiter {
     }
     fn busy(&self, room: &RoomName) -> bool {
         let rooms = self.rooms.lock().unwrap_or_else(|e| e.into_inner());
-        rooms.get(room).is_some_and(|state| {
-            state.conversations != 0 || state.notifications != 0 || state.commentary.is_some()
-        })
+        // Commentary admission must reach the manager's replacement slot.
+        // Exclusive output is still enforced by try_start_commentary.
+        rooms
+            .get(room)
+            .is_some_and(|state| state.conversations != 0 || state.notifications != 0)
     }
 }
 
@@ -440,6 +442,10 @@ mod tests {
         let policy =
             CommentaryPolicy::new(arbiter.clone(), satellites, QuietHoursConfig::default());
         let owner = PluginOwner::new("synthetic-test").unwrap();
+        let commentary = arbiter.try_start_commentary(&room).unwrap();
+        assert_eq!(policy.check(&owner, &room).await, Eligibility::Eligible);
+        assert!(arbiter.try_start_commentary(&room).is_err());
+        drop(commentary);
         let conversation = arbiter.enter_conversation(room.clone());
         let started = Arc::new(Notify::new());
         let task_started = started.clone();
