@@ -6,9 +6,9 @@
 ///
 /// Spec and author guide: site/content/docs/writing-add-ons/.
 ///
-/// Status: v0.4.0 (`crates/niles-plugins`). 0.4 adds the host-managed
-/// WebSocket client interface. 0.3.0 is frozen in `niles-integration-0.3.wit`;
-/// 0.2 and 0.1 remain frozen beside it.
+/// Status: v0.5.0 (`crates/niles-plugins`). 0.5 adds a host-managed
+/// speech-stream interface. 0.4's WebSocket surface and older worlds are
+/// frozen in adjacent versioned files and remain supported.
 ///
 /// Conventions, the same as the rest of Niles:
 /// - brightness and position are percent, 0-100 (position 0 is shut,
@@ -21,7 +21,7 @@
 /// Every call is synchronous from the plugin's point of view. Niles never
 /// calls into a plugin while that plugin is waiting on a host function,
 /// and never makes two calls into the same plugin at once.
-package niles:integration@0.4.0;
+package niles:integration@0.5.0;
 
 /// Types shared by several interfaces and by the exports.
 interface types {
@@ -747,6 +747,27 @@ interface websocket {
     close: func(conn: conn-id);
 }
 
+/// Room-bound plugin speech streams. Separate from notifications:
+/// acceptance means only that a bounded request was recorded. Host work is
+/// asynchronous; polling reports transport outcomes, never human audibility.
+interface speech-stream {
+    use types.{host-error};
+    type session-id = u32;
+    type request-id = u64;
+    enum outcome { pending, delivered, busy, quiet, disabled, unavailable, overload, expired, failed, cancelled }
+    record request-status { request: request-id, outcome: outcome }
+    /// Open one stream in the selected room. Requires the speech-stream
+    /// permission and a user-enabled boolean `speech_stream_enabled` setting.
+    open: func(room: string) -> result<session-id, host-error>;
+    /// Queue one short utterance without waiting for synthesis or output.
+    /// At most 32 uncollected requests per session; excess is `limit`.
+    submit: func(session: session-id, text: string) -> result<request-id, host-error>;
+    /// Results are ordered and bounded to 32 retained records per session.
+    poll: func(session: session-id) -> result<list<request-status>, host-error>;
+    /// Idempotently close an owned session and cancel its pending work.
+    close: func(session: session-id);
+}
+
 /// Credentials the plugin keeps itself, such as an OAuth token it
 /// refreshed, in Niles's encrypted secret store. Since 0.3.0.
 ///
@@ -834,6 +855,7 @@ world plugin {
     import secrets;
     import inbound;
     import websocket;
+    import speech-stream;
 
     /// Called once per instance, after the plugin starts and after every
     /// settings change (each of which starts a fresh instance). Read

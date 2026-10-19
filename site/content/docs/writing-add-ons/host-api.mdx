@@ -3,15 +3,16 @@ title: "Host API"
 description: "Every import and export of the plugin interface, with examples."
 ---
 
-> Interface 0.4: 0.1 plus [`mqtt`](#mqtt) and its two exports (0.2.0),
+> Interface 0.5: 0.1 plus [`mqtt`](#mqtt) and its two exports (0.2.0),
 > `config.time-zone` and `devices.set-room-light` (0.2.1), and
 > [`secrets`](#secrets), [`inbound`](#inbound) and three exports for
-> [accounts and webhooks](/docs/writing-add-ons/accounts) (0.3), and
-> [WebSockets](/docs/writing-add-ons/websocket) (0.4). The examples compile against
+> [accounts and webhooks](/docs/writing-add-ons/accounts) (0.3),
+> [WebSockets](/docs/writing-add-ons/websocket) (0.4), and
+> [speech streams](#speech-stream) (0.5). The examples compile against
 > [`niles-integration.wit`](https://github.com/MarkNygaard/niles/blob/main/schemas/niles-integration.wit) with
-> `wit-bindgen` 0.63; the WIT file is the authority. A plugin built for 0.2
-> has everything here but `secrets`, `inbound` and their exports, and one
-> built for 0.1 not MQTT or the 0.2.1 functions either; see
+> `wit-bindgen` 0.63; the WIT file is the authority. Each plugin targets one
+> interface version in its manifest and imports only the functions in that
+> WIT world. Niles continues to run frozen 0.4 and older worlds; see
 > [interface versions](/docs/writing-add-ons/publishing#interface-versions).
 
 A plugin **imports** functions Niles provides and **exports** functions Niles
@@ -332,6 +333,43 @@ notify::say("The washing machine is done.", notify::Priority::Normal, Some("kitc
   ("twenty degrees"), skip symbols and URLs.
 - At most 6 an hour. Remember what you said (in storage) so a restart does not
   say it again.
+
+### `speech-stream`
+
+Interface 0.5 adds room-bound commentary, separate from `notify`. It needs
+`speech_stream = true` in `[permissions]` and a boolean setting named
+`speech_stream_enabled` with no default or `default = false`. The household
+must turn that setting on. See [permissions](/docs/writing-add-ons/permissions#frequent-spoken-commentary).
+
+```rust
+let session = speech_stream::open("kitchen")?;
+let request = speech_stream::submit(session, "The printer finished.")?;
+// Poll speech_stream::poll(session) until this request has a terminal outcome.
+speech_stream::close(session);
+```
+
+`open` reserves one session for the plugin instance and fixes its room. A
+successful open does not guarantee that the room can play audio. `submit`
+returns a request id when the host accepts work, not when it finishes or is
+heard. Poll for ordered terminal outcomes: `delivered`, `busy`, `quiet`,
+`disabled`, `unavailable`, `overload`, `expired`, `failed` or `cancelled`.
+`delivered` means the host completed its transport write, not that a person
+heard it. Poll consumes completed records; pending records stay queued.
+
+Text must be nonblank and no more than 256 characters. A session retains at
+most 32 uncollected request results, and accepts at most four requests waiting
+behind active output. Requests expire after three seconds in the queue.
+Excess submissions fail with `limit`; invalid text fails with `invalid`.
+Permission and ownership errors are `not-permitted`; disabled, busy, quiet
+hours and unavailable output are reported as `unavailable` host errors.
+
+`close` is idempotent and cancels accepted work. Poll cancellation results
+before opening another session. The host reserves the plugin's session until
+its worker stops; instance teardown closes it and discards results that no
+plugin instance can collect. Commentary does not use notification quotas,
+chimes, history or priority. Interactive voice preempts synthesis and pending
+delivery on a best-effort basis. Audio already buffered by the satellite
+cannot be recalled by the current Wyoming protocol.
 
 ### `ui`
 

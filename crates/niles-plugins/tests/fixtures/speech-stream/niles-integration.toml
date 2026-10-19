@@ -1,0 +1,18 @@
+id = "speechfixture"
+name = "Speech stream fixture"
+version = "0.1.0"
+description = "Exercises the host-managed speech-stream integration."
+authors = ["Niles tests"]
+min_niles = "0.4.0"
+interface = "0.5"
+keywords = ["speech"]
+
+[permissions]
+tools = true
+speech_stream = true
+
+[[settings]]
+key = "speech_stream_enabled"
+label = "Enable speech stream"
+type = "boolean"
+default = false

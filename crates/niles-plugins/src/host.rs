@@ -53,7 +53,7 @@ pub(crate) struct HostState {
     pub house: Arc<House>,
     /// The settings as they were when the instance started. Saving
     /// settings starts a new instance, so these never change under it.
-    settings: toml::Table,
+    pub(crate) settings: toml::Table,
     policy: HttpPolicy,
     mqtt_policy: MqttPolicy,
     pub ws_policy: crate::websocket::WsPolicy,

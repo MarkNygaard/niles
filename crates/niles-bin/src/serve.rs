@@ -11,6 +11,9 @@ use crate::lighting::{
 use crate::prompt::{build_capability_index, build_capability_loader, build_initial_device_index};
 use crate::recognition::build_speaker_identifier;
 use crate::satellites::SatelliteRegistry;
+use crate::speech_stream::{
+    CommentaryOutput, CommentaryPolicy, ConversationLease, RoomArbiter, drop_conversation_for_peer,
+};
 use crate::timers::spawn_timer_driver;
 use crate::voice::{hush_on_wake, spawn_dispatch_task};
 use crate::wiring::accounts::{
@@ -558,6 +561,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .with_context(|| format!("binding Wyoming server on {wyoming_bind}"))?;
 
     let satellites = Arc::new(SatelliteRegistry::from_config(&cfg.satellites));
+    let speech_arbiter = Arc::new(RoomArbiter::default());
     let speakers = Arc::new(speakers::SpeakerRegistry::new(store.clone()));
     let music =
         Arc::new(music::Music::new(speakers.clone(), store.clone(), build_room_music(&cfg)).await);
@@ -589,6 +593,27 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     });
     notifications.set_delivery(wyoming_delivery);
     let notifications = Arc::new(notifications);
+
+    let speech_manager = if let Some(runtime) = &plugin_runtime {
+        let quiet = cfg
+            .notifications
+            .to_quiet_hours_config(&cfg.home.timezone)
+            .unwrap_or_default();
+        let output =
+            CommentaryOutput::new(piper.clone(), satellites.clone(), speech_arbiter.clone());
+        let policy = CommentaryPolicy::new(speech_arbiter.clone(), satellites.clone(), quiet);
+        let manager = Arc::new(niles_tts::speech_session::SpeechSessionManager::new(
+            true, output, policy,
+        ));
+        let host = niles_plugins::speech_stream::SessionSpeechHost::new(
+            manager.clone(),
+            tokio::runtime::Handle::current(),
+        );
+        let _ = runtime.clone().with_speech_stream(Arc::new(host));
+        Some(manager)
+    } else {
+        None
+    };
 
     // Automation engine
     let automation_sink = Arc::new(MqttDeviceSink {
@@ -877,6 +902,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     );
 
     let mut session_tracker = SessionTracker::new();
+    let mut conversations: HashMap<SocketAddr, ConversationLease> = HashMap::new();
     let ctx = DispatchCtx {
         publisher: publisher.clone(),
         registry: registry.clone(),
@@ -934,9 +960,12 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     if let Some(room) = satellites.room_for(incoming.from) {
                         peer_index.lock().unwrap_or_else(|e| e.into_inner()).insert(room.clone(), incoming.from);
                     }
-                    hush_on_wake(&ctx, &incoming);
+                    if let Some(conversation) = hush_on_wake(&ctx, &speech_arbiter, &incoming) {
+                        conversations.insert(incoming.from, conversation);
+                    }
                     if let Some(session) = session_tracker.feed(incoming) {
-                        spawn_dispatch_task(&whisper, &ctx, &piper, &wyoming_sender, session);
+                        let conversation = conversations.remove(&session.from);
+                        spawn_dispatch_task(&whisper, &ctx, &piper, &wyoming_sender, session, conversation);
                     }
                 }
                 None => {
@@ -947,6 +976,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             disconnect = disconnects_rx.recv() => {
                 if let Some(peer) = disconnect {
                     session_tracker.drop_peer(peer);
+                    drop_conversation_for_peer(&mut conversations, peer);
                     let mut index = peer_index.lock().unwrap_or_else(|e| e.into_inner());
                     index.retain(|_, addr| *addr != peer);
                 }
@@ -1067,6 +1097,9 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     };
 
+    if let Some(manager) = &speech_manager {
+        manager.shutdown().await;
+    }
     server_handle.abort();
     source_handle.abort();
     if let Some(h) = wled_handle {
