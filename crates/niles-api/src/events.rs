@@ -61,6 +61,12 @@ pub enum WireEvent {
         id: String,
         status: String,
     },
+    /// A notification was kept for the viewer: their bell counts it.
+    NotificationAdded {
+        id: i64,
+    },
+    /// The viewer read their notifications, here or on another device.
+    NotificationsRead {},
     Ping {
         ts: String,
     },
@@ -92,6 +98,12 @@ impl WireEvent {
             }),
             Event::ApprovalChanged { person, id, status } => {
                 (person == viewer).then_some(WireEvent::ApprovalChanged { id, status })
+            }
+            Event::NotificationAdded { person, id } => {
+                (person == viewer).then_some(WireEvent::NotificationAdded { id })
+            }
+            Event::NotificationsRead { person } => {
+                (person == viewer).then_some(WireEvent::NotificationsRead {})
             }
             other => Self::from_event(other),
         }
@@ -125,8 +137,8 @@ impl WireEvent {
 /// - `device_state_changed`, `device_added`, `device_removed` events
 /// - `ui_invalidated` (`plugin`, `surface`): a plugin's page or widget
 ///   has something new to show
-/// - `artifact_changed` and `approval_changed`, each only to the person
-///   it is about
+/// - `artifact_changed`, `approval_changed`, `notification_added` and
+///   `notifications_read`, each only to the person it is about
 /// - A 30-second application-level heartbeat (`{"type":"ping"}`)
 /// - Slow-consumer detection: if the cumulative number of dropped events
 ///   reaches 256, the connection is closed with `{"type":"close"}`
@@ -479,6 +491,31 @@ mod tests {
         assert!(WireEvent::for_viewer(asked("person:mark"), "person:majse").is_none());
         assert!(WireEvent::for_viewer(asked("satellite:10.0.0.2:4000"), "email:anyone").is_none());
         assert!(WireEvent::from_event(asked("person:mark")).is_none());
+    }
+
+    #[test]
+    fn a_notification_goes_to_its_person_alone() {
+        let added = || Event::NotificationAdded {
+            person: "person:mark".into(),
+            id: 12,
+        };
+        let wire = WireEvent::for_viewer(added(), "person:mark").expect("theirs");
+        let v = serde_json::to_value(&wire).unwrap();
+        assert_eq!(v["type"], "notification_added");
+        assert_eq!(v["id"], 12);
+        assert!(v.get("person").is_none());
+        assert!(WireEvent::for_viewer(added(), "person:majse").is_none());
+        assert!(WireEvent::from_event(added()).is_none());
+
+        let read = || Event::NotificationsRead {
+            person: "person:mark".into(),
+        };
+        let wire = WireEvent::for_viewer(read(), "person:mark").expect("theirs");
+        assert_eq!(
+            serde_json::to_value(&wire).unwrap(),
+            serde_json::json!({ "type": "notifications_read" })
+        );
+        assert!(WireEvent::for_viewer(read(), "email:anyone").is_none());
     }
 
     #[test]

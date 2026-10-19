@@ -126,6 +126,9 @@ pub struct AppState {
     /// database and its secrets key: the key that signs every push is
     /// not kept anywhere unsealed.
     pub push: Option<Arc<niles_webpush::WebPush>>,
+    /// What Niles told each person, for their Notifications page.
+    /// Absent without a database.
+    pub notifications: Option<Arc<dyn niles_webpush::Inbox>>,
 }
 
 impl AppState {
@@ -166,6 +169,7 @@ impl AppState {
             artifacts: None,
             artifact_jobs: None,
             push: None,
+            notifications: None,
             music: None,
             tado: None,
             voices: None,
@@ -286,6 +290,14 @@ impl AppState {
 
     pub fn with_push(mut self, push: Option<Arc<niles_webpush::WebPush>>) -> Self {
         self.push = push;
+        self
+    }
+
+    pub fn with_notifications(
+        mut self,
+        notifications: Option<Arc<dyn niles_webpush::Inbox>>,
+    ) -> Self {
+        self.notifications = notifications;
         self
     }
 

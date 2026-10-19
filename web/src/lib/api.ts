@@ -1402,6 +1402,34 @@ export interface DecidedApproval {
   conversation_id: number | null;
 }
 
+/** What a notification is about. Mirrors `Kind` in crates/niles-webpush/src/inbox.rs. */
+export type NotificationKind = "artifact" | "shared" | "plan_changed" | "workout" | "approval";
+
+/** One notification Niles kept for the signed-in person. */
+export interface AppNotification {
+  id: number;
+  /** A string the page may not know yet, from a newer Niles. */
+  kind: NotificationKind | string;
+  title: string;
+  body: string;
+  /** Where the item links: `/#/chat?artifact=7`. */
+  url: string;
+  created_at: string;
+  read_at: string | null;
+}
+
+/** Mirrors `List` in crates/niles-api/src/notifications.rs. */
+export interface NotificationList {
+  /** Newest first. */
+  notifications: AppNotification[];
+  /** Unread among all of them, on this page or not. */
+  unread: number;
+  /** What to ask for the next page with, while there is one. */
+  next: number | null;
+  /** False without a database: nothing is kept. */
+  kept: boolean;
+}
+
 export interface ApprovalHistory {
   entries: DecidedApproval[];
   /** What to ask for the next page with, while there is one. */
@@ -1719,6 +1747,15 @@ export const api = {
     request<ApprovalHistory>(
       before === undefined ? "/me/approvals/history" : `/me/approvals/history?before=${before}`,
     ),
+  notifications: (before?: number) =>
+    request<NotificationList>(
+      before === undefined ? "/me/notifications" : `/me/notifications?before=${before}`,
+    ),
+  readNotifications: (upTo?: number) =>
+    request<{ unread: number }>("/me/notifications/read", {
+      method: "POST",
+      body: JSON.stringify(upTo === undefined ? {} : { up_to: upTo }),
+    }),
   deleteConversation: (id: number) =>
     request<void>(`/chat/conversations/${id}`, { method: "DELETE" }),
   dictate: (audio: Blob) =>

@@ -729,8 +729,8 @@ since_pr = 436
 
 [[feature]]
 id = "ui-todays-run-card"
-category = "ui.dashboard"
-summary = "Today's run on the dashboard: the session, the next one, the week's km and the coach's note, with Done and Skipped"
+category = "ui.notifications"
+summary = "Today's run under Now on your Notifications page: the session, the next, the week's km, the coach's note, Done, Skipped"
 since_pr = 438
 
 [[feature]]
@@ -969,3 +969,45 @@ category = "runtime.plugins"
 summary = "Permission-gated room speech sessions with explicit enablement, bounded work, expiry and asynchronous outcomes"
 phrasings = []
 since_pr = 482
+
+[[feature]]
+id = "ui-notifications-page"
+category = "ui.notifications"
+summary = "Notifications, by the avatar: Now (today's run, a delivery, pair this phone), then all Niles told you; Home is the house"
+since_pr = 483
+
+[[feature]]
+id = "ui-notifications-bell"
+category = "ui.notifications"
+summary = "The bell counts what is unread, 9+ over nine, live; opening the page reads what is on it, and every bell of yours clears"
+since_pr = 483
+
+[[feature]]
+id = "notifications-kept"
+category = "runtime.notifications"
+summary = "Every notification to a person kept, pushed or not: the newest 200, a newer one about the same thing replacing the last"
+since_pr = 483
+
+[[feature]]
+id = "notify-workout-counted"
+category = "runtime.training"
+summary = "A notification once per workout counted on your plan: Your 8.2 km run on Saturday was counted as the long run"
+since_pr = 483
+
+[[feature]]
+id = "notify-approval-waiting"
+category = "runtime.approvals"
+summary = "A notification when something waits for your yes, linking to Approvals in Niles's panel"
+since_pr = 483
+
+[[feature]]
+id = "api-me-notifications"
+category = "api.write"
+summary = "GET /me/notifications?before= (50 a page, with unread) and POST /me/notifications/read; the signed-in person's own only"
+since_pr = 483
+
+[[feature]]
+id = "api-events-notifications"
+category = "api.events"
+summary = "notification_added and notifications_read on /events/stream, to their person only"
+since_pr = 483

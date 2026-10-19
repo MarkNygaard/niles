@@ -91,6 +91,20 @@ pub enum Event {
         /// `pending`, `allowed`, `denied`, `lapsed` or `failed`.
         status: String,
     },
+    /// A notification was kept for a person. Forwarded only to that
+    /// person's own connections, so their bell counts it.
+    NotificationAdded {
+        /// The person key, `person:{slug}` or `email:{address}`.
+        person: String,
+        id: i64,
+    },
+    /// A person read their notifications, on one of their devices.
+    /// Forwarded only to their own connections, so every bell of theirs
+    /// clears.
+    NotificationsRead {
+        /// The person key, `person:{slug}` or `email:{address}`.
+        person: String,
+    },
 }
 
 /// Bounded pub/sub bus backed by `tokio::sync::broadcast`.

@@ -40,6 +40,7 @@ mod journal;
 mod memory;
 mod morning_claims;
 mod notifications;
+mod person_notifications;
 mod plugins;
 mod push;
 mod room_music;
@@ -68,6 +69,7 @@ pub use journal::PostgresJournal;
 pub use memory::PostgresMemory;
 pub use morning_claims::PostgresMorningClaims;
 pub use notifications::{NOTIFICATIONS_KEPT, PostgresNotifications};
+pub use person_notifications::PostgresPersonNotifications;
 pub use plugins::{
     PluginDeviceRow, PluginInstall, PluginMeta, PluginRow, PostgresPlugins, hex_digest,
 };

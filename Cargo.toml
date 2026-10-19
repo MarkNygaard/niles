@@ -72,7 +72,7 @@ sha2 = "0.11"
 p256 = { version = "0.14", default-features = false, features = ["ecdh", "ecdsa", "std", "precomputed-tables"] }
 hkdf = "0.13"
 hex = "0.4"
-roxmltree = "0.20"
+roxmltree = "0.21"
 # Third-party plugins are WebAssembly components (component model, WASI
 # 0.2). Only what running them needs: no wasm text format, no on-disk
 # cache, no profiling, no WASI preview 1 or 3.

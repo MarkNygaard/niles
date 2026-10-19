@@ -9,13 +9,10 @@ import { ApiError, api, roomOrder, roomsHidden } from "@/lib/api";
 import type { BlindsOpened, Device, SetLight } from "@/lib/api";
 import { useTvVolume } from "@/hooks/useTvVolume";
 import { BoostButton } from "@/components/BoostButton";
-import { GroceryDeliveryCard } from "@/components/GroceryDeliveryCard";
 import { HouseBar } from "@/components/HouseBar";
-import { PairPhoneCard } from "@/components/PairPhoneCard";
 import { PluginWidgetCard } from "@/components/PluginWidgets";
 import { placeWidgets } from "@/lib/plugins";
 import { SceneBar } from "@/components/SceneBar";
-import { TodaysRunCard } from "@/components/TodaysRunCard";
 import {
   boostEndsAt,
   boosted,
@@ -35,25 +32,15 @@ import type { Target } from "@/lib/rooms";
  * discovered shows up here without anyone naming it twice, and a room
  * exists because something in it does. There is nothing to keep in
  * step, which is the point.
+ *
+ * Only the house: what is one person's own (today's run, a delivery,
+ * pairing a phone) is on their Notifications page, so the rooms are
+ * near the top without scrolling.
  */
 export function RoomDashboard() {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   useDeviceStream();
-
-  // Asked once per visit and never retried: a 501 means there is no
-  // console, which is a fine answer, and the card renders nothing until
-  // an answer exists — so it can never appear and then withdraw.
-  const phone = useQuery({
-    queryKey: ["presence-device"],
-    queryFn: api.deviceStatus,
-    retry: false,
-    staleTime: Infinity,
-  });
-  const pair = useMutation({
-    mutationFn: api.pairDevice,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["presence-device"] }),
-  });
 
   const devices = useQuery({
     queryKey: ["devices"],
@@ -156,14 +143,6 @@ export function RoomDashboard() {
   });
 
   const scenes = useQuery({ queryKey: ["scenes"], queryFn: api.scenes });
-  // Answers an error when nemlig.com is not switched on, and then there
-  // is simply no card. Orders do not move often.
-  const delivery = useQuery({
-    queryKey: ["nemlig-next"],
-    queryFn: api.nemligNext,
-    retry: false,
-    staleTime: 15 * 60_000,
-  });
   // Asks the TV itself, so not often; a press refreshes it at once.
   const tv = useQuery({
     queryKey: ["tv"],
@@ -338,17 +317,6 @@ export function RoomDashboard() {
           />
         </div>
       </div>
-      <TodaysRunCard />
-      <GroceryDeliveryCard
-        order={delivery.data}
-        // Local today: the order's times are Danish, and so is the house.
-        today={new Date().toLocaleDateString("sv-SE")}
-      />
-      <PairPhoneCard
-        device={phone.data}
-        pairing={pair.isPending}
-        onPair={() => pair.mutate()}
-      />
       {widgets.front.length > 0 && (
         <div className="grid gap-3 sm:grid-cols-2">
           {widgets.front.map((placed) => (

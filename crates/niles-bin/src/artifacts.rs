@@ -33,15 +33,20 @@ pub(crate) use podcast::{Podcasts, Sonos, about_podcasts};
 
 use crate::approvals::{self, Asker};
 use crate::assistant::Searching;
+use crate::notify::Notify;
 use async_trait::async_trait;
+use chrono::NaiveDate;
 use niles_api::chat::Turn;
 use niles_api::household::{Member, Unresolved};
+use niles_artifacts::tracking::{Done, Sport};
 use niles_artifacts::{
     Access, Artifact, ArtifactRef, ArtifactStore, Author, Filter, NewArtifact, NewRevision, Opened,
     Operation, PageChange, Status, StatusChange, kinds, page,
 };
 use niles_core::EventBus;
 use niles_tools::{Error, Result, Tool, ToolDescriptor, ToolRegistry};
+use niles_webpush::Notice;
+use niles_webpush::inbox::Kind;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -69,7 +74,8 @@ const TRIP: &str = "trip";
 const PODCAST: &str = niles_artifacts::podcast::ID;
 
 /// Told when a job ends, ready or failed, if the artifact's notify is
-/// on; and when something is shared with someone.
+/// on; when something is shared with someone; and when a workout is
+/// counted on a plan.
 #[async_trait]
 pub(crate) trait Notifier: Send + Sync {
     /// A job `person` started (its owner, or someone it is shared with
@@ -89,105 +95,104 @@ pub(crate) trait Notifier: Send + Sync {
 
     /// `by`, its owner, shared `artifact` with `person`.
     async fn shared(&self, _person: &str, _artifact: &Artifact, _by: &str) {}
+
+    /// Workouts a sync brought, each just marked on a session of `plan`
+    /// as of `today`. Only workouts that marked one, so each is told
+    /// once; and only when the plan's notify is on.
+    async fn counted(&self, _plan: &Artifact, _done: &[Done], _today: NaiveDate) {}
 }
 
-/// Tells nobody: there is no push without a database and its secrets
-/// key. The person still sees the status line, the Saved tab and the
-/// card in the chat.
+/// Tells nobody. Only in tests: wherever there are artifacts there is a
+/// database, and so a [`Notify`] to keep what is said.
+#[cfg(test)]
 pub(crate) struct Nobody;
 
+#[cfg(test)]
 #[async_trait]
 impl Notifier for Nobody {
     async fn finished(&self, _person: &str, _artifact: &Artifact) {}
 }
 
-/// Tells the person on every device where they turned notifications on.
-/// Nobody has to have asked for it: a device that allowed notifications
-/// is the asking.
-pub(crate) struct Devices(pub(crate) Arc<niles_webpush::WebPush>);
-
-impl Devices {
-    async fn tell(&self, person: &str, artifact: &Artifact, message: &niles_webpush::Message) {
-        match self.0.send(person, message).await {
-            Ok(delivery) if delivery.sent > 0 => tracing::info!(
-                "[artifacts] {person}: told {} device(s) about {:?}",
-                delivery.sent,
-                artifact.title
-            ),
-            Ok(_) => {}
-            Err(e) => tracing::warn!(
-                "[artifacts] {person}: nobody was told about {:?}: {e}",
-                artifact.title
-            ),
-        }
-    }
-}
-
+/// Kept for the person's Notifications page, and pushed to every device
+/// where they turned notifications on. Nobody has to have asked for the
+/// push: a device that allowed notifications is the asking.
 #[async_trait]
-impl Notifier for Devices {
+impl Notifier for Notify {
     async fn finished(&self, person: &str, artifact: &Artifact) {
-        self.tell(person, artifact, &finished_message(artifact))
-            .await;
+        self.person(person, &finished_notice(artifact)).await;
     }
 
     async fn changed(&self, artifact: &Artifact, note: &str) {
-        self.tell(&artifact.person, artifact, &changed_message(artifact, note))
+        self.person(&artifact.person, &changed_notice(artifact, note))
             .await;
     }
 
     async fn page_ready(&self, person: &str, artifact: &Artifact) {
-        self.tell(person, artifact, &page_message(artifact)).await;
+        self.person(person, &page_notice(artifact)).await;
     }
 
     async fn shared(&self, person: &str, artifact: &Artifact, by: &str) {
-        self.tell(person, artifact, &shared_message(artifact, by))
-            .await;
+        self.person(person, &shared_notice(artifact, by)).await;
+    }
+
+    async fn counted(&self, plan: &Artifact, done: &[Done], today: NaiveDate) {
+        for d in done {
+            self.person(&plan.person, &counted_notice(plan, d, today))
+                .await;
+        }
     }
 }
 
 /// The longest title a notification carries; a lock screen shows less.
 const TITLE_IN_PUSH: usize = 120;
 
-/// What a finished job's notification says, and where tapping it goes:
-/// the artifact, open in the chat's Saved tab. One per artifact, so a
-/// job tried again replaces the notification of the one that failed.
-pub(crate) fn finished_message(artifact: &Artifact) -> niles_webpush::Message {
-    let title: String = artifact.title.chars().take(TITLE_IN_PUSH).collect();
-    let body = match artifact.status {
-        Status::Failed => format!("Your {title} didn't finish. Open it to try again."),
-        _ => format!("Your {title} is ready."),
-    };
-    niles_webpush::Message {
-        title: "Niles".into(),
+fn title_of(artifact: &Artifact) -> String {
+    artifact.title.chars().take(TITLE_IN_PUSH).collect()
+}
+
+/// Everything said about one artifact opens it, in the chat's Saved
+/// tab, and goes under its tag, so the newest about it replaces the
+/// rest on the lock screen and on the Notifications page.
+fn about(artifact: &Artifact, kind: Kind, body: String) -> Notice {
+    Notice {
+        kind,
+        title: title_of(artifact),
         body,
         url: format!("/#/chat?artifact={}", artifact.id),
         tag: format!("artifact-{}", artifact.id),
     }
 }
 
-/// What a finished page job's notification says: under the artifact's
-/// tag, so it replaces what was said about the artifact before.
-pub(crate) fn page_message(artifact: &Artifact) -> niles_webpush::Message {
-    let title: String = artifact.title.chars().take(TITLE_IN_PUSH).collect();
-    niles_webpush::Message {
-        title: "Niles".into(),
-        body: format!("The page for your {title} is ready."),
-        url: format!("/#/chat?artifact={}", artifact.id),
-        tag: format!("artifact-{}", artifact.id),
-    }
+/// What a finished job's notification says. One per artifact, so a job
+/// tried again replaces the notification of the one that failed.
+pub(crate) fn finished_notice(artifact: &Artifact) -> Notice {
+    let title = title_of(artifact);
+    let body = match artifact.status {
+        Status::Failed => format!("Your {title} didn't finish. Open it to try again."),
+        _ => format!("Your {title} is ready."),
+    };
+    about(artifact, Kind::Artifact, body)
+}
+
+/// What a finished page job's notification says.
+pub(crate) fn page_notice(artifact: &Artifact) -> Notice {
+    let title = title_of(artifact);
+    about(
+        artifact,
+        Kind::Artifact,
+        format!("The page for your {title} is ready."),
+    )
 }
 
 /// What someone hears when an artifact is shared with them: who shared
-/// what, opening it on a tap. Under the artifact's tag, as everything
-/// said about it is.
-pub(crate) fn shared_message(artifact: &Artifact, by: &str) -> niles_webpush::Message {
-    let title: String = artifact.title.chars().take(TITLE_IN_PUSH).collect();
-    niles_webpush::Message {
-        title: "Niles".into(),
-        body: format!("{by} shared “{title}” with you."),
-        url: format!("/#/chat?artifact={}", artifact.id),
-        tag: format!("artifact-{}", artifact.id),
-    }
+/// what.
+pub(crate) fn shared_notice(artifact: &Artifact, by: &str) -> Notice {
+    let title = title_of(artifact);
+    about(
+        artifact,
+        Kind::Shared,
+        format!("{by} shared \u{201c}{title}\u{201d} with you."),
+    )
 }
 
 /// The longest of the coach's note a notification carries: the rest is
@@ -195,23 +200,64 @@ pub(crate) fn shared_message(artifact: &Artifact, by: &str) -> niles_webpush::Me
 const NOTE_IN_PUSH: usize = 240;
 
 /// What a plan the coach changed after a run says: that it changed, and
-/// the coach's note. The same tag as its job's notification, so the
-/// newest about a plan is the one on the lock screen.
-pub(crate) fn changed_message(artifact: &Artifact, note: &str) -> niles_webpush::Message {
-    let title: String = artifact.title.chars().take(TITLE_IN_PUSH).collect();
+/// the coach's note.
+pub(crate) fn changed_notice(artifact: &Artifact, note: &str) -> Notice {
+    let title = title_of(artifact);
     let note = niles_artifacts::summary(note);
     let note: String = if note.chars().count() > NOTE_IN_PUSH {
         let cut: String = note.chars().take(NOTE_IN_PUSH - 1).collect();
-        format!("{}…", cut.trim_end())
+        format!("{}\u{2026}", cut.trim_end())
     } else {
         note
     };
-    niles_webpush::Message {
-        title: "Niles".into(),
-        body: format!("Your {title} changed after your run. {note}"),
-        url: format!("/#/chat?artifact={}", artifact.id),
-        tag: format!("artifact-{}", artifact.id),
+    about(
+        artifact,
+        Kind::PlanChanged,
+        format!("Your {title} changed after your run. {note}"),
+    )
+}
+
+/// What a workout counted on a plan says: "Your 8.2 km run on Saturday
+/// was counted as the long run." Opens the plan, under the workout's own
+/// tag, so it stays beside what is said about the plan itself.
+pub(crate) fn counted_notice(plan: &Artifact, done: &Done, today: NaiveDate) -> Notice {
+    let w = &done.workout;
+    let what = match (w.sport, w.distance_km) {
+        (Sport::Run, Some(km)) => format!("{} km run", one_place(km)),
+        (Sport::Run, None) => "run".into(),
+        (Sport::Strength, _) => "strength workout".into(),
+        (Sport::Cross, _) => "workout".into(),
+    };
+    let when = match (today - w.day).num_days() {
+        0 => "today".to_string(),
+        1 => "yesterday".to_string(),
+        2..=6 => format!("on {}", w.day.format("%A")),
+        _ => format!("on {}", w.day.format("%-d %B")),
+    };
+    let session = match done.session["type"].as_str().unwrap_or_default() {
+        "easy" => "the easy run",
+        "long" => "the long run",
+        "tempo" => "the tempo run",
+        "intervals" => "the intervals",
+        "recovery" => "the recovery run",
+        "race" => "the race",
+        "strength" => "the strength session",
+        "cross" => "the cross-training",
+        _ => "a session",
+    };
+    Notice {
+        kind: Kind::Workout,
+        title: title_of(plan),
+        body: format!("Your {what} {when} was counted as {session}."),
+        url: format!("/#/chat?artifact={}", plan.id),
+        tag: format!("workout-{}", w.id),
     }
+}
+
+/// 8.23 as "8.2", 10.0 as "10".
+fn one_place(km: f64) -> String {
+    let s = format!("{km:.1}");
+    s.strip_suffix(".0").map_or(s.clone(), str::to_string)
 }
 
 /// Whatever runs a job: the assistant, in the background.
@@ -3393,8 +3439,8 @@ mod tests {
         let id = start(&f, MARK, None).await.unwrap()["id"].as_i64().unwrap();
         settled(&f, MARK, id).await;
         let artifact = f.store.get(MARK, id).await.unwrap().unwrap();
-        let message = finished_message(&artifact);
-        assert_eq!(message.title, "Niles");
+        let message = finished_notice(&artifact);
+        assert_eq!(message.title, "Thailand travel plan");
         assert_eq!(message.body, "Your Thailand travel plan is ready.");
         assert_eq!(message.url, format!("/#/chat?artifact={id}"));
         assert_eq!(message.tag, format!("artifact-{id}"));
@@ -3406,7 +3452,7 @@ mod tests {
         let id = start(&f, MARK, None).await.unwrap()["id"].as_i64().unwrap();
         settled(&f, MARK, id).await;
         let artifact = f.store.get(MARK, id).await.unwrap().unwrap();
-        let message = finished_message(&artifact);
+        let message = finished_notice(&artifact);
         assert!(message.body.contains("didn't finish"), "{}", message.body);
         assert_eq!(message.tag, format!("artifact-{id}"));
     }
@@ -3414,16 +3460,74 @@ mod tests {
     #[test]
     fn a_plan_the_coach_changed_says_so_with_its_note() {
         let plan = working("training_plan");
-        let message = changed_message(&plan, "A little less next week.");
+        let message = changed_notice(&plan, "A little less next week.");
         assert_eq!(
             message.body,
             "Your Half marathon plan changed after your run. A little less next week."
         );
         assert_eq!(message.url, "/#/chat?artifact=7");
         assert_eq!(message.tag, "artifact-7");
-        let long = changed_message(&plan, &"word ".repeat(100));
+        let long = changed_notice(&plan, &"word ".repeat(100));
         assert!(long.body.ends_with('…'), "{}", long.body);
         assert!(long.body.chars().count() < 300);
+    }
+
+    fn done(
+        sport: niles_artifacts::tracking::Sport,
+        km: Option<f64>,
+        day: &str,
+        kind: &str,
+    ) -> Done {
+        Done {
+            session: json!({ "date": day, "type": kind, "title": "Long run" }),
+            workout: niles_artifacts::tracking::Workout {
+                id: "123".into(),
+                day: NaiveDate::parse_from_str(day, "%Y-%m-%d").unwrap(),
+                sport,
+                distance_km: km,
+                duration_min: Some(50.0),
+                pace: None,
+            },
+        }
+    }
+
+    #[test]
+    fn a_counted_workout_says_what_it_was_counted_as() {
+        use niles_artifacts::tracking::Sport;
+        let plan = working("training_plan");
+        let sunday = NaiveDate::parse_from_str("2026-10-20", "%Y-%m-%d").unwrap();
+        let notice = counted_notice(
+            &plan,
+            &done(Sport::Run, Some(8.23), "2026-10-17", "long"),
+            sunday,
+        );
+        assert_eq!(
+            notice.body,
+            "Your 8.2 km run on Saturday was counted as the long run."
+        );
+        assert_eq!(notice.title, "Half marathon plan");
+        assert_eq!(notice.url, "/#/chat?artifact=7");
+        assert_eq!(notice.tag, "workout-123");
+        assert_eq!(notice.push().url, "/#/notifications");
+
+        let today = counted_notice(
+            &plan,
+            &done(Sport::Run, Some(10.0), "2026-10-20", "easy"),
+            sunday,
+        );
+        assert_eq!(
+            today.body,
+            "Your 10 km run today was counted as the easy run."
+        );
+        let strength = counted_notice(
+            &plan,
+            &done(Sport::Strength, None, "2026-10-19", "strength"),
+            sunday,
+        );
+        assert_eq!(
+            strength.body,
+            "Your strength workout yesterday was counted as the strength session."
+        );
     }
 
     const PAGE: &str =
@@ -4578,7 +4682,7 @@ mod tests {
 
     #[test]
     fn a_page_s_notification_names_the_artifact_under_its_tag() {
-        let message = page_message(&working("training_plan"));
+        let message = page_notice(&working("training_plan"));
         assert_eq!(
             message.body,
             "The page for your Half marathon plan is ready."
@@ -5175,7 +5279,7 @@ mod tests {
     #[test]
     fn being_shared_with_says_who_shared_what_and_opens_it() {
         let trip = working("trip");
-        let message = shared_message(&trip, "Mark");
+        let message = shared_notice(&trip, "Mark");
         assert_eq!(message.body, "Mark shared “Half marathon plan” with you.");
         assert_eq!(message.url, "/#/chat?artifact=7");
         assert_eq!(message.tag, "artifact-7");

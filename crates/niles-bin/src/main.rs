@@ -36,6 +36,7 @@ mod lighting;
 mod mail;
 mod manifest;
 mod music;
+mod notify;
 mod plugins;
 mod profile;
 mod prompt;
