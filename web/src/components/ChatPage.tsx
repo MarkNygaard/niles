@@ -88,6 +88,7 @@ async function whereIs(queryClient: QueryClient, approval: string): Promise<numb
       queryKey: PENDING,
       queryFn: api.approvals,
       retry: false,
+      staleTime: 0,
     });
     const waiting = approvals.find((a) => a.id === approval);
     if (waiting) return waiting.conversation_id;
@@ -124,6 +125,14 @@ export function ChatPage() {
   const [following, setFollowing] = useState<string | null>(() =>
     linkedApproval(window.location.hash),
   );
+  const navigation = useRef(0);
+  const stopFollowing = () => {
+    navigation.current += 1;
+    setFollowing(null);
+    if (linkedApproval(window.location.hash) !== null) {
+      window.history.replaceState(null, "", "#/chat");
+    }
+  };
   if (chosen === undefined && list.data && following === null) {
     setChosen(landingOn(list.data));
   }
@@ -235,6 +244,7 @@ export function ChatPage() {
   });
 
   const openArtifact = (id: number) => {
+    stopFollowing();
     setTab("saved");
     setOpened(id);
     setPanelOpen(true);
@@ -249,6 +259,8 @@ export function ChatPage() {
       const id = linkedArtifact(hash);
       const approval = linkedApproval(hash);
       const panel = linkedPanel(hash);
+      const request = ++navigation.current;
+      setFollowing(null);
       if (id !== null) {
         setTab("saved");
         setOpened(id);
@@ -256,6 +268,7 @@ export function ChatPage() {
       } else if (approval !== null) {
         setFollowing(approval);
         void whereIs(queryClient, approval).then((conversation) => {
+          if (navigation.current !== request) return;
           setHighlight(approval);
           if (conversation !== null) {
             setChosen(conversation);
@@ -265,7 +278,9 @@ export function ChatPage() {
             setPanelOpen(true);
           }
           setFollowing(null);
+          window.history.replaceState(null, "", "#/chat");
         });
+        return;
       } else if (panel !== null) {
         setTab(panel);
         setPanelOpen(true);
@@ -276,7 +291,10 @@ export function ChatPage() {
     };
     follow();
     window.addEventListener("hashchange", follow);
-    return () => window.removeEventListener("hashchange", follow);
+    return () => {
+      navigation.current += 1;
+      window.removeEventListener("hashchange", follow);
+    };
   }, [queryClient]);
 
   const remove = useMutation({
@@ -289,6 +307,7 @@ export function ChatPage() {
   });
 
   const startNew = () => {
+    stopFollowing();
     setChosen(null);
     setHighlight(null);
     setPanelOpen(false);
@@ -297,6 +316,7 @@ export function ChatPage() {
   };
 
   const pick = (id: number) => {
+    stopFollowing();
     setChosen(id);
     setHighlight(null);
     setPanelOpen(false);

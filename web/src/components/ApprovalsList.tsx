@@ -111,7 +111,12 @@ export function ApprovalsView({
         ) : (
           <ul className="bg-muted/50 divide-border/60 divide-y overflow-hidden rounded-2xl">
             {history.map((entry) => (
-              <li key={entry.id} className="flex items-start gap-3 px-3 py-2.5">
+              <li
+                key={entry.id}
+                data-approval={entry.approval}
+                aria-current={entry.approval === highlight ? "true" : undefined}
+                className="flex items-start gap-3 px-3 py-2.5 aria-current:ring-primary aria-current:ring-2 aria-current:ring-inset"
+              >
                 <ApprovalIcon icon={entry.icon} label={entry.tool} small />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{entry.title}</p>

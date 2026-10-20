@@ -126,6 +126,21 @@ describe("ApprovalsView", () => {
       "aria-current",
     );
   });
+
+  it("draws out a notification's approval after it has moved into history", () => {
+    render(
+      <ApprovalsView
+        pending={[]}
+        history={[decided(1), decided(2, { conversation_id: null })]}
+        onDecide={() => {}}
+        highlight="d2"
+      />,
+    );
+    const rows = within(screen.getByRole("region", { name: "Approvals history" }))
+      .getAllByRole("listitem");
+    expect(rows[0]).not.toHaveAttribute("aria-current");
+    expect(rows[1]).toHaveAttribute("aria-current", "true");
+  });
 });
 
 describe("Approvals", () => {

@@ -112,6 +112,7 @@ function show(
   list: ConversationSummary[],
   conversations: Record<number, Conversation> = {},
   saved: ArtifactList = NOTHING_SAVED,
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 ) {
   vi.stubGlobal("WebSocket", FakeSocket);
   if (!vi.isMockFunction(api.artifacts)) vi.spyOn(api, "artifacts").mockResolvedValue(saved);
@@ -124,7 +125,6 @@ function show(
     if (!conversations[id]) throw new ApiError("no such conversation", 404);
     return conversations[id];
   });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
       <ChatPage />
@@ -334,6 +334,53 @@ describe("ChatPage", () => {
       ...rest,
     };
   }
+
+  it("looks up a notification even when the pending cache is still fresh", async () => {
+    window.history.replaceState(null, "", "#/chat?approval=a1");
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 2_000 } },
+    });
+    client.setQueryData(["approvals", "pending"], { approvals: [] });
+    vi.spyOn(api, "approvals").mockResolvedValue({ approvals: [waiting()] });
+    show(
+      [MILK],
+      { 7: conversationOf(MILK, [turn("file it", "Waiting.", { approval: CARD })]) },
+      NOTHING_SAVED,
+      client,
+    );
+    expect(await screen.findByRole("region", { name: CARD.title })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    expect(api.conversation).toHaveBeenCalledWith(7);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("does not let an older approval lookup replace a newer notification link", async () => {
+    window.history.replaceState(null, "", "#/chat?approval=a1");
+    let finish!: (value: { approvals: PendingApproval[] }) => void;
+    vi.spyOn(api, "approvals").mockReturnValue(
+      new Promise((resolve) => { finish = resolve; }),
+    );
+    vi.spyOn(api, "artifact").mockResolvedValue({
+      ...artifact(9, "Thailand travel plan"),
+      content: { markdown: "# Thailand" },
+      revisions: [],
+    });
+    show([MILK], {
+      7: conversationOf(MILK, [turn("file it", "Waiting.", { approval: CARD })]),
+    });
+    await screen.findByRole("textbox", { name: "Message Niles" });
+    act(() => {
+      window.history.replaceState(null, "", "#/chat?artifact=9");
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    await screen.findByRole("heading", { name: "Thailand travel plan" });
+    await act(async () => { finish({ approvals: [waiting()] }); });
+    expect(screen.getByRole("dialog", { name: "Niles" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Thailand travel plan" })).toBeInTheDocument();
+    expect(api.conversation).not.toHaveBeenCalledWith(7);
+  });
 
   it("opens the conversation an approval's notification leads to, with its card drawn out, and puts the address back", async () => {
     window.history.replaceState(null, "", "#/chat?approval=a1");
