@@ -156,7 +156,7 @@ describe("the nudge, dismissed", () => {
 
 describe("thisDevice", () => {
   afterEach(() => {
-    vi.unstubAllGlobals();
+    Reflect.deleteProperty(navigator, "serviceWorker");
   });
 
   function stubWorker(subscription: { endpoint: string } | null) {

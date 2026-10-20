@@ -18,7 +18,7 @@ function stubNotifications(listed: FakeNotification[]) {
 
 describe("closeWaiting", () => {
   afterEach(() => {
-    vi.unstubAllGlobals();
+    Reflect.deleteProperty(navigator, "serviceWorker");
   });
 
   it("closes only the ones that still ask", async () => {
@@ -38,7 +38,7 @@ describe("closeWaiting", () => {
 
 describe("closeWaitingLater", () => {
   afterEach(() => {
-    vi.unstubAllGlobals();
+    Reflect.deleteProperty(navigator, "serviceWorker");
     vi.useRealTimers();
   });
 
