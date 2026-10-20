@@ -836,6 +836,7 @@ impl Worker {
             } => {
                 self.call("on-websocket-message", self.limits.call, |b, s| match b {
                     Bindings::V4(v) => v.call_on_websocket_message(s, conn, &message),
+                    Bindings::V5(v) => v.call_on_websocket_message(s, conn, &message),
                     _ => Ok(()),
                 });
             }
@@ -846,6 +847,7 @@ impl Worker {
             } => {
                 self.call("on-websocket-status", self.limits.call, |b, s| match b {
                     Bindings::V4(v) => v.call_on_websocket_status(s, conn, &status),
+                    Bindings::V5(v) => v.call_on_websocket_status(s, conn, &status),
                     _ => Ok(()),
                 });
             }

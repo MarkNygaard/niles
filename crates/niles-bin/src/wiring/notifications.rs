@@ -167,7 +167,7 @@ impl WyomingDelivery {
         tokio::spawn(async move {
             let _notification_lease = notification_lease;
             if let Some(peer) = peer {
-                if let Err(e) = crate::speak::speak_back(
+                match crate::speak::speak_back(
                     &piper,
                     &sender,
                     peer,
@@ -178,7 +178,9 @@ impl WyomingDelivery {
                 )
                 .await
                 {
-                    tracing::warn!("[{peer}] notification speak-back failed: {e:#}");
+                    // Commentary stays out of the room until it has played.
+                    Ok(playing) => tokio::time::sleep(playing).await,
+                    Err(e) => tracing::warn!("[{peer}] notification speak-back failed: {e:#}"),
                 }
                 return;
             }

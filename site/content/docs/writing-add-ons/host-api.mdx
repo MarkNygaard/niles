@@ -361,10 +361,17 @@ audio will be heard. Busy and quiet-hour policy is checked when work is submitte
 `submit`
 returns a request id when the host accepts work, not when it finishes or is
 heard. Poll for ordered terminal outcomes: `delivered`, `busy`, `quiet`,
-`disabled`, `unavailable`, `overload`, `expired`, `failed`, `cancelled`,
-`replaced`, `rate-limited` or `no-satellite`.
+`expired`, `failed`, `cancelled`, `replaced`, `rate-limited` or `no-satellite`.
 `delivered` means the host completed its transport write, not that a person
 heard it. Poll consumes completed records; pending records stay queued.
+
+- `busy`: somebody is talking to Niles in that room, a notification is being
+  spoken there, or another add-on's commentary is playing. Try again later.
+- `cancelled`: a voice turn or a notification took the room over while this
+  was being prepared or sent, or the session was closed.
+- `failed`: synthesis or the transport to the satellite failed. Waiting will
+  not help.
+- `quiet`: quiet hours.
 
 Text must be nonblank and no more than 120 characters. A session retains at
 most 32 uncollected request results. A newer accepted request replaces older
@@ -374,8 +381,10 @@ Requests expire after three seconds if transport has not started. The host limit
 each add-on owner to 120 admitted requests per rolling 60 seconds; closing and
 reopening a session does not reset that quota. Excess work reports `rate-limited`.
 Excess submissions fail with `limit`; invalid text fails with `invalid`.
-Permission and ownership errors are `not-permitted`; disabled, busy, quiet
-hours and unavailable output are reported as `unavailable` host errors.
+Permission and ownership errors are `not-permitted`. A household that has
+turned the stream off, or a session that is still open elsewhere, is an
+`unavailable` host error from `open` or `submit`; busy rooms and quiet hours
+come back as outcomes from `poll`, never as host errors.
 
 `close` is idempotent and cancels accepted work. Poll cancellation results
 before opening another session. The host reserves the plugin's session until
