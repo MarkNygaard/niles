@@ -5,7 +5,7 @@ pub mod error;
 pub mod model;
 pub mod quiet;
 
-pub use center::{NotificationCenter, NotificationDelivery, NotificationHistory};
+pub use center::{NotificationCenter, NotificationDelivery, NotificationHistory, TransportOutcome};
 pub use error::{Error, Result};
 pub use model::{DeliveryOutcome, Notification, Priority};
 pub use quiet::{QuietHoursConfig, QuietWindow};

@@ -95,7 +95,7 @@ pub mod v0_4 {
 
 pub mod v0_5 {
     wasmtime::component::bindgen!({
-        path: "../../schemas/niles-integration.wit",
+        path: "../../schemas/niles-integration-0.5.wit",
         world: "plugin",
         with: {
             "niles:integration/types": super::v0_1::niles::integration::types,
@@ -116,12 +116,36 @@ pub mod v0_5 {
     });
 }
 
+pub mod v0_6 {
+    wasmtime::component::bindgen!({
+        path: "../../schemas/niles-integration.wit",
+        world: "plugin",
+        with: {
+            "niles:integration/types": super::v0_1::niles::integration::types,
+            "niles:integration/log": super::v0_1::niles::integration::log,
+            "niles:integration/storage": super::v0_1::niles::integration::storage,
+            "niles:integration/http": super::v0_1::niles::integration::http,
+            "niles:integration/timers": super::v0_1::niles::integration::timers,
+            "niles:integration/events": super::v0_1::niles::integration::events,
+            "niles:integration/ui": super::v0_1::niles::integration::ui,
+            "niles:integration/config": super::v0_2::niles::integration::config,
+            "niles:integration/devices": super::v0_2::niles::integration::devices,
+            "niles:integration/mqtt": super::v0_2::niles::integration::mqtt,
+            "niles:integration/secrets": super::v0_3::niles::integration::secrets,
+            "niles:integration/inbound": super::v0_3::niles::integration::inbound,
+            "niles:integration/websocket": super::v0_4::niles::integration::websocket,
+            "niles:integration/speech-stream": super::v0_5::niles::integration::speech_stream,
+        },
+    });
+}
+
 pub use v0_1::niles;
 pub use v0_2::niles::integration::mqtt;
 pub use v0_2::niles::integration::{config as config_0_2, devices as devices_0_2};
 pub use v0_3::niles::integration::{inbound, secrets};
 pub use v0_4::niles::integration::websocket;
 pub use v0_5::niles::integration::speech_stream;
+pub use v0_6::niles::integration::notify as notify_0_6;
 
 use crate::host::HostState;
 use wasmtime::component::{HasSelf, Linker};
@@ -176,7 +200,8 @@ pub(crate) fn add_to_linker(linker: &mut Linker<HostState>) -> wasmtime::Result<
     secrets::add_to_linker::<_, HasSelf<HostState>>(linker, |state| state)?;
     inbound::add_to_linker::<_, HasSelf<HostState>>(linker, |state| state)?;
     also_as_v4(linker)?;
-    add_v5(linker)
+    add_v5(linker)?;
+    add_v6(linker)
 }
 
 fn also_as_v4(linker: &mut Linker<HostState>) -> wasmtime::Result<()> {
@@ -214,4 +239,23 @@ fn add_v5(linker: &mut Linker<HostState>) -> wasmtime::Result<()> {
     add!(v0_3::niles::integration, secrets, inbound);
     add!(v0_4::niles::integration, websocket);
     speech_stream::add_to_linker::<_, HasSelf<HostState>>(linker, |state| state)
+}
+
+fn add_v6(linker: &mut Linker<HostState>) -> wasmtime::Result<()> {
+    macro_rules! add { ($module:path, $($name:ident),*) => { $( { use $module as i; i::$name::add_to_linker_instance::<_, HasSelf<HostState>>(&mut linker.instance(concat!("niles:integration/", stringify!($name), "@0.6.0"))?, |s| s)?; } )* }; }
+    add!(
+        niles::integration,
+        types,
+        log,
+        storage,
+        http,
+        timers,
+        events,
+        ui
+    );
+    add!(v0_2::niles::integration, config, devices, mqtt);
+    add!(v0_3::niles::integration, secrets, inbound);
+    add!(v0_4::niles::integration, websocket);
+    add!(v0_5::niles::integration, speech_stream);
+    notify_0_6::add_to_linker::<_, HasSelf<HostState>>(linker, |state| state)
 }

@@ -6,8 +6,8 @@
 ///
 /// Spec and author guide: site/content/docs/writing-add-ons/.
 ///
-/// Status: v0.5.0 (`crates/niles-plugins`). 0.5 adds a host-managed
-/// speech-stream interface. 0.4's WebSocket surface and older worlds are
+/// Status: v0.6.0 (`crates/niles-plugins`). 0.6 adds tracked notification
+/// requests. 0.5's speech-stream and older worlds are
 /// frozen in adjacent versioned files and remain supported.
 ///
 /// Conventions, the same as the rest of Niles:
@@ -21,7 +21,7 @@
 /// Every call is synchronous from the plugin's point of view. Niles never
 /// calls into a plugin while that plugin is waiting on a host function,
 /// and never makes two calls into the same plugin at once.
-package niles:integration@0.5.0;
+package niles:integration@0.6.0;
 
 /// Types shared by several interfaces and by the exports.
 interface types {
@@ -396,9 +396,24 @@ interface notify {
         urgent,
     }
 
+    /// What happened to an accepted notification request.
+    enum request-status {
+        pending,
+        completed,
+        partial,
+        suppressed,
+        failed,
+    }
+
     /// Say `message`, one or two short sentences, most important fact
     /// first. `room` picks the room; none lets Niles choose.
     say: func(message: string, priority: priority, room: option<string>) -> result<_, host-error>;
+
+    /// Accept a bounded request and return its id before transport begins.
+    request: func(message: string, priority: priority, room: option<string>) -> result<u64, host-error>;
+
+    /// Read the tracked transport outcome for this plugin instance's request.
+    status: func(request: u64) -> result<request-status, host-error>;
 }
 
 /// Declarative UI: what the plugin's menu pages and widgets show.

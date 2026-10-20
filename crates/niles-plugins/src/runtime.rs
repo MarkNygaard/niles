@@ -18,7 +18,7 @@ use crate::manifest::{EventPermission, Manifest};
 use crate::store::{KnownDevice, Package, PluginStore};
 use crate::ui::{ActionOutcome, ActionValue, Context, Surface};
 use async_trait::async_trait;
-use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus, PresenceState};
+use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus, PresenceState, RoomName};
 use niles_mqtt::DeviceCommander;
 use niles_notifications::NotificationCenter;
 use niles_tools::DynamicTools;
@@ -109,6 +109,9 @@ pub struct House {
     pub(crate) tools: DynamicTools,
     pub(crate) store: Arc<dyn PluginStore>,
     pub(crate) notifications: OnceLock<Arc<NotificationCenter>>,
+    pub(crate) notification_requests:
+        OnceLock<Arc<crate::notification_requests::NotificationRequests>>,
+    pub(crate) notification_rooms: OnceLock<HashSet<RoomName>>,
     pub(crate) speech_stream: OnceLock<Arc<dyn crate::speech_stream::SpeechStreamHost>>,
     pub(crate) settings: SettingsFn,
     pub(crate) secrets: SecretsFn,
@@ -134,6 +137,8 @@ impl House {
             tools: DynamicTools::new(),
             store,
             notifications: OnceLock::new(),
+            notification_requests: OnceLock::new(),
+            notification_rooms: OnceLock::new(),
             speech_stream: OnceLock::new(),
             settings: Arc::new(|_| toml::Table::new()),
             secrets: Arc::new(|_, _| None),
@@ -385,7 +390,23 @@ impl Runtime {
 
     /// Let plugins speak, once the notification centre exists.
     pub fn connect_notifications(&self, center: Arc<NotificationCenter>) {
-        let _ = self.inner.house.notifications.set(center);
+        if self.inner.house.notifications.set(center.clone()).is_ok() {
+            let _ = self.inner.house.notification_requests.set(Arc::new(
+                crate::notification_requests::NotificationRequests::new(
+                    center,
+                    self.inner.house.handle.clone(),
+                ),
+            ));
+        }
+    }
+
+    /// Configure the household rooms that have a notification route.
+    pub fn connect_notification_rooms(&self, rooms: impl IntoIterator<Item = RoomName>) {
+        let _ = self
+            .inner
+            .house
+            .notification_rooms
+            .set(rooms.into_iter().collect());
     }
 
     /// Start every plugin the store holds as enabled. One that cannot be

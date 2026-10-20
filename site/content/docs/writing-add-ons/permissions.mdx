@@ -3,7 +3,8 @@ title: "Permissions"
 description: "What each permission allows, and how the household sees it before an install."
 ---
 
-> Interface 0.2, and 0.1, which Niles still runs. Niles 0.2.0 runs them and
+> Interface 0.6 is the current source contract, not a claim of a released
+> Niles version. Interface 0.5 and frozen 0.1–0.4 remain supported. Niles 0.2.0 runs them and
 > installs them from GitHub: the runtime, `niles plugin check`, `niles plugin
 > dev`, Add-on from GitHub with its approval screen, updates, rollback, turning
 > off and removing, and in the app the generated setup panel, the plugin's
@@ -243,7 +244,25 @@ notify = true        # low and normal priority
 notify = "urgent"    # also urgent, which plays during quiet hours
 ```
 
-Speak through the satellites via Niles's notifications, at most 6 an hour.
+Speak through the satellites via Niles's notifications. The shared quota is
+6 per hour per plugin across legacy `say` and 0.6 `request` calls; status
+reads are free. Legacy `say` success means accepted, not delivered.
+
+Interface 0.6 adds `notify.request` and `notify.status`. A request is tracked
+as `pending`, `completed`, `partial`, `suppressed` or `failed`. `completed`
+means the host transport write completed, not playback or audibility. There
+are at most 32 records per plugin instance, including pending requests;
+terminal records are kept for five minutes. A long message is spoken to its
+end; a satellite that cannot be reached, or does not take the audio within its
+own length plus 15 seconds, makes it `failed`. Status is limited to the owning
+instance; teardown removes its records but lets what is being spoken finish.
+
+Notifications target rooms only. Authors should expose a `type = "room"`
+setting for household selection and pass its saved value. Unlike commentary,
+the notification host validates the supplied room rather than enforcing a
+binding to that setting. An omitted request room means the whole house. Named unknown or
+unrouted rooms are refused with an explicit explanation. Quiet-hours handling
+does not promise replay later.
 
 Shown as: **"Speak through your satellites"**, or **"Speak through your
 satellites, even during quiet hours"**.

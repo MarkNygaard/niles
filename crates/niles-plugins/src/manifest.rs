@@ -15,7 +15,7 @@ use std::collections::HashSet;
 pub const NILES_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The `interface` versions this Niles runs, oldest first.
-pub const INTERFACES: &[&str] = &["0.1", "0.2", "0.3", "0.4", "0.5"];
+pub const INTERFACES: &[&str] = &["0.1", "0.2", "0.3", "0.4", "0.5", "0.6"];
 
 /// Memory a plugin gets unless its manifest asks for more.
 pub const DEFAULT_MEMORY_MB: u32 = 64;
@@ -634,10 +634,14 @@ impl Manifest {
         if !self.permissions.websocket.is_empty()
             && self.interface != "0.4"
             && self.interface != "0.5"
+            && self.interface != "0.6"
         {
             out.push("websocket: WebSockets are in interface 0.4; set interface = \"0.4\" and build against its WIT".into());
         }
-        if self.permissions.speech_stream.is_some() && self.interface != "0.5" {
+        if self.permissions.speech_stream.is_some()
+            && self.interface != "0.5"
+            && self.interface != "0.6"
+        {
             out.push("speech_stream: the speech stream is in interface 0.5; set interface = \"0.5\" and build against its WIT".into());
         }
         if let Some(grant) = &self.permissions.speech_stream {
@@ -1074,6 +1078,7 @@ room = "setting:room"
         assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.4""#).is_empty());
         assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.2""#).is_empty());
         assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.3""#).is_empty());
+        assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.6""#).is_empty());
     }
 
     #[test]

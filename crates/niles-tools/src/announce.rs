@@ -8,6 +8,11 @@ use niles_notifications::{NotificationCenter, Priority};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+/// How long `announce` waits to report how it went. Long enough for a
+/// short announcement on a live connection; a longer one goes on after
+/// the tool has answered, so a voice reply is never held up by it.
+const ANSWER_WITHIN: std::time::Duration = std::time::Duration::from_secs(2);
+
 pub struct AnnounceTool {
     center: Arc<NotificationCenter>,
 }
@@ -25,7 +30,9 @@ impl Tool for AnnounceTool {
             name: "announce".into(),
             description: "Speak an unprompted notification to a specific room. \
                 Use this when the system needs to proactively inform the user of something \
-                (e.g., a timer finished, a device state changed, a reminder)."
+                (e.g., a timer finished, a device state changed, a reminder). \
+                A long announcement may answer status 'sending': it is still being \
+                spoken, which is not a failure."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -83,16 +90,32 @@ impl Tool for AnnounceTool {
             }
         };
 
-        let notification = self.center.deliver(text, room.clone(), priority);
+        // Spoken on its own: a voice turn that asked for it answers within
+        // the budget, whether or not the announcement has finished.
+        let center = self.center.clone();
+        let (said, kept_room) = (text.to_string(), room.clone());
+        let delivery = tokio::spawn(async move { center.deliver(said, kept_room, priority).await });
+        let Ok(Ok(notification)) = tokio::time::timeout(ANSWER_WITHIN, delivery).await else {
+            return Ok(json!({
+                "status": "sending",
+                "room": room,
+                "reason": "still being spoken; its outcome goes in the notification history",
+            }));
+        };
 
         let (status, reason) = match notification.outcome {
             niles_notifications::DeliveryOutcome::Delivered => ("delivered", None),
+            niles_notifications::DeliveryOutcome::Partial => (
+                "partial",
+                Some("spoken in only some of the rooms".to_string()),
+            ),
             niles_notifications::DeliveryOutcome::Suppressed => {
                 ("suppressed", Some("quiet hours active".to_string()))
             }
-            niles_notifications::DeliveryOutcome::Failed => {
-                ("failed", Some("delivery backend unavailable".to_string()))
-            }
+            niles_notifications::DeliveryOutcome::Failed => (
+                "failed",
+                Some("no satellite in the room could be reached".to_string()),
+            ),
             _ => ("failed", Some("unknown delivery outcome".to_string())),
         };
 
@@ -142,6 +165,40 @@ mod tests {
             .unwrap();
         assert_eq!(result["status"], "failed"); // no delivery backend
         assert_eq!(result["room"], "kitchen");
+    }
+
+    struct Slow;
+
+    #[async_trait]
+    impl niles_notifications::NotificationDelivery for Slow {
+        async fn deliver(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: Priority,
+        ) -> niles_notifications::TransportOutcome {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            niles_notifications::TransportOutcome::Completed
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_long_announcement_does_not_hold_the_answer() {
+        let center = Arc::new(NotificationCenter::new(10).with_delivery(Arc::new(Slow)));
+        let tool = AnnounceTool::new(center.clone());
+        let result = tool
+            .execute(json!({"text": "a long story", "priority": "important"}))
+            .await
+            .unwrap();
+        assert_eq!(result["status"], "sending");
+        assert!(center.recent(1).is_empty());
+        tokio::time::sleep(std::time::Duration::from_secs(61)).await;
+        let kept = center.recent(1);
+        assert_eq!(kept.len(), 1, "it is still spoken and kept");
+        assert_eq!(
+            kept[0].outcome,
+            niles_notifications::DeliveryOutcome::Delivered
+        );
     }
 
     #[tokio::test]

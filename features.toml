@@ -971,6 +971,13 @@ phrasings = []
 since_pr = 482
 
 [[feature]]
+id = "plugins-notification-outcomes"
+category = "runtime.plugins"
+summary = "Room-only add-on announcements with validated audiences and tracked transport, partial, suppressed and failed outcomes"
+phrasings = []
+since_pr = 484
+
+[[feature]]
 id = "ui-notifications-page"
 category = "ui.notifications"
 summary = "Notifications, by the avatar: Now (today's run, a delivery, pair this phone), then all Niles told you; Home is the house"
