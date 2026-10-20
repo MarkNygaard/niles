@@ -56,6 +56,11 @@ it belongs to a conversation. **Approvals history** lists what you
 decided, such as "Allowed once · 15:34" or "Denied by voice · 12 Oct", 30
 at a time with **Show older**.
 
+A link to `#/chat?approval=` followed by an approval's id opens that card
+in its conversation, scrolled into view and outlined. One asked by voice
+has no conversation, so the link opens it in **Approvals** instead. Every
+notification about an approval links there.
+
 Deciding in the panel is the same as pressing the button on the card in
 the chat.
 
@@ -70,8 +75,8 @@ words itself; anything else leaves the question waiting. If Niles knew
 the voice that asked, only that voice can answer. A spoken yes is
 **Allow once**.
 
-The same question also shows in the app, so you can answer it from your
-phone instead.
+The same question also shows in the app and goes to your phone, so you
+can answer it there instead.
 
 Mail is never approved by voice. Ask for a mail by voice and Niles tells
 you it is written and waiting in the app for you to check and send.
@@ -91,12 +96,39 @@ everything still waiting.
 A request that asks first, made where nobody is there to answer (by an
 automation, say), fails at once rather than waiting.
 
-Each approval Niles holds for you is also a notification: on your
-[Notifications](/docs/using/notifications) page, with the card's question
-and a link to **Approvals** in Niles's panel. Asked by voice, it also goes
-to your phone if you turned notifications on, since you are away from the
-screen. Asked in the chat, it does not: the card is already in front of
-you. A voice Niles did not recognise gets none.
+## On your phone or computer
+
+Each approval Niles holds for you is on your
+[Notifications](/docs/using/notifications) page at once. It also goes to
+every phone and computer where you turned notifications on, and only to
+yours. A voice Niles did not recognise gets none.
+
+It is sent at once when it was asked by voice, or by something running in
+the background. Asked in the chat, it is sent only if it still waits a
+minute later. Answer the card within the minute and no device is told.
+
+It says the card's question and whose it is ("Send this email? · From your
+Gmail, mark@gmail.com"), one line of what it would do, and how long it
+waits ("Waiting until 19:42"). Tapping it opens the card.
+
+On Android and on a computer it has buttons. Every notification has
+**Deny**. **Approve** is **Allow once**, offered only when a spoken yes
+could also allow it, which means a tool set to ask first. A mail has
+**Review** instead, which opens the card, because a mail is read in full
+before it is sent.
+
+A button answers without opening Niles, as you, signed in on that device.
+The notification then says what happened. If Niles can't be reached, or
+that device is signed out, it says "Couldn't answer. Open Niles to answer
+it." Tapping that opens the card.
+
+An iPhone or iPad shows no buttons on notifications from a Home Screen
+app. Tap the notification, then answer on the card.
+
+Once it is answered, wherever that happened, or once it lapses, Niles
+replaces the notification on your other devices with what became of it,
+such as **Allowed. Done.** On Android and a computer the replacement
+makes no sound.
 
 ## What the history keeps
 

@@ -112,6 +112,20 @@ describe("ApprovalsView", () => {
     expect(screen.getByText("Nothing is waiting for you.")).toBeInTheDocument();
     expect(screen.getByText(/keeps no history/)).toBeInTheDocument();
   });
+
+  it("draws out the card a link led to", () => {
+    const second: PendingApproval = { ...WAITING, id: "a2", title: "Let Linear create another?" };
+    render(
+      <ApprovalsView pending={[WAITING, second]} history={[]} onDecide={() => {}} highlight="a2" />,
+    );
+    expect(screen.getByRole("region", { name: "Let Linear create another?" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    expect(screen.getByRole("region", { name: "Let Linear create issue?" })).not.toHaveAttribute(
+      "aria-current",
+    );
+  });
 });
 
 describe("Approvals", () => {
@@ -134,7 +148,7 @@ describe("Approvals", () => {
       ["Deny", "deny"],
     ] as const) {
       fireEvent.click(await screen.findByRole("button", { name }));
-      await waitFor(() => expect(decide).toHaveBeenLastCalledWith("a1", decision));
+      await waitFor(() => expect(decide).toHaveBeenLastCalledWith("a1", decision, null));
       await waitFor(() => expect(screen.getByRole("button", { name })).not.toBeDisabled());
     }
   });

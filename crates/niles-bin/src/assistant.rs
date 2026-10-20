@@ -1221,6 +1221,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
                     slug: Some("mark".into()),
                     satellite: None,
                     conversation: None,
+                    in_chat: false,
                 }),
                 via: "claude",
             },

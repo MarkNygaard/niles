@@ -491,6 +491,7 @@ mod tests {
                     slug: None,
                     satellite: None,
                     conversation: None,
+                    in_chat: false,
                 },
                 tools.execute(&niles_llm::ToolCall {
                     id: String::new(),

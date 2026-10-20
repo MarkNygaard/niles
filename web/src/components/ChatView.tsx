@@ -69,6 +69,9 @@ export interface ChatViewProps {
   /** The artifacts being written now. A card keeps the status it had
       when its turn was kept, so this is what says a job still runs. */
   working?: number[];
+  /** The approval card a notification's link led to: brought into view
+      once it is drawn. */
+  highlight?: string | null;
 }
 
 /**
@@ -94,6 +97,7 @@ export function ChatView({
   onDictate,
   onOpenArtifact,
   working,
+  highlight,
 }: ChatViewProps) {
   const [draft, setDraft] = useState("");
   const [files, setFiles] = useState<File[]>([]);
@@ -161,6 +165,27 @@ export function ChatView({
     const root = document.getElementById("root");
     root?.scrollTo?.({ top: root.scrollHeight });
   }, [turns.length, pending]);
+
+  // A notification's link: its card in the middle of the screen, once,
+  // when it is first drawn. Only `#root` is moved, as above.
+  const list = useRef<HTMLOListElement>(null);
+  const centred = useRef<string | null>(null);
+  useEffect(() => {
+    if (!highlight) {
+      centred.current = null;
+      return;
+    }
+    if (centred.current === highlight) return;
+    const root = document.getElementById("root");
+    const card = Array.from(
+      list.current?.querySelectorAll<HTMLElement>("[data-approval]") ?? [],
+    ).find((el) => el.dataset.approval === highlight);
+    if (!root || !card) return;
+    centred.current = highlight;
+    const at = card.getBoundingClientRect();
+    const top = at.top - root.getBoundingClientRect().top + root.scrollTop;
+    root.scrollTo?.({ top: Math.max(0, top - (root.clientHeight - at.height) / 2) });
+  }, [highlight, turns]);
 
   // The tab bar steps aside while the keyboard is up; see TabBar.
   useEffect(
@@ -283,7 +308,7 @@ export function ChatView({
       {/* At the bottom, just above the field, the way a messages app
           has it. At the top, a short conversation was what iOS slid off
           the screen when it lifted the field above the keyboard. */}
-      <ol className="mt-auto flex flex-col gap-3" aria-label="Conversation">
+      <ol className="mt-auto flex flex-col gap-3" aria-label="Conversation" ref={list}>
         {turns.map((turn, i) => (
           <li key={i} className="flex flex-col gap-3">
             {/* Nothing said is Niles speaking first: a job that was
@@ -308,6 +333,7 @@ export function ChatView({
               <ApprovalCard
                 card={turn.approval}
                 deciding={deciding}
+                highlighted={turn.approval.id === highlight}
                 onDecide={(decision) => turn.approval && onDecide?.(turn.approval.id, decision)}
               />
             )}

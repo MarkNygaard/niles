@@ -125,8 +125,10 @@ impl Artifacts {
     ) {
         let (person, conversation) = (asker.person.clone(), asker.conversation);
         let owner = artifact.person.clone();
+        // A job runs away from the chat that asked for it.
         let asker = Asker {
             satellite: None,
+            in_chat: false,
             ..asker
         };
         let (system, prompt) =

@@ -2775,6 +2775,7 @@ dependencies = [
  "niles-webos",
  "niles-webpush",
  "niles-websearch",
+ "parking_lot",
  "rand 0.10.3",
  "reqwest",
  "rust-embed",

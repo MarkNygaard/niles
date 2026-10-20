@@ -60,6 +60,19 @@ describe("ApprovalCard", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Lapsed. Nothing was done.");
   });
 
+  it("is drawn out when a link led to it", () => {
+    const { unmount } = render(<ApprovalCard card={ISSUE} onDecide={vi.fn()} highlighted />);
+    expect(screen.getByRole("region", { name: "Let Linear create issue?" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    unmount();
+    render(<ApprovalCard card={ISSUE} onDecide={vi.fn()} />);
+    expect(screen.getByRole("region", { name: "Let Linear create issue?" })).not.toHaveAttribute(
+      "aria-current",
+    );
+  });
+
   it("says why an allowed call failed", () => {
     expect(outcome({ ...ISSUE, status: "failed", outcome: "401: the key was refused" })).toBe(
       "Allowed, but it didn't work: 401: the key was refused",

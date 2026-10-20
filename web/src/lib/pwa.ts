@@ -1,5 +1,7 @@
 /**
- * Installing Niles to a Home Screen.
+ * Installing Niles to a Home Screen, and taking a notification about an
+ * answered approval off this device once Niles's own push has had its
+ * chance to replace it.
  *
  * There is no install button here and there should not be. Every
  * browser already has one — Chrome's own prompt, Safari's Share → Add
@@ -13,6 +15,32 @@
 
 /** Where the worker lives, and therefore its scope: the whole app. */
 const WORKER = "/sw.js";
+
+/** How long Niles's push replacing an answered approval's notification
+    gets to arrive before the open app takes the waiting one off itself.
+    Replaced, it changes quietly. Taken off first, the replacement would
+    arrive as a new notification. */
+export const REPLACED_WITHIN_MS = 10_000;
+
+/** Takes off this device the notifications tagged `tag` that still wait
+    for an answer, the ones with buttons. One saying what became of it
+    stays. */
+export async function closeWaiting(tag: string): Promise<void> {
+  try {
+    if (!("serviceWorker" in navigator)) return;
+    const registration = await navigator.serviceWorker.getRegistration();
+    for (const shown of (await registration?.getNotifications({ tag })) ?? []) {
+      if (shown.data?.approval) shown.close();
+    }
+  } catch {
+    // No worker here, or no notifications to look at: nothing waits.
+  }
+}
+
+/** The same, once Niles's own push has had its chance. */
+export function closeWaitingLater(tag: string): void {
+  setTimeout(() => void closeWaiting(tag), REPLACED_WITHIN_MS);
+}
 
 export function registerServiceWorker(): void {
   if (!("serviceWorker" in navigator)) return;

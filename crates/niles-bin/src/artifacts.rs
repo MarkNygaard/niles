@@ -1046,6 +1046,7 @@ impl Artifacts {
             slug: person.strip_prefix("person:").map(str::to_string),
             satellite: None,
             conversation: artifact.conversation_id.filter(|_| person == owner),
+            in_chat: false,
         };
         // One deadline covers the run and, for a podcast, its recording:
         // a job is never more than half an hour all told.
@@ -1194,8 +1195,10 @@ impl Artifacts {
     ) {
         let (person, conversation) = (asker.person.clone(), asker.conversation);
         let owner = artifact.person.clone();
+        // A job runs away from the chat that asked for it.
         let asker = Asker {
             satellite: None,
+            in_chat: false,
             ..asker
         };
         let (system, prompt) =
@@ -2504,6 +2507,7 @@ mod tests {
             slug: person.strip_prefix("person:").map(str::to_string),
             satellite: None,
             conversation,
+            in_chat: false,
         }
     }
 
@@ -2865,6 +2869,7 @@ mod tests {
             slug: None,
             satellite: Some("10.0.0.9:1234".parse().unwrap()),
             conversation: None,
+            in_chat: false,
         };
         let e = call(&f, stranger, "artifact_list", json!({}))
             .await
@@ -5215,6 +5220,7 @@ mod tests {
             slug: None,
             satellite: Some("10.0.0.9:1234".parse().unwrap()),
             conversation: None,
+            in_chat: false,
         };
         for (tool, args) in [
             ("artifact_list", json!({})),
@@ -5374,6 +5380,7 @@ mod tests {
         // Asked from a satellite turn by a recognised voice.
         let asker = Asker {
             satellite: Some("10.0.0.9:1234".parse().unwrap()),
+            in_chat: false,
             ..asking(MARK, Some(1))
         };
         let out = call(

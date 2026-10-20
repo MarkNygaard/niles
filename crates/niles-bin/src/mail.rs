@@ -301,9 +301,14 @@ impl Tool for SendMail {
             draft: draft.clone(),
             original,
         });
-        let held = m
-            .approvals
-            .hold(&in_the_app, deliver, "Mail", Value::Null, card);
+        let held = m.approvals.hold(
+            &in_the_app,
+            deliver,
+            "Mail",
+            Value::Null,
+            card,
+            approvals::Allow::OnItsCard,
+        );
         tracing::info!(
             "[mail] a mail to {} is waiting in the app",
             draft.to.join(", ")
@@ -454,6 +459,7 @@ mod tests {
             slug: Some("mark".into()),
             satellite,
             conversation: None,
+            in_chat: satellite.is_none(),
         }
     }
 
@@ -496,6 +502,14 @@ mod tests {
         assert_eq!(card.fields[1].value, "Running late");
         assert!(card.body.unwrap().contains("fifteen minutes"));
         assert!(!card.allow_conversation, "a mail is approved one at a time");
+        assert_eq!(
+            approvals.buttons(&card.id),
+            Some(vec![
+                niles_webpush::Action::Review,
+                niles_webpush::Action::Deny
+            ]),
+            "its notification offers Review, never Approve"
+        );
     }
 
     #[tokio::test]

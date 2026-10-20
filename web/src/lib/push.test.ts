@@ -8,6 +8,7 @@ import {
   pushSupport,
   sameKey,
   shouldNudge,
+  thisDevice,
 } from "@/lib/push";
 import type { PushEnvironment } from "@/lib/push";
 
@@ -150,5 +151,44 @@ describe("the nudge, dismissed", () => {
     expect(nudgeDismissed()).toBe(false);
     dismissNudge();
     expect(nudgeDismissed()).toBe(true);
+  });
+});
+
+describe("thisDevice", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubWorker(subscription: { endpoint: string } | null) {
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: {
+        getRegistration: async () => ({
+          pushManager: { getSubscription: async () => subscription },
+        }),
+      },
+    });
+  }
+
+  it("answers this device's push address", async () => {
+    stubWorker({ endpoint: "https://push.example/me" });
+    expect(await thisDevice()).toBe("https://push.example/me");
+  });
+
+  it("answers null without a subscription", async () => {
+    stubWorker(null);
+    expect(await thisDevice()).toBeNull();
+  });
+
+  it("answers null without a service worker", async () => {
+    expect(await thisDevice()).toBeNull();
+  });
+
+  it("answers null when the registration fails", async () => {
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: { getRegistration: async () => Promise.reject(new Error("no")) },
+    });
+    expect(await thisDevice()).toBeNull();
   });
 });

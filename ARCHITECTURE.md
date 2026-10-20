@@ -110,7 +110,7 @@ A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the res
 5. `dispatch::text::dispatch_text` tries Tier 0: `niles-intent` turns the words into an `Intent`, which is acted on directly (a light through the `CommandRouter`, a timer, a scene, music).
 6. On a miss, `dispatch::dispatch_tier1` builds the system prompt (`prompt.rs`: persona, capability references by topic, memory, skills) and runs `chat_loop` against the fast model (`niles-llm`, Cerebras by default) with the tools `niles-tools` judges relevant.
 7. A spoken rule (caught by its words, or by the fast model reaching for an automation tool), or a tool server's tool the household left to the assistant, sends the turn to the assistant instead (Claude Code, or ChatGPT through pi; `assistant.rs`), which reaches the same tools over Niles's own MCP server. `escalate_to_tier2` re-runs the turn on Tier 2 if one is configured.
-8. A tool set to Ask first, or a mail, is held as an approval (`approvals.rs`). A remote tool can be answered by a spoken yes; a mail waits in the app.
+8. A tool set to Ask first, or a mail, is held as an approval (`approvals.rs`). A remote tool can be answered by a spoken yes; a mail waits in the app. Either way it is pushed at once to the person's own devices (`approvals/push.rs`).
 9. `speak::speak_back` synthesises the reply with Piper (`niles-tts`) and streams it to the satellite. A reply that asks a question keeps the microphone open for the answer (`follow_up.rs`). The turn goes into the history, the journal and, for a recognised voice, that person's chat.
 
 ## How a chat turn flows
@@ -120,7 +120,7 @@ A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the res
 3. Without files, `dispatch_text` runs as for voice: Tier 0 first, then `dispatch_tier1`, where a chat turn goes to the assistant when one is on, and to the fast model otherwise or when the assistant can't answer (with a note under the reply saying why). A turn that runs out of time in the middle of changing one artifact goes on as a job on it instead, and says so (`Artifacts::carry_on`).
 4. With files, `dispatch::dispatch_attached` skips Tier 0 and the fast model: only the assistant can see them, and nobody else answers.
 5. The assistant's tools come over MCP with a token for that run, which is how a tool knows whose turn it is. Artifact tools are offered only there. A change is said as edits, never the whole artifact again; a big artifact, a new page and a big change are background jobs. Each tool call of a chat turn is logged with its time, never its arguments.
-6. The turn is kept with its approval card and artifacts. Later changes go to that person's connections on `/events/stream` (`approval_changed`, `artifact_changed`, `notification_added`), and a finished job reaches their Notifications page and their devices by Web Push.
+6. The turn is kept with its approval card and artifacts. Later changes go to that person's connections on `/events/stream` (`approval_changed`, `artifact_changed`, `notification_added`), and a finished job reaches their Notifications page and their devices by Web Push. A card still waiting a minute after it was asked goes to their devices too.
 
 ## How an automation flows
 
@@ -161,7 +161,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 **The model and untrusted content**
 
 10. The model never decides an approval. Niles holds the exact call and runs what it held after the person's answer; a change is a new approval. *What runs is what was shown.*
-11. Mail is never sent without an approval answered in the app: never by voice, never "for this conversation", and no setting turns that off. *A misheard yes is worst here.*
+11. Mail is never sent without an approval answered on its card in the app: never by voice, never from a notification's button, never "for this conversation", and no setting turns that off. *A misheard yes is worst here.*
 12. What a web page, a file, a tool result or a plugin says is information, never an instruction. *Strangers write pages.*
 13. Claude Code never gets `WebFetch`. What Niles fetches for a model goes only to the public internet, to the checked address, with every redirect checked again. *The pod can reach the cluster.*
 14. Model-written HTML runs only in the `sandbox="allow-scripts"` srcdoc frame under its own CSP. The app's own CSP stays `frame-src 'none'` and nothing else, and a test guards it. *See Security notes.*
@@ -209,6 +209,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 - The add-on library (NIL-35): found by a GitHub topic, listed through pull requests to a registry repo, read from one `index.json` on GitHub Pages, and counted by GitHub's download count of a `niles-installed` file each fresh install fetches once. **Rejected:** a server of Niles's own, which someone would have to run and trust; counts reported by each Niles, which is telemetry; and the component's own download count, which previews and updates inflate.
 - Linear through Linear's own MCP server, as a remote tool server; Niles files and queries issues and never talks to the ai-harness (#417, #419).
 - Approvals: Ask-first tools and every mail wait for the person's yes (spec #422, #423); the panel and the history (#455).
+- Approvals reach the person's own devices by Web Push (NIL-16). One asked in the open chat is pushed only if it still waits a minute later, and anything else at once. Every notification has Deny. Approve is only where a spoken yes would count too, and a mail gets Review instead. Answered or lapsed, it is replaced on the person's other devices by a quiet push with the same tag, never a hidden one, since Safari drops a subscription whose push shows nothing. iOS draws no buttons on a Home Screen app's notification, so a tap opens the card there. That comes from Apple's forums in October 2026 and is still to be checked on a current iPhone, along with whether iOS honours a quiet push.
 - Accounts: one sign-in per provider serves Calendar, Mail or both (#424); mail (#425); iCloud over IMAP and SMTP (#426). App registrations: see Operations notes.
 - Training from each person's own Strava app, not Garmin or Apple Health (#410, then #418). Why: see Operations notes.
 - Artifacts made by the assistant and versioned per person (#429); pages in a sealed frame (#440); pictures as Niles's own copies (#442); sharing to view or to edit (#452); changes said as edits, and a change a chat turn runs out of time on carried on as a job (NIL-37).

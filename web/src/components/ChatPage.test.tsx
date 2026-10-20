@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   ChatPage,
   landingOn,
+  linkedApproval,
   linkedArtifact,
   linkedPanel,
   panelStatus,
@@ -16,6 +17,7 @@ import type {
   ArtifactRef,
   Conversation,
   ConversationSummary,
+  PendingApproval,
   Turn,
 } from "@/lib/api";
 
@@ -209,6 +211,17 @@ describe("linkedPanel", () => {
   });
 });
 
+describe("linkedApproval", () => {
+  it("is the approval a notification's link names", () => {
+    expect(linkedApproval("#/chat?approval=a1")).toBe("a1");
+  });
+
+  it("is nothing without one, or with an empty one", () => {
+    expect(linkedApproval("#/chat")).toBeNull();
+    expect(linkedApproval("#/chat?approval=")).toBeNull();
+  });
+});
+
 describe("ChatPage", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -278,7 +291,7 @@ describe("ChatPage", () => {
     const tab = await dialog.findByRole("tab", { name: "Approvals, 1 waiting" });
     fireEvent.click(tab);
     fireEvent.click(await dialog.findByRole("button", { name: "Allow once" }));
-    await waitFor(() => expect(decide).toHaveBeenCalledWith("a1", "once"));
+    await waitFor(() => expect(decide).toHaveBeenCalledWith("a1", "once", null));
   });
 
   it("opens the artifact a notification's link names, and puts the address back", async () => {
@@ -295,6 +308,131 @@ describe("ChatPage", () => {
     ).toBeInTheDocument();
     expect(api.artifact).toHaveBeenCalledWith(9);
     expect(window.location.hash).toBe("#/chat");
+  });
+
+  const CARD = {
+    id: "a1",
+    title: "Let Linear create issue?",
+    subtitle: "Linear",
+    icon: "linear",
+    fields: [{ label: "Title", value: "WLED presets" }],
+    body: null,
+    allow_conversation: true,
+    status: "pending" as const,
+    outcome: null,
+  };
+
+  function waiting(rest: Partial<PendingApproval> = {}): PendingApproval {
+    return {
+      ...CARD,
+      tool: "Linear",
+      summary: "Title: WLED presets",
+      conversation_id: 7,
+      asked_at: ago(MINUTE),
+      expires_at: ago(-59 * MINUTE),
+      via: "app",
+      ...rest,
+    };
+  }
+
+  it("opens the conversation an approval's notification leads to, with its card drawn out, and puts the address back", async () => {
+    window.history.replaceState(null, "", "#/chat?approval=a1");
+    vi.spyOn(api, "approvals").mockResolvedValue({ approvals: [waiting()] });
+    show(
+      [CURTAINS, summary(7, "Email jakob", { last_at: ago(MINUTE) })],
+      {
+        7: conversationOf(summary(7, "Email jakob"), [
+          turn("email jakob", "It's ready for you to check.", { approval: CARD }),
+        ]),
+      },
+    );
+    expect(
+      await screen.findByRole("region", { name: "Let Linear create issue?" }),
+    ).toHaveAttribute("aria-current", "true");
+    expect(api.conversation).toHaveBeenCalledWith(7);
+    expect(window.location.hash).toBe("#/chat");
+  });
+
+  it("opens Approvals with the card drawn out for one asked aloud", async () => {
+    window.history.replaceState(null, "", "#/chat?approval=a1");
+    vi.spyOn(api, "approvals").mockResolvedValue({
+      approvals: [waiting({ conversation_id: null, via: "voice" })],
+    });
+    show([CURTAINS], { 42: conversationOf(CURTAINS, CURTAINS_TURNS) });
+    const dialog = within(await screen.findByRole("dialog", { name: "Niles" }));
+    expect(await dialog.findByRole("tab", { name: "Approvals, 1 waiting" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(
+      await dialog.findByRole("region", { name: "Let Linear create issue?" }),
+    ).toHaveAttribute("aria-current", "true");
+    expect(window.location.hash).toBe("#/chat");
+  });
+
+  it("finds one no longer waiting in the history", async () => {
+    window.history.replaceState(null, "", "#/chat?approval=a1");
+    vi.spyOn(api, "approvals").mockResolvedValue({ approvals: [] });
+    vi.spyOn(api, "approvalHistory").mockResolvedValue({
+      entries: [
+        {
+          id: 1,
+          approval: "a1",
+          tool: "Linear",
+          icon: "linear",
+          title: "Let Linear create issue?",
+          summary: "Title: WLED presets",
+          status: "allowed",
+          decision: "once",
+          outcome: "Done",
+          decided_via: "app",
+          asked_via: "app",
+          asked_at: ago(2 * MINUTE),
+          decided_at: ago(MINUTE),
+          conversation_id: 7,
+        },
+      ],
+      next: null,
+      kept: true,
+    });
+    show([CURTAINS], {
+      7: conversationOf(summary(7, "Email jakob"), [
+        turn("email jakob", "It's ready for you to check.", { approval: CARD }),
+      ]),
+    });
+    await screen.findByRole("region", { name: "Let Linear create issue?" });
+    expect(api.conversation).toHaveBeenCalledWith(7);
+    expect(window.location.hash).toBe("#/chat");
+  });
+
+  it("sends this device's push address with an answer, and takes its notification off here", async () => {
+    const live = { data: { approval: "a1" }, close: vi.fn() };
+    const registration = {
+      pushManager: {
+        getSubscription: async () => ({ endpoint: "https://push.example/me" }),
+      },
+      getNotifications: vi.fn(async () => [live]),
+    };
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: { getRegistration: async () => registration },
+    });
+    try {
+      vi.spyOn(api, "decideApproval").mockResolvedValue({ reply: "Done." });
+      const asked = summary(7, "Email jakob", { last_at: ago(MINUTE) });
+      show([asked], {
+        7: conversationOf(asked, [
+          turn("email jakob", "It's ready for you to check.", { approval: CARD }),
+        ]),
+      });
+      fireEvent.click(await screen.findByRole("button", { name: "Allow once" }));
+      await waitFor(() =>
+        expect(api.decideApproval).toHaveBeenCalledWith(7, "a1", "once", "https://push.example/me"),
+      );
+      await waitFor(() => expect(live.close).toHaveBeenCalled());
+    } finally {
+      Reflect.deleteProperty(navigator, "serviceWorker");
+    }
   });
 
   it("shows the job being written in the status line, as the stream says", async () => {

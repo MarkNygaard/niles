@@ -204,6 +204,7 @@ impl Artifacts {
             slug: person.strip_prefix("person:").map(str::to_string),
             satellite: None,
             conversation: None,
+            in_chat: false,
         };
         let tools = self.job_tools(plan.id, TRAINING_PLAN, Some(today));
         let outcome =
@@ -895,6 +896,7 @@ mod tests {
             slug: Some("majse".into()),
             satellite: None,
             conversation: None,
+            in_chat: false,
         };
         let e = call(
             &tools,
