@@ -8,11 +8,10 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{runtime::Handle, task::AbortHandle, time::Instant};
+use tokio::{runtime::Handle, time::Instant};
 
 pub const MAX_REQUESTS_PER_INSTANCE: usize = 32;
 pub const TERMINAL_RETENTION: Duration = Duration::from_secs(5 * 60);
-pub const DELIVERY_TIMEOUT: Duration = Duration::from_secs(20);
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
@@ -66,7 +65,6 @@ struct Record {
     owner: Owner,
     status: RequestStatus,
     terminal_at: Option<Instant>,
-    task: Option<AbortHandle>,
 }
 
 /// A capacity reservation does not create a visible request or start work.
@@ -163,12 +161,13 @@ impl NotificationRequests {
                 owner: owner.clone(),
                 status: RequestStatus::Pending,
                 terminal_at: None,
-                task: None,
             },
         );
-        let task = self.inner.handle.spawn(async move {
-            let result =
-                tokio::time::timeout(DELIVERY_TIMEOUT, center.deliver(text, room, priority)).await;
+        // Not bounded here: delivery bounds its own steps (synthesis, the
+        // write, a push given the audio's length), and a long announcement
+        // is spoken to its end.
+        self.inner.handle.spawn(async move {
+            let notification = center.deliver(text, room, priority).await;
             let Some(inner) = weak.upgrade() else {
                 return;
             };
@@ -182,16 +181,9 @@ impl NotificationRequests {
             if record.owner != owner {
                 return;
             }
-            record.status = match result {
-                Err(_) => RequestStatus::Failed,
-                Ok(notification) => map_outcome(notification.outcome),
-            };
+            record.status = map_outcome(notification.outcome);
             record.terminal_at = Some(Instant::now());
-            record.task = None;
         });
-        if let Some(record) = state.records.get_mut(&id) {
-            record.task = Some(task.abort_handle());
-        }
         reservation.accepted = true;
         drop(state);
         Ok(id)
@@ -217,6 +209,9 @@ impl NotificationRequests {
             .ok_or(TrackerError::Unknown)
     }
 
+    /// The instance is gone: nobody will ask about its requests any more,
+    /// so they are forgotten. What is being spoken is not cut off — the
+    /// household hears it, and it is kept in the notification history.
     pub fn close_owner(&self, plugin: &str, generation: u64) {
         let owner = Owner {
             plugin: plugin.to_owned(),
@@ -225,16 +220,7 @@ impl NotificationRequests {
         let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
         state.closed.insert(owner.clone(), Instant::now());
         state.reservations.retain(|_, existing| existing != &owner);
-        state.records.retain(|_, record| {
-            if record.owner == owner {
-                if let Some(task) = &record.task {
-                    task.abort();
-                }
-                false
-            } else {
-                true
-            }
-        });
+        state.records.retain(|_, record| record.owner != owner);
     }
 }
 

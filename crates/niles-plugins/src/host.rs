@@ -943,16 +943,32 @@ impl notify::Host for HostState {
         };
         let validated = crate::notification_host::validate(self, message, priority_06, room)?;
         crate::notification_host::charge_quota(self)?;
-        // WIT's legacy `say` is synchronous: accept the request here and
-        // let the existing runtime handle perform delivery asynchronously.
-        let center = validated.center;
-        let handle = self.house.handle.clone();
-        handle.spawn(async move {
-            center
-                .deliver(validated.message, validated.room, validated.priority)
-                .await;
-        });
+        say_or_log(self, validated);
         Ok(())
+    }
+}
+
+/// `say` is synchronous and only accepts: delivery goes on in the
+/// background. Without notifications connected (`niles plugin dev`) it
+/// is logged instead, as it always was.
+fn say_or_log(state: &HostState, validated: crate::notification_host::ValidatedNotification) {
+    let crate::notification_host::ValidatedNotification {
+        center,
+        message,
+        room,
+        priority,
+    } = validated;
+    match center {
+        Some(center) => {
+            state.house.handle.spawn(async move {
+                center.deliver(message, room, priority).await;
+            });
+        }
+        None => tracing::info!(
+            plugin = %state.plugin.id,
+            "would say {message:?} ({priority:?}) in {}",
+            room.as_deref().unwrap_or("the room Niles picks")
+        ),
     }
 }
 
@@ -965,13 +981,7 @@ impl crate::bindings::notify_0_6::Host for HostState {
     ) -> Result<(), HostError> {
         let validated = crate::notification_host::validate(self, message, priority, room)?;
         crate::notification_host::charge_quota(self)?;
-        let center = validated.center;
-        let handle = self.house.handle.clone();
-        handle.spawn(async move {
-            center
-                .deliver(validated.message, validated.room, validated.priority)
-                .await;
-        });
+        say_or_log(self, validated);
         Ok(())
     }
 
@@ -1224,7 +1234,39 @@ mod tests {
         .unwrap_err();
         assert!(no_satellite.to_string().contains("office"));
         assert!(no_satellite.to_string().contains("no configured satellite"));
+        assert!(matches!(no_satellite, HostError::Unavailable(_)));
+        assert!(matches!(unknown, HostError::Invalid(_)));
         assert_eq!(counter.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn without_notifications_connected_say_is_logged_and_accepted() {
+        // As under `niles plugin dev`: no notifications, no satellite rooms.
+        let manifest = Manifest::parse(include_str!(
+            "../tests/fixtures/hello/niles-integration.toml"
+        ))
+        .unwrap();
+        let house = Arc::new(House::new(
+            Arc::new(DeviceRegistry::new()),
+            EventBus::new(8),
+            Arc::new(MemoryStore::new()),
+        ));
+        let mut state = HostState::new(
+            Arc::new(Plugin::new(manifest.clone())),
+            house,
+            toml::Table::new(),
+            HttpPolicy::new(&manifest.permissions, |_| None),
+            MqttPolicy::new(&manifest.permissions, |_| None),
+            crate::websocket::WsPolicy::new(&manifest, &toml::Table::new(), false),
+        );
+        notify::Host::say(
+            &mut state,
+            "hello".into(),
+            notify::Priority::Normal,
+            Some("study".into()),
+        )
+        .unwrap();
+        notify::Host::say(&mut state, "hello".into(), notify::Priority::Normal, None).unwrap();
     }
 
     #[tokio::test]
@@ -1444,7 +1486,7 @@ mod tests {
                 crate::bindings::notify_0_6::Priority::Normal,
                 Some("office".into()),
             ),
-            Err(HostError::Invalid(_))
+            Err(HostError::Unavailable(_))
         ));
         for _ in 0..3 {
             let id = crate::bindings::notify_0_6::Host::request(

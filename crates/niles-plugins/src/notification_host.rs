@@ -9,7 +9,9 @@ use niles_notifications::{NotificationCenter, Priority};
 use std::sync::Arc;
 
 pub(crate) struct ValidatedNotification {
-    pub center: Arc<NotificationCenter>,
+    /// `None` where Niles has not connected notifications, as under
+    /// `niles plugin dev`: a `say` is then logged rather than spoken.
+    pub center: Option<Arc<NotificationCenter>>,
     pub message: String,
     pub room: Option<String>,
     pub priority: Priority,
@@ -50,29 +52,27 @@ pub(crate) fn validate(
         }
         let parsed = RoomName::parse(room)
             .map_err(|_| HostError::Invalid(format!("{room:?} is not a valid room")))?;
-        let known_from_devices = state
-            .house
-            .registry
-            .list_all()
-            .iter()
-            .any(|device| device.id.room() == &parsed);
-        let routes = state.house.notification_rooms.get();
-        let configured_route = routes.is_some_and(|rooms| rooms.contains(&parsed));
-        if !known_from_devices && !configured_route {
-            return Err(HostError::Invalid(format!("unknown room {room:?}")));
-        }
-        if !configured_route {
-            return Err(HostError::Invalid(format!(
-                "room {room:?} has no configured satellite"
-            )));
+        // Checked once Niles has said which rooms have a satellite, which
+        // `niles plugin dev` never does.
+        if let Some(routes) = state.house.notification_rooms.get() {
+            let known_from_devices = state
+                .house
+                .registry
+                .list_all()
+                .iter()
+                .any(|device| device.id.room() == &parsed);
+            let configured_route = routes.contains(&parsed);
+            if !known_from_devices && !configured_route {
+                return Err(HostError::Invalid(format!("unknown room {room:?}")));
+            }
+            if !configured_route {
+                return Err(HostError::Unavailable(format!(
+                    "room {room:?} has no configured satellite"
+                )));
+            }
         }
     }
-    let center = state
-        .house
-        .notifications
-        .get()
-        .cloned()
-        .ok_or_else(|| HostError::Unavailable("notifications are not connected".into()))?;
+    let center = state.house.notifications.get().cloned();
     let priority = match priority {
         notify_0_6::Priority::Low => Priority::Routine,
         notify_0_6::Priority::Normal => Priority::Important,

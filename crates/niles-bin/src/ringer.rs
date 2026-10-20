@@ -149,13 +149,15 @@ pub fn spawn_timer_alarms(
                             Some(n) => format!("'{n}' timer finished"),
                             None => "Timer finished".to_string(),
                         };
-                        center
-                            .deliver(
-                                text,
-                                room.map(|r| r.as_str().to_string()),
-                                niles_notifications::Priority::Important,
-                            )
-                            .await;
+                        // Spawned: the next timer must not wait for this
+                        // one to be spoken, nor the bus fill up meanwhile.
+                        let center = center.clone();
+                        let room = room.map(|r| r.as_str().to_string());
+                        tokio::spawn(async move {
+                            center
+                                .deliver(text, room, niles_notifications::Priority::Important)
+                                .await;
+                        });
                         continue;
                     };
                     let (pcm, format) = chime();

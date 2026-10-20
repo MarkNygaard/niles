@@ -330,8 +330,10 @@ notify::say("The washing machine is done.", notify::Priority::Normal, Some("kitc
 ```
 
 - `room` names a room. In interface 0.6, omitting it targets the whole house.
-  A named room must be a known, routed room; an unknown or unrouted room is
-  refused with a named explanation, not silently redirected.
+  A named room must be a known, routed room, never silently redirected: an
+  unknown room is `invalid`, and a known room with no satellite is
+  `unavailable`, each naming the room. Under `niles plugin dev`, which has no
+  satellites, `say` is logged instead of spoken.
 - One or two short sentences, the important part first. It is spoken by a
   text-to-speech voice: write numbers and units as words would be read
   ("twenty degrees"), skip symbols and URLs.
@@ -353,13 +355,14 @@ match notify::status(request)? {
 
 Statuses are `pending`, `completed`, `partial`, `suppressed` and `failed`.
 `completed` means the host transport write completed, not that audio played
-or was heard. A request is accepted before delivery begins and times out after
-20 seconds as `failed`. Each plugin instance can retain at most 32 records,
+or was heard. A request is accepted before delivery begins. A long message is
+spoken to its end: a satellite is given the audio's own length plus 15 seconds,
+and only a satellite that cannot be reached, or does not take the audio in that
+time, makes it `failed`. Each plugin instance can retain at most 32 records,
 including pending requests; terminal records are retained for five minutes.
-Request ownership is isolated to the instance. Teardown cancels outstanding
-work and removes its records. A socket write already in progress may still
-finish after cancellation or timeout; neither those bytes nor already-buffered
-audio can be retracted. A failed result is not proof that no audio was sent.
+Request ownership is isolated to the instance. Teardown forgets its records,
+but what is being spoken is finished, and kept in the household's notification
+history. A failed result is not proof that no audio was sent.
 Quiet-hours handling does not promise replay later.
 
 ### `speech-stream`

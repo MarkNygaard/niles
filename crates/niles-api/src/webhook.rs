@@ -49,8 +49,13 @@ pub async fn handle_linear(
     if !webhook_timestamp_is_current(&payload) {
         return StatusCode::UNAUTHORIZED;
     }
+    // Answered at once: Linear does not wait for it to be spoken, and a
+    // request Linear gave up on would take the announcement with it.
     if let Some(n) = niles_integration_linear::notification_for(&payload) {
-        wh.center.deliver(n.text, None, Priority::Important).await;
+        let center = wh.center.clone();
+        tokio::spawn(async move {
+            center.deliver(n.text, None, Priority::Important).await;
+        });
     }
     StatusCode::OK
 }
@@ -147,8 +152,18 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        let recent = state.linear_webhook.unwrap().center.recent(1);
-        assert_eq!(recent.len(), 1);
+        let center = state.linear_webhook.unwrap().center.clone();
+        let recent = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let recent = center.recent(1);
+                if !recent.is_empty() {
+                    return recent;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the announcement is kept once it has been delivered");
         assert!(recent[0].text.contains("pull request ready"));
     }
 

@@ -99,10 +99,9 @@ impl niles_notifications::NotificationDelivery for WyomingDelivery {
     ) -> niles_notifications::TransportOutcome {
         // On the screen as well, for whoever is watching rather than
         // listening. Extra to the spoken one, so a TV that is off or
-        // does not answer changes nothing.
-        // TV announcements are household-wide; there is no room-scoped TV
-        // target, so showing one would widen an explicit room audience.
-        if room.is_none() && self.tv.shows_announcements() {
+        // does not answer changes nothing. One for a room is shown only
+        // when the TV is in it, so the audience is never widened.
+        if self.tv.shows_announcements() && tv_shows(room, self.tv.room().as_ref()) {
             let tv = self.tv.clone();
             let message = text.to_string();
             tokio::spawn(async move {
@@ -158,77 +157,105 @@ impl WyomingDelivery {
             return false;
         }
 
-        let piper = self.piper.clone();
-        let sender = self.sender.clone();
-        let speakers = self.speakers.clone();
-        let satellites = self.satellites.clone();
-        let text = text.to_string();
         let notification_lease: NotificationLease =
             self.speech_arbiter.reserve_notification(&room_name);
-        bounded_operation(async move {
-            if let Some(peer) = peer {
-                return match crate::speak::speak_back(
-                    &piper,
-                    &sender,
+        if let Some(peer) = peer {
+            let spoken = bounded(
+                DELIVERY_TIMEOUT,
+                crate::speak::speak_back(
+                    &self.piper,
+                    &self.sender,
                     peer,
-                    &text,
-                    &speakers,
-                    &satellites,
+                    text,
+                    &self.speakers,
+                    &self.satellites,
                     false,
-                )
-                .await
-                {
-                    Ok(playing) => {
-                        // Commentary stays out of the room until it has
-                        // played, without the delivery waiting for it.
-                        tokio::spawn(async move {
-                            let _notification_lease = notification_lease;
-                            tokio::time::sleep(playing).await;
-                        });
-                        true
-                    }
-                    Err(e) => {
-                        tracing::warn!("[{peer}] notification speak-back failed: {e:#}");
-                        false
-                    }
-                };
-            }
-            let _notification_lease = notification_lease;
-            let ip = push_to.expect("checked above");
-            match piper.synthesize(&text, None).await {
-                Ok(synthesis) => {
-                    let (pcm, format) = match crate::speak::wav_to_pcm(&synthesis.audio_wav) {
-                        Ok((pcm, format)) => crate::speak::for_satellite(pcm, format),
-                        Err(e) => {
-                            tracing::warn!("could not decode synthesized notification: {e:#}");
-                            return false;
-                        }
-                    };
-                    if let Err(e) = crate::push::speak_to(ip, &pcm, format).await {
-                        tracing::warn!(
-                            "could not reach the satellite at {ip} to say {text:?}: {e:#}"
-                        );
-                    } else {
-                        tracing::info!("pushed {text:?} to the satellite at {ip}");
-                        return true;
-                    }
+                ),
+            )
+            .await;
+            return match spoken {
+                Some(Ok(playing)) => {
+                    // Commentary stays out of the room until it has
+                    // played, without the delivery waiting for it.
+                    tokio::spawn(async move {
+                        let _notification_lease = notification_lease;
+                        tokio::time::sleep(playing).await;
+                    });
+                    true
                 }
-                Err(e) => tracing::warn!("synthesizing a notification failed: {e:#}"),
+                Some(Err(e)) => {
+                    tracing::warn!("[{peer}] notification speak-back failed: {e:#}");
+                    false
+                }
+                None => {
+                    tracing::warn!("notification to {room_name} was not written in time");
+                    false
+                }
+            };
+        }
+        let _notification_lease = notification_lease;
+        let ip = push_to.expect("checked above");
+        let synthesis = match bounded(DELIVERY_TIMEOUT, self.piper.synthesize(text, None)).await {
+            Some(Ok(synthesis)) => synthesis,
+            Some(Err(e)) => {
+                tracing::warn!("synthesizing a notification failed: {e:#}");
+                return false;
             }
-            false
-        })
-        .await
-        .unwrap_or_else(|| {
-            tracing::warn!("notification delivery to {room_name} timed out");
-            false
-        })
+            None => {
+                tracing::warn!("synthesizing the notification for {room_name} timed out");
+                return false;
+            }
+        };
+        let (pcm, format) = match crate::speak::wav_to_pcm(&synthesis.audio_wav) {
+            Ok((pcm, format)) => crate::speak::for_satellite(pcm, format),
+            Err(e) => {
+                tracing::warn!("could not decode synthesized notification: {e:#}");
+                return false;
+            }
+        };
+        let within = push_window(pcm.len(), format);
+        match bounded(within, crate::push::speak_to(ip, &pcm, format)).await {
+            Some(Ok(())) => {
+                tracing::info!("pushed {text:?} to the satellite at {ip}");
+                true
+            }
+            Some(Err(e)) => {
+                tracing::warn!("could not reach the satellite at {ip} to say {text:?}: {e:#}");
+                false
+            }
+            None => {
+                tracing::warn!("pushing the notification to {ip} did not finish in time");
+                false
+            }
+        }
     }
 }
 
+/// How long a satellite may take beyond the audio itself: synthesis,
+/// connecting, writing. Never a cap on how long an announcement may be.
 const DELIVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-async fn bounded_operation<F: std::future::Future>(future: F) -> Option<F::Output> {
-    tokio::time::timeout(DELIVERY_TIMEOUT, future).await.ok()
+/// Whether the TV shows an announcement for `room`: one for the house
+/// always, one for a room only when the TV is in that room.
+fn tv_shows(room: Option<&str>, tv_room: Option<&RoomName>) -> bool {
+    match room {
+        None => true,
+        Some(room) => tv_room.is_some_and(|tv| tv.as_str() == room),
+    }
+}
+
+/// How long pushing `bytes` of audio may take: the satellite takes it
+/// about as fast as it plays it, so a long announcement is given its own
+/// length and the margin.
+fn push_window(bytes: usize, format: niles_wyoming::AudioFormat) -> std::time::Duration {
+    crate::speak::playing_time(bytes, format) + DELIVERY_TIMEOUT
+}
+
+async fn bounded<F: std::future::Future>(
+    limit: std::time::Duration,
+    future: F,
+) -> Option<F::Output> {
+    tokio::time::timeout(limit, future).await.ok()
 }
 
 async fn aggregate_rooms<T, F, Fut>(
@@ -381,13 +408,41 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn bounded_operation_times_out_pending_transport_and_returns_completed_result() {
-        let pending = tokio::spawn(bounded_operation(std::future::pending::<bool>()));
+    async fn bounded_times_out_pending_transport_and_returns_completed_result() {
+        let pending = tokio::spawn(bounded(DELIVERY_TIMEOUT, std::future::pending::<bool>()));
         tokio::time::advance(DELIVERY_TIMEOUT - std::time::Duration::from_millis(1)).await;
         assert!(!pending.is_finished());
         tokio::time::advance(std::time::Duration::from_millis(1)).await;
         assert_eq!(pending.await.unwrap(), None);
-        assert_eq!(bounded_operation(async { true }).await, Some(true));
-        assert_eq!(bounded_operation(async { false }).await, Some(false));
+        assert_eq!(bounded(DELIVERY_TIMEOUT, async { true }).await, Some(true));
+        assert_eq!(
+            bounded(DELIVERY_TIMEOUT, async { false }).await,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn the_tv_shows_house_announcements_and_its_own_rooms_only() {
+        let living = RoomName::parse("living_room").unwrap();
+        assert!(tv_shows(None, Some(&living)));
+        assert!(tv_shows(None, None));
+        assert!(tv_shows(Some("living_room"), Some(&living)));
+        assert!(!tv_shows(Some("kitchen"), Some(&living)));
+        assert!(!tv_shows(Some("kitchen"), None));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_minute_long_announcement_is_pushed_to_the_end() {
+        let format = niles_wyoming::AudioFormat::new(16_000, 16, 1);
+        let minute = 16_000 * 2 * 60;
+        let within = push_window(minute, format);
+        assert!(within > std::time::Duration::from_secs(60), "{within:?}");
+        // A push that lasts as long as the audio plays still completes.
+        let pushed = tokio::spawn(bounded(within, async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            true
+        }));
+        tokio::time::advance(std::time::Duration::from_secs(61)).await;
+        assert_eq!(pushed.await.unwrap(), Some(true));
     }
 }

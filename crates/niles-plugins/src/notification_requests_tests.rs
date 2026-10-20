@@ -67,7 +67,7 @@ async fn maps_each_center_terminal_outcome_and_status_is_nonconsuming() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn quiet_suppression_and_twenty_second_timeout_are_terminal() {
+async fn quiet_suppression_is_terminal_and_a_long_delivery_waits_for_its_end() {
     let delivery = Arc::new(Delivery {
         outcome: TransportOutcome::Completed,
         gate: None,
@@ -106,11 +106,12 @@ async fn quiet_suppression_and_twenty_second_timeout_are_terminal() {
         calls: AtomicUsize::new(0),
     });
     let calls = &delivery.calls;
+    let gate = delivery.gate.clone().unwrap();
     let tracker = tracker(delivery.clone());
     let id = tracker
         .accept(
-            tracker.reserve("timeout", 3).unwrap(),
-            "stuck".into(),
+            tracker.reserve("long", 3).unwrap(),
+            "a minute of news".into(),
             None,
             Priority::Important,
         )
@@ -118,12 +119,14 @@ async fn quiet_suppression_and_twenty_second_timeout_are_terminal() {
     while calls.load(Ordering::SeqCst) == 0 {
         tokio::task::yield_now().await;
     }
+    // A minute of speech is still being spoken, not failed.
+    tokio::time::advance(Duration::from_secs(60)).await;
     tokio::task::yield_now().await;
-    tokio::time::advance(DELIVERY_TIMEOUT).await;
-    tokio::task::yield_now().await;
+    assert_eq!(tracker.status("long", 3, id), Ok(RequestStatus::Pending));
+    gate.add_permits(1);
     assert_eq!(
-        wait_for(&tracker, "timeout", 3, id).await,
-        RequestStatus::Failed
+        wait_for(&tracker, "long", 3, id).await,
+        RequestStatus::Completed
     );
 }
 
@@ -207,7 +210,7 @@ async fn ownership_generation_unknown_ids_and_expiry_are_denied() {
 }
 
 #[tokio::test]
-async fn teardown_cancels_work_rejects_old_generation_and_never_resurrects_status() {
+async fn teardown_forgets_requests_but_lets_the_speech_finish() {
     let delivery = Arc::new(Delivery {
         outcome: TransportOutcome::Completed,
         gate: Some(Arc::new(tokio::sync::Semaphore::new(0))),
@@ -215,7 +218,8 @@ async fn teardown_cancels_work_rejects_old_generation_and_never_resurrects_statu
     });
     let gate = delivery.gate.clone().unwrap();
     let calls = &delivery.calls;
-    let tracker = tracker(delivery.clone());
+    let center = Arc::new(NotificationCenter::new(64).with_delivery(delivery.clone()));
+    let tracker = NotificationRequests::new(center.clone(), Handle::current());
     let reservation = tracker.reserve("owner", 20).unwrap();
     let id = tracker
         .accept(reservation, "pending".into(), None, Priority::Important)
@@ -231,7 +235,18 @@ async fn teardown_cancels_work_rejects_old_generation_and_never_resurrects_statu
         Some(TrackerError::Closed)
     );
     gate.add_permits(1);
-    tokio::task::yield_now().await;
+    let kept = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let recent = center.recent(1);
+            if !recent.is_empty() {
+                return recent;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the announcement is still spoken and kept");
+    assert_eq!(kept[0].text, "pending");
     assert_eq!(tracker.status("owner", 20, id), Err(TrackerError::Unknown));
     let newer = tracker
         .accept(
