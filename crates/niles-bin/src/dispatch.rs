@@ -183,15 +183,15 @@ pub(crate) async fn handle_transcript(
     // A question asked aloud is answered at the satellite that asked it,
     // by the voice that asked: or, where nobody is recognised, by whoever
     // is there.
-    let (person, slug) = match speaker {
-        SpeakerContext::Identified { known, .. } => (
-            chat_log::person(known.slug.as_deref(), ""),
-            known.slug.clone(),
-        ),
-        _ => (format!("satellite:{peer}"), None),
+    let slug = match speaker {
+        SpeakerContext::Identified { known, .. } => known.slug.clone(),
+        _ => None,
     };
     let asker = approvals::Asker {
-        person,
+        person: match &slug {
+            Some(slug) => chat_log::person(Some(slug), ""),
+            None => format!("satellite:{peer}"),
+        },
         slug: slug.clone(),
         satellite: Some(peer),
         conversation: None,
