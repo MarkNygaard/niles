@@ -41,6 +41,16 @@ const BUTTONS = { approve: "Approve", deny: "Deny", review: "Review" };
 const ANSWERING = "Answering…";
 const COULD_NOT = "Couldn't answer. Open Niles to answer it.";
 
+// Browser notification reads and writes are asynchronous. Keep the
+// fallback's check and replacement together so a final push cannot be
+// overwritten using a snapshot of the earlier "Answering…" notification.
+let displaying = Promise.resolve();
+function displayNext(operation) {
+  const next = displaying.then(operation);
+  displaying = next.catch(() => {});
+  return next;
+}
+
 // A push is always shown, whatever it holds. Subscribing promised the
 // browser as much (`userVisibleOnly`), and Safari takes the
 // subscription away from a worker that receives a push and shows
@@ -52,7 +62,7 @@ self.addEventListener("push", (event) => {
   } catch {
     message = { body: event.data ? event.data.text() : "" };
   }
-  event.waitUntil(show(message));
+  event.waitUntil(displayNext(() => show(message)));
 });
 
 function show(message) {
@@ -145,7 +155,7 @@ async function answer(notification, approval, decision, url) {
       silent: true,
       data: { url, ...more },
     });
-  await replace(ANSWERING, { answering: true });
+  await displayNext(() => replace(ANSWERING, { answering: true }));
   let said = COULD_NOT;
   try {
     const response = await fetch(`/me/approvals/${encodeURIComponent(approval)}`, {
@@ -162,9 +172,11 @@ async function answer(notification, approval, decision, url) {
   }
   // Niles's own push saying what became of it can land while the
   // answer is on its way. It knows more than the answer does.
-  if (tag) {
-    const shown = await self.registration.getNotifications({ tag });
-    if (shown.some((n) => !n.data?.answering)) return;
-  }
-  await replace(said, {});
+  await displayNext(async () => {
+    if (tag) {
+      const shown = await self.registration.getNotifications({ tag });
+      if (shown.some((n) => !n.data?.answering)) return;
+    }
+    await replace(said, {});
+  });
 }

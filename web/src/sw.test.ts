@@ -59,6 +59,9 @@ interface Worker {
   fetchMock: FetchMock;
   windows: WindowClient[];
   openWindow: (url: string) => Promise<void>;
+  registration: {
+    getNotifications: (options: { tag?: string }) => Promise<Shown[]>;
+  };
 }
 
 function pushEvent(message: PushMessage | string) {
@@ -120,7 +123,7 @@ function worker(): Worker {
     skipWaiting: () => {},
   };
   new Function("self", "fetch", SOURCE)(self, fetchMock);
-  return { listeners, shown, showing, fetchMock, windows, openWindow };
+  return { listeners, shown, showing, fetchMock, windows, openWindow, registration };
 }
 
 async function fire(w: Worker, type: string, event: Record<string, unknown>): Promise<void> {
@@ -380,6 +383,27 @@ describe("the service worker's notificationclick", () => {
     expect(bodies).toContain("Allowed. Done.");
     expect(bodies.lastIndexOf("Allowed. Done.")).toBe(bodies.length - 1);
     expect(bodies).not.toContain("Allowed.");
+  });
+
+  it("keeps the final outcome when it arrives during the fallback notification check", async () => {
+    const w = worker();
+    const notification = waitingShown(w, "approval-a1");
+    const outcome = "Allowed, but it didn't work: the key was refused";
+    let pushed: Promise<void> | undefined;
+    vi.spyOn(w.registration, "getNotifications").mockImplementationOnce(async () => {
+      const snapshot = [w.showing.get("approval-a1")!];
+      pushed = fire(w, "push", pushEvent({
+        title: notification.title,
+        body: outcome,
+        tag: "approval-a1",
+        quiet: true,
+        approval: null,
+      }));
+      return snapshot;
+    });
+    await fire(w, "notificationclick", { notification, action: "approve" });
+    await pushed;
+    expect(lastFor(w, "approval-a1").body).toBe(outcome);
   });
 
   it("review opens the card and answers nothing", async () => {
