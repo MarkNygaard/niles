@@ -1,6 +1,7 @@
 //! The notification centre and its delivery to the satellites.
 
 use crate::satellites::SatelliteRegistry;
+use crate::speech_stream::{NotificationLease, RoomArbiter};
 use crate::wiring::stores::database;
 use crate::{speakers, tv};
 use niles_config::Config;
@@ -84,6 +85,7 @@ pub(crate) struct WyomingDelivery {
     pub(crate) satellites: Arc<SatelliteRegistry>,
     pub(crate) peer_index: Arc<Mutex<HashMap<RoomName, SocketAddr>>>,
     pub(crate) tv: Arc<tv::TvControl>,
+    pub(crate) speech_arbiter: Arc<RoomArbiter>,
 }
 
 impl niles_notifications::NotificationDelivery for WyomingDelivery {
@@ -160,9 +162,12 @@ impl WyomingDelivery {
         let speakers = self.speakers.clone();
         let satellites = self.satellites.clone();
         let text = text.to_string();
+        let notification_lease: NotificationLease =
+            self.speech_arbiter.reserve_notification(room_name);
         tokio::spawn(async move {
+            let _notification_lease = notification_lease;
             if let Some(peer) = peer {
-                if let Err(e) = crate::speak::speak_back(
+                match crate::speak::speak_back(
                     &piper,
                     &sender,
                     peer,
@@ -173,7 +178,9 @@ impl WyomingDelivery {
                 )
                 .await
                 {
-                    tracing::warn!("[{peer}] notification speak-back failed: {e:#}");
+                    // Commentary stays out of the room until it has played.
+                    Ok(playing) => tokio::time::sleep(playing).await,
+                    Err(e) => tracing::warn!("[{peer}] notification speak-back failed: {e:#}"),
                 }
                 return;
             }

@@ -38,6 +38,7 @@ mod output;
 pub mod permissions;
 pub mod policy;
 pub mod runtime;
+pub mod speech_stream;
 pub mod store;
 pub mod tools;
 pub mod ui;

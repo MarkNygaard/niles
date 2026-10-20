@@ -8,6 +8,7 @@
 
 mod error;
 mod piper;
+pub mod speech_session;
 
 pub use error::{Error, Result};
 pub use piper::{PiperClient, PiperConfig, Synthesis};

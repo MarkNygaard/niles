@@ -109,6 +109,7 @@ pub struct House {
     pub(crate) tools: DynamicTools,
     pub(crate) store: Arc<dyn PluginStore>,
     pub(crate) notifications: OnceLock<Arc<NotificationCenter>>,
+    pub(crate) speech_stream: OnceLock<Arc<dyn crate::speech_stream::SpeechStreamHost>>,
     pub(crate) settings: SettingsFn,
     pub(crate) secrets: SecretsFn,
     pub(crate) mqtt_watch: Option<MqttWatch>,
@@ -133,6 +134,7 @@ impl House {
             tools: DynamicTools::new(),
             store,
             notifications: OnceLock::new(),
+            speech_stream: OnceLock::new(),
             settings: Arc::new(|_| toml::Table::new()),
             secrets: Arc::new(|_, _| None),
             mqtt_watch: None,
@@ -372,6 +374,13 @@ impl Runtime {
         });
         spawn_forwarder(Arc::downgrade(&inner));
         Ok(Self { inner })
+    }
+
+    pub fn connect_speech_stream(
+        &self,
+        speech_stream: Arc<dyn crate::speech_stream::SpeechStreamHost>,
+    ) {
+        let _ = self.inner.house.speech_stream.set(speech_stream);
     }
 
     /// Let plugins speak, once the notification centre exists.

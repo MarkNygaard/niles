@@ -392,9 +392,9 @@ pub async fn speak_back(
     satellites: &SatelliteRegistry,
     // A question: ask the satellite to listen for the answer afterwards.
     listen: bool,
-) -> Result<()> {
+) -> Result<Duration> {
     let duck_handle = try_duck(speakers, satellites, peer).await;
-    let result: Result<()> = async {
+    let result: Result<Duration> = async {
         let synth = piper.synthesize(text, None).await?;
         let (pcm, format) = wav_to_pcm(&synth.audio_wav)?;
         let (pcm, format) = for_satellite(pcm, format);
@@ -402,7 +402,7 @@ pub async fn speak_back(
         sender
             .send_audio_then(peer, &quieted, format, listen)
             .await?;
-        Ok(())
+        Ok(playing_time(quieted.len(), format))
     }
     .await;
 
@@ -412,6 +412,18 @@ pub async fn speak_back(
         }
     }
     result
+}
+
+/// How long `bytes` of PCM in `format` take to play. `speak_back` returns
+/// once the audio is written, well before the satellite has played it.
+pub(crate) fn playing_time(bytes: usize, format: AudioFormat) -> Duration {
+    let bytes_per_second = u64::from(format.sample_rate_hz)
+        * u64::from(format.bits_per_sample / 8)
+        * u64::from(format.channels);
+    if bytes_per_second == 0 {
+        return Duration::ZERO;
+    }
+    Duration::from_secs_f64(bytes as f64 / bytes_per_second as f64)
 }
 
 #[cfg(test)]

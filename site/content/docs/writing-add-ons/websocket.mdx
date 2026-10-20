@@ -3,7 +3,7 @@ title: "WebSockets"
 description: "A connection Niles keeps open to an endpoint the manifest names: connecting, sending, the callbacks, and the limits."
 ---
 
-> New in interface 0.4, planned for Niles 0.5.0. Interface 0.4 adds an outbound
+> Interface 0.4, supported by Niles 0.5.0. Interface 0.4 adds an outbound
 > WebSocket client managed by Niles. The plugin names a manifest grant, supplies a URL and optional handshake headers, then receives asynchronous status and message callbacks. The [WIT](https://github.com/MarkNygaard/niles/blob/main/schemas/niles-integration.wit) and the implementation in [`crates/niles-plugins/src/websocket.rs`](https://github.com/MarkNygaard/niles/blob/main/crates/niles-plugins/src/websocket.rs) are authoritative.
 
 ## Declare the endpoint
@@ -60,4 +60,4 @@ Handshake HTTP 401/403 responses are terminal authentication failures. HTTP 408/
 
 ## Compatibility
 
-The manifest uses `interface = "0.4"`; build against the 0.4 WIT package and set `min_niles = "0.5.0"`. WebSocket support is planned for Niles 0.5.0; it is not available in released Niles 0.4.0. Niles continues to run the frozen 0.1, 0.2 and 0.3 worlds; those worlds do not import WebSockets. Do not copy the current schema while claiming an older interface. See [interface versions](/docs/writing-add-ons/publishing#interface-versions).
+The manifest uses `interface = "0.4"`; build against the frozen 0.4 WIT package and set `min_niles = "0.5.0"`. WebSocket support is available in Niles 0.5.0. Niles also runs frozen 0.1, 0.2 and 0.3 worlds; those worlds do not import WebSockets. Do not copy the current schema while claiming an older interface. See [interface versions](/docs/writing-add-ons/publishing#interface-versions).

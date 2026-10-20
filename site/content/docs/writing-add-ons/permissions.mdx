@@ -26,6 +26,40 @@ announcements on in its settings, still asks for `notify`, and the approval
 screen shows "Speak through your satellites" even to a household that will
 leave announcements off. Say so in the setting's `help`, and in your README.
 
+## Frequent spoken commentary
+
+Interface `0.5` adds `speech_stream = true`, separately from `notify`.
+The approval screen says: "Speak frequent commentary in a selected room when
+you explicitly enable it". Adding this permission appears in the permission
+changes for an update; notification permission does not grant it.
+
+The add-on must also declare a boolean setting named `speech_stream_enabled`
+with no default or `default = false`, and a room setting referenced by
+`speech_stream = { room = "<setting-key>" }`. The household must explicitly
+enable speech and choose the room. `open(room)` rejects any room other than the
+current saved room setting.
+Saving settings replaces the plugin instance and cancels its outstanding speech.
+
+The `speech-stream` host interface reserves one room-bound session per add-on.
+`open(room)` reserves a handle, not a guarantee that the room can play audio.
+`submit(session, text)` returns a request id without waiting for synthesis;
+`poll(session)` consumes ordered terminal results. Text must be nonblank and
+at most 120 characters. At most 32 uncollected requests are retained per session;
+excess submissions return `limit`. Poll regularly rather than accumulating results.
+`close(session)` cancels pending work; keep polling cancellation results before
+opening a replacement. Instance teardown discards results no guest can consume.
+
+Results distinguish `delivered`, `busy`, `quiet`, `expired`, `failed`,
+`cancelled`, `replaced`, `rate-limited` and `no-satellite`. Acceptance is not delivery:
+`delivered` means the host's transport write completed, never proof of audibility.
+Commentary is separate from notification quotas, chimes, history and priority.
+
+Interactive voice has priority. The host rejects commentary during an active
+conversation and cancels in-flight synthesis/delivery when voice starts.
+**Preemption is best effort:** audio already buffered by the satellite cannot
+be recalled by the current protocol. This is not guaranteed immediate silence
+on wake, and a successful write is not a playback-complete acknowledgement.
+
 ## What every plugin gets, and what none does
 
 Without asking, every plugin can log, read its own settings and secrets, keep

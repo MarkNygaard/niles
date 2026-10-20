@@ -16,6 +16,11 @@ use std::time::{Duration, Instant};
 /// satellite gives up on its own after six seconds of nobody talking.
 const WAITING: Duration = Duration::from_secs(60);
 
+/// How long the satellite listens for an answer once a question has been
+/// played: its six seconds of nobody talking, and a second for the answer's
+/// first audio to arrive. An answer then holds the room as a turn of its own.
+pub(crate) const ANSWER_WINDOW: Duration = Duration::from_secs(7);
+
 /// Questions answered in a row before the wake word is needed again: a
 /// conversation, not an open microphone.
 pub(crate) const MAX_ROUNDS: u8 = 3;
