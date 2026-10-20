@@ -180,13 +180,15 @@ pub(crate) async fn handle_transcript(
 ) -> Option<String> {
     let started = Instant::now();
     let greeting = morning_greeting(ctx, speaker, voice);
-    // A question asked aloud is answered at the satellite that asked it,
-    // by the voice that asked: or, where nobody is recognised, by whoever
-    // is there.
+    // The profile tools write to whoever is speaking, and nobody else:
+    // the voice decides that, not the model.
     let slug = match speaker {
         SpeakerContext::Identified { known, .. } => known.slug.clone(),
         _ => None,
     };
+    // A question asked aloud is answered at the satellite that asked it,
+    // by the voice that asked: or, where nobody is recognised, by whoever
+    // is there.
     let asker = approvals::Asker {
         person: match &slug {
             Some(slug) => chat_log::person(Some(slug), ""),
