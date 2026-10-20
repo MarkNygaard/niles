@@ -95,7 +95,11 @@ fn callbacks(output: Arc<Output>) -> SpeechOutput<(String, String)> {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .push((room, text));
-            if output.fail { Err(()) } else { Ok(()) }
+            if output.fail {
+                Err(niles_tts::speech_session::SpeechOutputError::Failed)
+            } else {
+                Ok(())
+            }
         }
     })
 }
@@ -141,6 +145,26 @@ async fn statuses_until(
         tokio::task::yield_now().await;
     }
     statuses
+}
+
+#[tokio::test]
+async fn a_close_keeps_the_outcome_of_what_already_finished() {
+    let results = Mutex::new(VecDeque::from([
+        (1, SpeechOutcome::Pending),
+        (2, SpeechOutcome::Pending),
+    ]));
+    let mut completions = tokio::task::JoinSet::new();
+    completions.spawn(async { (1, SpeechOutcome::Delivered) });
+    completions.spawn(std::future::pending::<(u64, SpeechOutcome)>());
+    while completions.len() == 2 && results.lock().unwrap()[0].1 == SpeechOutcome::Pending {
+        tokio::task::yield_now().await;
+        keep_finished(&mut completions, &results);
+    }
+    completions.abort_all();
+    assert_eq!(
+        *results.lock().unwrap(),
+        [(1, SpeechOutcome::Delivered), (2, SpeechOutcome::Pending)]
+    );
 }
 
 #[tokio::test]
@@ -593,8 +617,7 @@ async fn live_policy_changes_are_terminal_and_rejected_text_never_reaches_output
         for (eligibility, expected) in [
             (Eligibility::Busy, SpeechOutcome::Busy),
             (Eligibility::QuietHours, SpeechOutcome::Quiet),
-            (Eligibility::Unavailable, SpeechOutcome::Unavailable),
-            (Eligibility::Disabled, SpeechOutcome::Disabled),
+            (Eligibility::NoSatellite, SpeechOutcome::NoSatellite),
         ] {
             let policy = LivePolicy::eligible();
             let delivery_check_started = policy.delivery_check_started.clone();

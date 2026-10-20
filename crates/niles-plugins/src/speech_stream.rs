@@ -44,9 +44,6 @@ pub enum SpeechOutcome {
     Delivered,
     Busy,
     Quiet,
-    Disabled,
-    Unavailable,
-    Overload,
     Expired,
     Failed,
     Cancelled,
@@ -57,11 +54,7 @@ pub enum SpeechOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SpeechError {
-    Disabled,
     Busy,
-    QuietHours,
-
-    Unavailable,
     NoSatellite(RoomName),
     Limit,
     Invalid,
@@ -122,15 +115,24 @@ fn push_status(results: &Mutex<VecDeque<(u64, SpeechOutcome)>>, item: (u64, Spee
         existing.1 = item.1;
     }
 }
+/// What already finished keeps its outcome when a session closes: an
+/// utterance spoken just before the close is `delivered`, not `cancelled`.
+fn keep_finished(
+    completions: &mut tokio::task::JoinSet<(u64, SpeechOutcome)>,
+    results: &Mutex<VecDeque<(u64, SpeechOutcome)>>,
+) {
+    while let Some(finished) = completions.try_join_next() {
+        if let Ok(item) = finished {
+            push_status(results, item);
+        }
+    }
+}
 fn map_rejection(reason: Rejection) -> SpeechOutcome {
     match reason {
         Rejection::Busy => SpeechOutcome::Busy,
         Rejection::QuietHours => SpeechOutcome::Quiet,
-        Rejection::Disabled => SpeechOutcome::Disabled,
-        Rejection::Unavailable => SpeechOutcome::Unavailable,
         Rejection::NoSatellite => SpeechOutcome::NoSatellite,
         Rejection::RateLimited => SpeechOutcome::RateLimited,
-        Rejection::QueueFull => SpeechOutcome::Overload,
         Rejection::Closed => SpeechOutcome::Cancelled,
         _ => SpeechOutcome::Failed,
     }
@@ -154,12 +156,7 @@ fn map_session_outcome(error: SessionError) -> SpeechOutcome {
 }
 fn map_error(error: SpeechError) -> HostError {
     match error {
-        SpeechError::Disabled => HostError::Unavailable("speech stream is disabled".into()),
         SpeechError::Busy => HostError::Unavailable("speech output is busy".into()),
-        SpeechError::QuietHours => {
-            HostError::Unavailable("speech is suppressed during quiet hours".into())
-        }
-        SpeechError::Unavailable => HostError::Unavailable("speech output is unavailable".into()),
         SpeechError::NoSatellite(room) => {
             HostError::Unavailable(format!("no satellite is configured for room {room}"))
         }
@@ -172,26 +169,6 @@ fn map_error(error: SpeechError) -> HostError {
     }
 }
 impl<Prepared: Send + 'static> SessionSpeechHost<Prepared> {
-    fn map_session(error: SessionError) -> SpeechError {
-        match error {
-            SessionError::OwnerHasSession => SpeechError::Busy,
-            SessionError::Closed => SpeechError::Closed,
-            SessionError::InvalidOwner => SpeechError::Invalid,
-            SessionError::Ineligible(reason) => Self::map_rejection(reason),
-        }
-    }
-    fn map_rejection(reason: Rejection) -> SpeechError {
-        match reason {
-            Rejection::Busy => SpeechError::Busy,
-            Rejection::QuietHours => SpeechError::QuietHours,
-            Rejection::Disabled => SpeechError::Disabled,
-            Rejection::QueueFull => SpeechError::Limit,
-            Rejection::Closed => SpeechError::Closed,
-            Rejection::InvalidText => SpeechError::Invalid,
-            Rejection::RateLimited => SpeechError::Limit,
-            _ => SpeechError::Unavailable,
-        }
-    }
     fn owned_slot(&self, owner: &str, session: u32) -> Result<Arc<SessionSlot>, SpeechError> {
         self.sessions
             .lock()
@@ -221,8 +198,8 @@ impl<Prepared: Send + 'static> SpeechStreamHost for SessionSpeechHost<Prepared> 
         if !(self.route_is_configured)(&room) {
             return Err(SpeechError::NoSatellite(room));
         }
-        let owner_id =
-            PluginOwner::new(format!("{}:{owner}", self.owner_token)).map_err(Self::map_session)?;
+        let owner_id = PluginOwner::new(format!("{}:{owner}", self.owner_token))
+            .map_err(|_| SpeechError::Invalid)?;
         let raw;
         let (tx, mut rx) = tokio::sync::mpsc::channel(MAX_RETAINED_RESULTS);
         let results = Arc::new(Mutex::new(VecDeque::new()));
@@ -305,6 +282,7 @@ impl<Prepared: Send + 'static> SpeechStreamHost for SessionSpeechHost<Prepared> 
                 _ = cancelled.changed() => {},
                 () = work => {},
             }
+            keep_finished(&mut completions, &results);
             completions.abort_all();
             if let Some(id) = id {
                 manager.close(id).await;
@@ -490,10 +468,11 @@ impl speech_stream::Host for HostState {
     }
     fn submit(&mut self, session: u32, text: String) -> Result<u64, HostError> {
         self.speech_enabled()?;
-        if text.trim().is_empty() || text.chars().count() > 120 {
-            return Err(HostError::Invalid(
-                "speech text must contain 1..=120 characters".into(),
-            ));
+        let most = niles_tts::speech_session::MAX_UTTERANCE_CHARS;
+        if text.trim().is_empty() || text.chars().count() > most {
+            return Err(HostError::Invalid(format!(
+                "speech text must contain 1..={most} characters"
+            )));
         }
         self.house
             .speech_stream
@@ -523,9 +502,6 @@ impl speech_stream::Host for HostState {
                     SpeechOutcome::Delivered => Outcome::Delivered,
                     SpeechOutcome::Busy => Outcome::Busy,
                     SpeechOutcome::Quiet => Outcome::Quiet,
-                    SpeechOutcome::Disabled => Outcome::Disabled,
-                    SpeechOutcome::Unavailable => Outcome::Unavailable,
-                    SpeechOutcome::Overload => Outcome::Overload,
                     SpeechOutcome::Expired => Outcome::Expired,
                     SpeechOutcome::Failed => Outcome::Failed,
                     SpeechOutcome::Cancelled => Outcome::Cancelled,

@@ -50,8 +50,8 @@ excess submissions return `limit`. Poll regularly rather than accumulating resul
 `close(session)` cancels pending work; keep polling cancellation results before
 opening a replacement. Instance teardown discards results no guest can consume.
 
-Results distinguish `delivered`, `busy`, `quiet`, `disabled`, `unavailable`,
-`overload`, `expired`, `failed`, and `cancelled`. Acceptance is not delivery:
+Results distinguish `delivered`, `busy`, `quiet`, `expired`, `failed`,
+`cancelled`, `replaced`, `rate-limited` and `no-satellite`. Acceptance is not delivery:
 `delivered` means the host's transport write completed, never proof of audibility.
 Commentary is separate from notification quotas, chimes, history and priority.
 

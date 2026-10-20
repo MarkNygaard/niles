@@ -12,13 +12,14 @@ use niles_core::RoomName;
 use niles_notifications::QuietHoursConfig;
 use niles_tts::{
     PiperClient,
-    speech_session::{Eligibility, PluginOwner},
+    speech_session::{Eligibility, PluginOwner, SpeechOutputError},
 };
 use std::{
     collections::HashMap,
     future::Future,
     net::SocketAddr,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 use tokio::sync::watch;
 
@@ -127,6 +128,18 @@ impl RoomArbiter {
     }
 }
 
+/// How long a voice turn keeps its room once the reply has been written:
+/// while the satellite plays it, and after a question, while it listens for
+/// the answer. Commentary waits that long; the music and the turn's timing
+/// do not.
+pub(crate) fn conversation_hold(playing: Duration, asked: bool) -> Duration {
+    if asked {
+        playing + crate::follow_up::ANSWER_WINDOW
+    } else {
+        playing
+    }
+}
+
 /// Spawn work with its voice reservation owned by the task that performs it.
 pub(crate) fn spawn_conversation_task<T: Send + 'static>(
     conversation: Option<ConversationLease>,
@@ -221,21 +234,30 @@ impl CommentaryOutput {
         &self,
         room: &RoomName,
         text: &str,
-    ) -> Result<PreparedCommentary, ()> {
-        let mut lease = self.arbiter.try_start_commentary(room)?;
+    ) -> Result<PreparedCommentary, SpeechOutputError> {
+        let mut lease = self
+            .arbiter
+            .try_start_commentary(room)
+            .map_err(|()| SpeechOutputError::Busy)?;
         let Some(ip) = self.satellites.ip_for(room) else {
-            return Err(());
+            return Err(SpeechOutputError::Failed);
         };
         let work = async {
-            let synthesis = self.piper.synthesize(text, None).await.map_err(|_| ())?;
-            let (pcm, format) = wav_to_pcm(&synthesis.audio_wav).map_err(|_| ())?;
+            let synthesis =
+                (self.piper.synthesize(text, None).await).map_err(|_| SpeechOutputError::Failed)?;
+            let (pcm, format) =
+                wav_to_pcm(&synthesis.audio_wav).map_err(|_| SpeechOutputError::Failed)?;
             let (pcm, format) = for_satellite(pcm, format);
             let peer = SocketAddr::new(ip, 0);
             let volume = self.satellites.volume_for(peer);
             let pcm = at_volume(&pcm, format.bits_per_sample, volume).into_owned();
-            Ok::<_, ()>((pcm, format))
+            Ok((pcm, format))
         };
-        let (pcm, format) = tokio::select! { biased; _ = lease.cancelled() => return Err(()), result = work => result }?;
+        let (pcm, format) = tokio::select! {
+            biased;
+            _ = lease.cancelled() => return Err(SpeechOutputError::Cancelled),
+            result = work => result,
+        }?;
         Ok(PreparedCommentary {
             ip,
             pcm,
@@ -244,9 +266,16 @@ impl CommentaryOutput {
         })
     }
 
-    pub(crate) async fn deliver(&self, mut prepared: PreparedCommentary) -> Result<(), ()> {
+    pub(crate) async fn deliver(
+        &self,
+        mut prepared: PreparedCommentary,
+    ) -> Result<(), SpeechOutputError> {
         let work = crate::push::speak_to(prepared.ip, &prepared.pcm, prepared.format);
-        tokio::select! { biased; _ = prepared.lease.cancelled() => Err(()), result = work => result.map_err(|_| ()) }
+        tokio::select! {
+            biased;
+            _ = prepared.lease.cancelled() => Err(SpeechOutputError::Cancelled),
+            result = work => result.map_err(|_| SpeechOutputError::Failed),
+        }
     }
 }
 
@@ -425,10 +454,7 @@ mod tests {
         assert!(arbiter.try_start_commentary(&room).is_ok());
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn commentary_stays_busy_through_playback_and_satellite_follow_up_window() {
-        let arbiter = Arc::new(RoomArbiter::default());
-        let room = RoomName::parse("office").unwrap();
+    fn office() -> (Arc<RoomArbiter>, Arc<SatelliteRegistry>, RoomName) {
         let mut config = niles_config::SatellitesConfig::default();
         config.satellites.insert(
             "office".into(),
@@ -438,64 +464,82 @@ mod tests {
                 volume: 100,
             },
         );
-        let satellites = Arc::new(SatelliteRegistry::from_config(&config));
+        (
+            Arc::new(RoomArbiter::default()),
+            Arc::new(SatelliteRegistry::from_config(&config)),
+            RoomName::parse("office").unwrap(),
+        )
+    }
+
+    /// A voice turn as the dispatch task ends it: the reply written, then
+    /// the room held for `conversation_hold`.
+    async fn after_a_reply(playing: Duration, asked: bool) {
+        let (arbiter, satellites, room) = office();
         let policy =
             CommentaryPolicy::new(arbiter.clone(), satellites, QuietHoursConfig::default());
         let owner = PluginOwner::new("synthetic-test").unwrap();
-        let commentary = arbiter.try_start_commentary(&room).unwrap();
-        assert_eq!(policy.check(&owner, &room).await, Eligibility::Eligible);
-        assert!(arbiter.try_start_commentary(&room).is_err());
-        drop(commentary);
         let conversation = arbiter.enter_conversation(room.clone());
-        let started = Arc::new(Notify::new());
-        let task_started = started.clone();
-        let playback_done = Arc::new(Notify::new());
-        let playback_finished = playback_done.clone();
-        let pcm = vec![0; 48_000 * 2 * 6];
         let task = spawn_conversation_task(Some(conversation), async move {
-            crate::speak::send_audio_and_wait(
-                &pcm,
-                niles_wyoming::AudioFormat::new(48_000, 16, 1),
-                true,
-                async {
-                    task_started.notify_one();
-                    Ok::<(), ()>(())
-                },
-            )
-            .await
-            .unwrap();
-            playback_finished.notify_one();
-            tokio::time::sleep(crate::follow_up::WAITING).await;
+            tokio::time::sleep(conversation_hold(playing, asked)).await;
         });
-        started.notified().await;
+        tokio::task::yield_now().await;
+        let held = conversation_hold(playing, asked);
+        tokio::time::advance(held - Duration::from_millis(1)).await;
         assert_eq!(policy.check(&owner, &room).await, Eligibility::Busy);
-        tokio::time::advance(std::time::Duration::from_millis(5_999)).await;
-        assert_eq!(policy.check(&owner, &room).await, Eligibility::Busy);
-        tokio::time::advance(std::time::Duration::from_millis(1)).await;
-        playback_done.notified().await;
-        assert_eq!(policy.check(&owner, &room).await, Eligibility::Busy);
-        tokio::time::advance(crate::follow_up::WAITING - std::time::Duration::from_millis(1)).await;
-        assert_eq!(policy.check(&owner, &room).await, Eligibility::Busy);
-        tokio::time::advance(std::time::Duration::from_millis(1)).await;
+        tokio::time::advance(Duration::from_millis(1)).await;
         task.await.unwrap();
         assert_eq!(policy.check(&owner, &room).await, Eligibility::Eligible);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn failed_speak_back_does_not_retain_the_conversation_lease() {
-        let arbiter = Arc::new(RoomArbiter::default());
-        let room = RoomName::parse("office").unwrap();
-        let conversation = arbiter.enter_conversation(room.clone());
-        let task = spawn_conversation_task(Some(conversation), async {
-            crate::speak::send_audio_and_wait(
-                &[0; 48_000 * 2 * 6],
-                niles_wyoming::AudioFormat::new(48_000, 16, 1),
-                true,
-                async { Err::<(), _>(()) },
-            )
-            .await
-        });
-        assert_eq!(task.await.unwrap(), Err(()));
+    async fn commentary_waits_out_the_reply_as_it_plays() {
+        after_a_reply(Duration::from_secs(6), false).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn after_a_question_commentary_also_waits_out_the_answer_window_and_no_more() {
+        after_a_reply(Duration::from_secs(6), true).await;
+        assert_eq!(
+            conversation_hold(Duration::from_secs(6), true),
+            Duration::from_secs(6) + crate::follow_up::ANSWER_WINDOW
+        );
+        assert!(crate::follow_up::ANSWER_WINDOW < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_reply_that_never_played_holds_nothing() {
+        assert_eq!(conversation_hold(Duration::ZERO, false), Duration::ZERO);
+    }
+
+    fn output(arbiter: Arc<RoomArbiter>, satellites: Arc<SatelliteRegistry>) -> CommentaryOutput {
+        let piper = PiperClient::new(niles_tts::PiperConfig {
+            base_url: "http://127.0.0.1:1".into(),
+            default_voice: "en_GB-alan-medium".into(),
+            request_timeout: Duration::from_secs(1),
+        })
+        .unwrap();
+        CommentaryOutput::new(Arc::new(piper), satellites, arbiter)
+    }
+
+    #[tokio::test]
+    async fn commentary_into_a_room_already_speaking_is_busy_not_failed() {
+        let (arbiter, satellites, room) = office();
+        let _other = arbiter.try_start_commentary(&room).unwrap();
+        let output = output(arbiter, satellites);
+        assert!(matches!(
+            output.prepare(&room, "twenty").await,
+            Err(SpeechOutputError::Busy)
+        ));
+    }
+
+    #[tokio::test]
+    async fn synthesis_refusing_the_text_is_failed() {
+        let (arbiter, satellites, room) = office();
+        let output = output(arbiter.clone(), satellites);
+        assert!(matches!(
+            output.prepare(&room, "   ").await,
+            Err(SpeechOutputError::Failed)
+        ));
         assert!(arbiter.try_start_commentary(&room).is_ok());
     }
 
@@ -534,13 +578,10 @@ mod tests {
                 output.prepare(&other, "text").await?;
                 output.deliver(()).await
             };
-            tokio::select! { biased; _ = lease.cancelled() => Err(niles_tts::speech_session::SpeechOutputError), result = work => result }
+            tokio::select! { biased; _ = lease.cancelled() => Err(SpeechOutputError::Cancelled), result = work => result }
         });
         started.notified().await;
         let _voice = arbiter.enter_conversation(room);
-        assert_eq!(
-            task.await.unwrap(),
-            Err(niles_tts::speech_session::SpeechOutputError)
-        );
+        assert_eq!(task.await.unwrap(), Err(SpeechOutputError::Cancelled));
     }
 }

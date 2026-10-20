@@ -19,7 +19,6 @@ use tokio::{
     task::JoinHandle,
 };
 
-pub const MAX_PENDING_UTTERANCES: usize = 1;
 pub const MAX_UTTERANCE_CHARS: usize = 120;
 pub const QUEUED_UTTERANCE_TTL: Duration = Duration::from_secs(3);
 pub const OWNER_RATE_LIMIT: usize = 120;
@@ -46,11 +45,8 @@ pub struct RequestId(u64);
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rejection {
-    Disabled,
     Busy,
     QuietHours,
-    Unavailable,
-    QueueFull,
     Closed,
     InvalidText,
     RateLimited,
@@ -72,8 +68,6 @@ pub enum Eligibility {
     Eligible,
     Busy,
     QuietHours,
-    Disabled,
-    Unavailable,
     NoSatellite,
 }
 
@@ -90,14 +84,25 @@ pub enum SessionError {
     Closed,
 }
 
-/// The output callback could not prepare or deliver an utterance.
+/// Why the output callback did not prepare or deliver an utterance. An add-on
+/// is told which: waiting helps with the first two, not with the third.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-#[error("speech output failed")]
-pub struct SpeechOutputError;
+pub enum SpeechOutputError {
+    /// The room was already taken by other output.
+    #[error("the room is busy")]
+    Busy,
+    /// A voice turn or a notification took the room over.
+    #[error("speech was cancelled")]
+    Cancelled,
+    /// Synthesis or transport failed.
+    #[error("speech output failed")]
+    Failed,
+}
 
 pub type PrepareFuture<Prepared> =
-    Pin<Box<dyn Future<Output = Result<Prepared, ()>> + Send + 'static>>;
-pub type DeliverFuture = Pin<Box<dyn Future<Output = Result<(), ()>> + Send + 'static>>;
+    Pin<Box<dyn Future<Output = Result<Prepared, SpeechOutputError>> + Send + 'static>>;
+pub type DeliverFuture =
+    Pin<Box<dyn Future<Output = Result<(), SpeechOutputError>> + Send + 'static>>;
 pub type EligibilityFuture = Pin<Box<dyn Future<Output = Eligibility> + Send + 'static>>;
 type PrepareCallback<Prepared> =
     dyn Fn(RoomName, String) -> PrepareFuture<Prepared> + Send + Sync + 'static;
@@ -134,9 +139,9 @@ impl<Prepared: Send + 'static> SpeechOutput<Prepared> {
     pub fn new<Prepare, PrepareFut, Deliver, DeliverFut>(prepare: Prepare, deliver: Deliver) -> Self
     where
         Prepare: Fn(RoomName, String) -> PrepareFut + Send + Sync + 'static,
-        PrepareFut: Future<Output = Result<Prepared, ()>> + Send + 'static,
+        PrepareFut: Future<Output = Result<Prepared, SpeechOutputError>> + Send + 'static,
         Deliver: Fn(Prepared) -> DeliverFut + Send + Sync + 'static,
-        DeliverFut: Future<Output = Result<(), ()>> + Send + 'static,
+        DeliverFut: Future<Output = Result<(), SpeechOutputError>> + Send + 'static,
     {
         Self {
             prepare: Arc::new(move |room, text| Box::pin(prepare(room, text))),
@@ -149,15 +154,11 @@ impl<Prepared: Send + 'static> SpeechOutput<Prepared> {
         room: &RoomName,
         text: &str,
     ) -> Result<Prepared, SpeechOutputError> {
-        (self.prepare)(room.clone(), text.to_owned())
-            .await
-            .map_err(|()| SpeechOutputError)
+        (self.prepare)(room.clone(), text.to_owned()).await
     }
 
     pub async fn deliver(&self, prepared: Prepared) -> Result<(), SpeechOutputError> {
-        (self.deliver)(prepared)
-            .await
-            .map_err(|()| SpeechOutputError)
+        (self.deliver)(prepared).await
     }
 }
 
@@ -205,8 +206,6 @@ fn rejection(reason: Eligibility) -> Option<Rejection> {
         Eligibility::Eligible => None,
         Eligibility::Busy => Some(Rejection::Busy),
         Eligibility::QuietHours => Some(Rejection::QuietHours),
-        Eligibility::Disabled => Some(Rejection::Disabled),
-        Eligibility::Unavailable => Some(Rejection::Unavailable),
         Eligibility::NoSatellite => Some(Rejection::NoSatellite),
     }
 }
@@ -405,16 +404,20 @@ async fn session_worker<Prepared: Send + 'static>(
                         request = newest;
                         if request.queued_at.elapsed() >= QUEUED_UTTERANCE_TTL {
                             finish(&request.result, TerminalResult::Expired);
-                            break 'preparation Err(SpeechOutputError);
+                            break 'preparation None;
                         }
                     }
                 }
-                prepared = output.prepare(&room, &request.text) => break 'preparation prepared,
+                prepared = output.prepare(&room, &request.text) => break 'preparation Some(prepared),
             }
         };
-        let Ok(prepared) = prepared else {
-            finish(&request.result, TerminalResult::Failed);
-            continue;
+        let prepared = match prepared {
+            Some(Ok(prepared)) => prepared,
+            Some(Err(error)) => {
+                finish(&request.result, unfinished(error));
+                continue;
+            }
+            None => continue,
         };
         // A prepared request remains replaceable until this final expiry check
         // and synchronous entry into deliver; only then is transport active.
@@ -431,9 +434,17 @@ async fn session_worker<Prepared: Send + 'static>(
         }
         let terminal = match output.deliver(prepared).await {
             Ok(()) => TerminalResult::DeliveredToOutput,
-            Err(SpeechOutputError) => TerminalResult::Failed,
+            Err(error) => unfinished(error),
         };
         finish(&request.result, terminal);
+    }
+}
+
+fn unfinished(error: SpeechOutputError) -> TerminalResult {
+    match error {
+        SpeechOutputError::Busy => TerminalResult::Rejected(Rejection::Busy),
+        SpeechOutputError::Cancelled => TerminalResult::Cancelled,
+        SpeechOutputError::Failed => TerminalResult::Failed,
     }
 }
 
@@ -456,15 +467,36 @@ impl<Prepared: Send + 'static> Drop for SpeechSessionManager<Prepared> {
 #[cfg(test)]
 mod tests {
     #[tokio::test]
-    async fn output_callback_failures_have_a_typed_error() {
-        let output =
-            super::SpeechOutput::<()>::new(|_, _| async { Err(()) }, |_| async { Err(()) });
+    async fn output_callback_failures_keep_their_kind() {
+        let output = super::SpeechOutput::<()>::new(
+            |_, _| async { Err(super::SpeechOutputError::Busy) },
+            |_| async { Err(super::SpeechOutputError::Cancelled) },
+        );
         let room = niles_core::RoomName::parse("office").unwrap();
         assert_eq!(
             output.prepare(&room, "dart").await,
-            Err(super::SpeechOutputError)
+            Err(super::SpeechOutputError::Busy)
         );
-        assert_eq!(output.deliver(()).await, Err(super::SpeechOutputError));
+        assert_eq!(
+            output.deliver(()).await,
+            Err(super::SpeechOutputError::Cancelled)
+        );
+    }
+
+    #[test]
+    fn an_unfinished_utterance_is_reported_by_why() {
+        assert_eq!(
+            unfinished(SpeechOutputError::Busy),
+            TerminalResult::Rejected(Rejection::Busy)
+        );
+        assert_eq!(
+            unfinished(SpeechOutputError::Cancelled),
+            TerminalResult::Cancelled
+        );
+        assert_eq!(
+            unfinished(SpeechOutputError::Failed),
+            TerminalResult::Failed
+        );
     }
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -490,7 +522,11 @@ mod tests {
                     gate.notified().await;
                 }
                 output.delivered.lock().await.push(text);
-                if output.fail { Err(()) } else { Ok(()) }
+                if output.fail {
+                    Err(SpeechOutputError::Failed)
+                } else {
+                    Ok(())
+                }
             }
         })
     }
@@ -837,8 +873,7 @@ mod tests {
         for (eligibility, rejection) in [
             (Eligibility::Busy, Rejection::Busy),
             (Eligibility::QuietHours, Rejection::QuietHours),
-            (Eligibility::Disabled, Rejection::Disabled),
-            (Eligibility::Unavailable, Rejection::Unavailable),
+            (Eligibility::NoSatellite, Rejection::NoSatellite),
         ] {
             let policy = Policy::eligible();
             policy.set(eligibility).await;
@@ -855,8 +890,7 @@ mod tests {
         for (eligibility, rejection) in [
             (Eligibility::Busy, Rejection::Busy),
             (Eligibility::QuietHours, Rejection::QuietHours),
-            (Eligibility::Disabled, Rejection::Disabled),
-            (Eligibility::Unavailable, Rejection::Unavailable),
+            (Eligibility::NoSatellite, Rejection::NoSatellite),
         ] {
             let m = manager(FakeOutput::default(), Policy::eligible());
             let session = m.open(owner(), room()).await.unwrap();
@@ -870,8 +904,7 @@ mod tests {
         for (eligibility, rejection) in [
             (Eligibility::Busy, Rejection::Busy),
             (Eligibility::QuietHours, Rejection::QuietHours),
-            (Eligibility::Disabled, Rejection::Disabled),
-            (Eligibility::Unavailable, Rejection::Unavailable),
+            (Eligibility::NoSatellite, Rejection::NoSatellite),
         ] {
             let policy_started = Arc::new(Notify::new());
             let policy_gate = Arc::new(Notify::new());

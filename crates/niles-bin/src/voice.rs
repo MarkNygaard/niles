@@ -9,7 +9,8 @@ use crate::prompt::{
 use crate::recognition::{build_speaker_identifier, pcm_bytes_to_i16};
 use crate::satellites::SatelliteRegistry;
 use crate::speech_stream::{
-    ConversationLease, RoomArbiter, spawn_conversation_task, take_conversation_after_audio,
+    ConversationLease, RoomArbiter, conversation_hold, spawn_conversation_task,
+    take_conversation_after_audio,
 };
 use crate::timers::spawn_timer_driver;
 use crate::wiring::accounts::{build_tado_tokens, build_weather_client};
@@ -217,6 +218,7 @@ pub(crate) fn spawn_dispatch_task(
         let follow_up = session.follow_up;
         let from = session.from;
         let mut asked = false;
+        let mut playing = Duration::ZERO;
         let attempted = ctx.identifier.is_some() && supports_speaker_identification(session.format);
         let id_handle = attempted.then(|| {
             let id = ctx
@@ -404,21 +406,16 @@ pub(crate) fn spawn_dispatch_task(
                     listen,
                 )
                 .await;
-                let spoken_ok = match spoken {
-                    Ok(()) => true,
-                    Err(e) => {
-                        tracing::warn!("[{peer}] speak-back failed: {e:#}");
-                        false
-                    }
-                };
-                timing.speak_ms = speak_started.elapsed().as_millis();
-                if spoken_ok && listen {
-                    tokio::time::sleep(follow_up::WAITING).await;
+                match spoken {
+                    Ok(played) => playing = played,
+                    Err(e) => tracing::warn!("[{peer}] speak-back failed: {e:#}"),
                 }
+                timing.speak_ms = speak_started.elapsed().as_millis();
             }
             timing.log(peer, &text);
         }
         ctx.hush.finish(from, asked).await;
+        tokio::time::sleep(conversation_hold(playing, asked && !playing.is_zero())).await;
     });
 }
 

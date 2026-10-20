@@ -769,7 +769,7 @@ interface speech-stream {
     use types.{host-error};
     type session-id = u32;
     type request-id = u64;
-    enum outcome { pending, delivered, busy, quiet, disabled, unavailable, overload, expired, failed, cancelled, replaced, rate-limited, no-satellite }
+    enum outcome { pending, delivered, busy, quiet, expired, failed, cancelled, replaced, rate-limited, no-satellite }
     record request-status { request: request-id, outcome: outcome }
     /// Open one stream in the selected room. Requires the speech-stream
     /// permission, its declared household room setting, and a user-enabled

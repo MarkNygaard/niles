@@ -166,9 +166,8 @@ impl WyomingDelivery {
         let notification_lease: NotificationLease =
             self.speech_arbiter.reserve_notification(&room_name);
         bounded_operation(async move {
-            let _notification_lease = notification_lease;
             if let Some(peer) = peer {
-                if let Err(e) = crate::speak::speak_back(
+                return match crate::speak::speak_back(
                     &piper,
                     &sender,
                     peer,
@@ -179,11 +178,22 @@ impl WyomingDelivery {
                 )
                 .await
                 {
-                    tracing::warn!("[{peer}] notification speak-back failed: {e:#}");
-                    return false;
-                }
-                return true;
+                    Ok(playing) => {
+                        // Commentary stays out of the room until it has
+                        // played, without the delivery waiting for it.
+                        tokio::spawn(async move {
+                            let _notification_lease = notification_lease;
+                            tokio::time::sleep(playing).await;
+                        });
+                        true
+                    }
+                    Err(e) => {
+                        tracing::warn!("[{peer}] notification speak-back failed: {e:#}");
+                        false
+                    }
+                };
             }
+            let _notification_lease = notification_lease;
             let ip = push_to.expect("checked above");
             match piper.synthesize(&text, None).await {
                 Ok(synthesis) => {
