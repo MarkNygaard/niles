@@ -182,12 +182,14 @@ impl niles_api::chat::Chat for AppChat {
             _ => None,
         };
         let started = Instant::now();
-        // Whose yes anything held on this turn waits for.
+        // Whose yes anything held on this turn waits for. They are typing
+        // in the open chat, so a card asked here is in front of them.
         let asker = approvals::Asker {
             person: person.clone(),
             slug: slug.clone(),
             satellite: None,
             conversation: target,
+            in_chat: true,
         };
         // Kept before dispatch: the files are the person's from the
         // moment they are stored, and bound to their turn once the
@@ -388,6 +390,7 @@ impl niles_api::chat::Chat for AppChat {
         id: i64,
         approval: &str,
         decision: niles_api::chat::Decision,
+        device: Option<&str>,
     ) -> Result<String, niles_api::chat::Undecidable> {
         use niles_api::chat::{Decision, Undecidable};
         let ctx = self.ctx.get().ok_or(Undecidable::NoSuchConversation)?;
@@ -418,7 +421,12 @@ impl niles_api::chat::Chat for AppChat {
         let tool = held.tool_name().to_string();
         let (card, reply) = ctx
             .approvals
-            .settle(held, decision, approvals::Via::App, Some(id))
+            .settle(
+                held.answered_on(device),
+                decision,
+                approvals::Via::App,
+                Some(id),
+            )
             .await;
         tracing::info!("[approvals] {tool}: {:?} by {person}", card.status);
         if let Err(e) = log.update_approval(&person, id, &card).await {
@@ -562,6 +570,7 @@ impl niles_api::approvals::Approvals for AppChat {
         speaker: Option<&str>,
         approval: &str,
         decision: niles_api::chat::Decision,
+        device: Option<&str>,
     ) -> Result<String, niles_api::chat::Undecidable> {
         use niles_api::chat::{Chat, Decision, Undecidable};
         let ctx = self.ctx.get().ok_or(Undecidable::NoSuchApproval)?;
@@ -573,7 +582,8 @@ impl niles_api::approvals::Approvals for AppChat {
         // A card in a conversation is answered the way its own button
         // answers it, so the card there says what became of it.
         if let Some(conversation) = placed.conversation {
-            return Chat::decide(self, who, speaker, conversation, approval, decision).await;
+            return Chat::decide(self, who, speaker, conversation, approval, decision, device)
+                .await;
         }
         // Asked aloud, it has no card: only the satellite was waiting.
         let held = ctx
@@ -583,7 +593,12 @@ impl niles_api::approvals::Approvals for AppChat {
         let tool = held.tool_name().to_string();
         let (card, reply) = ctx
             .approvals
-            .settle(held, decision, approvals::Via::App, None)
+            .settle(
+                held.answered_on(device),
+                decision,
+                approvals::Via::App,
+                None,
+            )
             .await;
         tracing::info!(
             "[approvals] {tool}: {:?} by {person}, from the panel",

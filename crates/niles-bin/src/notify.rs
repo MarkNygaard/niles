@@ -1,13 +1,15 @@
 //! Telling one person something: kept for their Notifications page,
 //! said on their own connections so the bell counts it, and pushed to
 //! their devices. Every push Niles sends a person goes through here, so
-//! the page has everything the lock screen had.
+//! the page has everything the lock screen had. The one push not kept
+//! is the one that only replaces an approval's notification with what
+//! became of it, which is news to nobody.
 //!
 //! Kept whenever there is a database, whether or not they turned
 //! notifications on anywhere; pushed whenever there is a push key.
 
 use niles_core::{Event, EventBus};
-use niles_webpush::{Inbox, Notice, WebPush};
+use niles_webpush::{Inbox, Message, Notice, WebPush};
 use std::sync::Arc;
 
 pub(crate) struct Notify {
@@ -34,7 +36,7 @@ impl Notify {
     /// recognised, which has no page to keep it on and no devices.
     pub(crate) async fn person(&self, person: &str, notice: &Notice) {
         if self.keep(person, notice).await {
-            self.push(person, notice).await;
+            self.push(person, &notice.push(), None).await;
         }
     }
 
@@ -58,20 +60,24 @@ impl Notify {
         true
     }
 
-    async fn push(&self, person: &str, notice: &Notice) {
+    /// `message` to `person`'s devices, all but the one at `except`, and
+    /// not kept: for something already on their page (an approval, a
+    /// minute after it was kept), or a push that only replaces one sent
+    /// before with what became of it.
+    pub(crate) async fn push(&self, person: &str, message: &Message, except: Option<&str>) {
         let Some(push) = &self.push else {
             return;
         };
-        match push.send(person, &notice.push()).await {
+        match push.send_except(person, message, except).await {
             Ok(delivery) if delivery.sent > 0 => tracing::info!(
                 "[notify] {person}: told {} device(s) about {:?}",
                 delivery.sent,
-                notice.title
+                message.title
             ),
             Ok(_) => {}
             Err(e) => tracing::warn!(
                 "[notify] {person}: no device was told about {:?}: {e}",
-                notice.title
+                message.title
             ),
         }
     }
@@ -152,6 +158,17 @@ mod tests {
         let notify = Notify::new(Some(inbox.clone()), None, bus);
         notify.person("satellite:10.0.0.2:4000", &notice()).await;
         assert_eq!(inbox.unread("satellite:10.0.0.2:4000").await.unwrap(), 0);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_push_alone_is_not_kept_or_counted() {
+        let inbox = Arc::new(MemoryInbox::default());
+        let bus = EventBus::default();
+        let mut events = bus.subscribe();
+        let notify = Notify::new(Some(inbox.clone()), Some(push()), bus);
+        notify.push("person:mark", &notice().push(), None).await;
+        assert_eq!(inbox.unread("person:mark").await.unwrap(), 0);
         assert!(events.try_recv().is_err());
     }
 }

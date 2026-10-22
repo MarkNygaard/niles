@@ -226,6 +226,48 @@ describe("ChatView", () => {
     expect(onDecide).toHaveBeenCalledWith("a1", "once");
   });
 
+  it("brings the card a notification led to into the middle of the screen", () => {
+    const approval = {
+      id: "a1",
+      title: "Let Linear create issue?",
+      subtitle: "Linear",
+      icon: "linear",
+      fields: [{ label: "Title", value: "WLED presets" }],
+      body: null,
+      allow_conversation: true,
+      status: "pending" as const,
+      outcome: null,
+    };
+    const handlers = { onSend: vi.fn(), onNew: vi.fn(), onOpenPanel: vi.fn(), onAnswer: vi.fn() };
+    const root = document.body.appendChild(
+      Object.assign(document.createElement("div"), { id: "root" }),
+    );
+    root.scrollTo = vi.fn();
+    const rect = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement): DOMRect {
+        return {
+          top: this.dataset.approval === "a1" ? 900 : 0,
+          height: this.dataset.approval === "a1" ? 100 : 0,
+        } as DOMRect;
+      });
+    render(
+      <ChatView
+        turns={[turn("file it", "It's waiting for you.", { approval })]}
+        highlight="a1"
+        {...handlers}
+      />,
+      { container: root },
+    );
+    expect(root.scrollTo).toHaveBeenLastCalledWith({ top: 950 });
+    expect(screen.getByRole("region", { name: "Let Linear create issue?" })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    rect.mockRestore();
+    root.remove();
+  });
+
   describe("a proposal", () => {
     const proposal = { sentence: 'When it is 30 minutes after sunset, say "Close the curtains".' };
     const asked = turn("remind me to close the curtains", "… Shall I save it?", { proposal });

@@ -1004,8 +1004,26 @@ since_pr = 483
 [[feature]]
 id = "notify-approval-waiting"
 category = "runtime.approvals"
-summary = "A notification when something waits for your yes, linking to Approvals in Niles's panel"
+summary = "Something waiting for your yes is on your page at once, on your devices at once or a minute later; a tap opens its card"
 since_pr = 483
+
+[[feature]]
+id = "push-approval-buttons"
+category = "runtime.approvals"
+summary = "On Android and computers an approval's notification has Deny, Approve where a spoken yes counts, Review for a mail"
+since_pr = 485
+
+[[feature]]
+id = "push-approval-replaced"
+category = "runtime.approvals"
+summary = "Answered or lapsed, an approval's notification is replaced quietly on your other devices with what became of it"
+since_pr = 485
+
+[[feature]]
+id = "ui-approval-link"
+category = "ui.chat"
+summary = "#/chat?approval= and an approval's id opens its card in the conversation, outlined, or in Approvals when it has none"
+since_pr = 485
 
 [[feature]]
 id = "api-me-notifications"

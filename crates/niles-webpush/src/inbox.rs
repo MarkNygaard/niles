@@ -49,9 +49,12 @@ impl Kind {
     }
 
     /// Whether its push opens the thing itself. One about an artifact
-    /// opens the artifact; the others open the Notifications page.
+    /// or an approval opens it; the others open the Notifications page.
     fn opens_its_own_link(self) -> bool {
-        matches!(self, Kind::Artifact | Kind::Shared | Kind::PlanChanged)
+        matches!(
+            self,
+            Kind::Artifact | Kind::Shared | Kind::PlanChanged | Kind::Approval
+        )
     }
 }
 
@@ -68,8 +71,9 @@ pub struct Notice {
 }
 
 impl Notice {
-    /// The push for it: the same words, opening the artifact for one
-    /// about an artifact and the Notifications page for the rest.
+    /// The push for it: the same words, opening the artifact or the
+    /// approval for one about either, and the Notifications page for
+    /// the rest.
     pub fn push(&self) -> Message {
         Message {
             title: self.title.clone(),
@@ -80,6 +84,8 @@ impl Notice {
                 NOTIFICATIONS_URL.into()
             },
             tag: self.tag.clone(),
+            approval: None,
+            quiet: false,
         }
     }
 }
@@ -228,10 +234,8 @@ mod tests {
         assert_eq!(ready.url, "/#/chat?artifact=1");
         assert_eq!(ready.title, "Hellerup plan");
         assert_eq!(ready.tag, "artifact-1");
-        for kind in [Kind::Workout, Kind::Approval] {
-            assert_eq!(notice(kind, "x").push().url, NOTIFICATIONS_URL);
-        }
-        for kind in [Kind::Shared, Kind::PlanChanged] {
+        assert_eq!(notice(Kind::Workout, "x").push().url, NOTIFICATIONS_URL);
+        for kind in [Kind::Shared, Kind::PlanChanged, Kind::Approval] {
             assert_eq!(notice(kind, "x").push().url, "/#/chat?artifact=1");
         }
     }

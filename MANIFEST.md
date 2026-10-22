@@ -79,7 +79,9 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | Feature | Summary | Since |
 | --- | --- | --- |
 | `approval-log` | Every approval logged when asked and answered, lapses included; one summary line, never the arguments | [#455](https://github.com/MarkNygaard/niles/pull/455) |
-| `notify-approval-waiting` | A notification when something waits for your yes, linking to Approvals in Niles's panel | [#483](https://github.com/MarkNygaard/niles/pull/483) |
+| `notify-approval-waiting` | Something waiting for your yes is on your page at once, on your devices at once or a minute later; a tap opens its card | [#483](https://github.com/MarkNygaard/niles/pull/483) |
+| `push-approval-buttons` | On Android and computers an approval's notification has Deny, Approve where a spoken yes counts, Review for a mail | [#485](https://github.com/MarkNygaard/niles/pull/485) |
+| `push-approval-replaced` | Answered or lapsed, an approval's notification is replaced quietly on your other devices with what became of it | [#485](https://github.com/MarkNygaard/niles/pull/485) |
 | `artifacts-documents` | Claude or ChatGPT saves documents for you, with versions, and writes a big one in the background | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `artifacts-edits` | Small changes to a saved item or its page made in the chat as edits; big or slow ones finish in the background | [#474](https://github.com/MarkNygaard/niles/pull/474) |
 | `artifacts-pages` | Ask Claude or ChatGPT for a page for any saved artifact: HTML that draws its data, and draws again as the data changes | [#440](https://github.com/MarkNygaard/niles/pull/440) |
@@ -182,6 +184,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `auth-api-token` | A bearer token for reading the API from a terminal | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `auth-github-sign-in` | Sign in with GitHub, against an allowlist of verified email addresses | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `chat-attachments` | Attach photos and PDFs to a chat message by dragging, the paperclip or a paste; chips before sending, thumbnails after | [#449](https://github.com/MarkNygaard/niles/pull/449) |
+| `ui-approval-link` | #/chat?approval= and an approval's id opens its card in the conversation, outlined, or in Approvals when it has none | [#485](https://github.com/MarkNygaard/niles/pull/485) |
 | `ui-approvals-history` | Approvals history in the panel and on My profile: each decided or lapsed, "Allowed once · 15:34", Show older | [#455](https://github.com/MarkNygaard/niles/pull/455) |
 | `ui-approvals-panel` | Approvals tab in Niles's panel: what needs review, folded with Details, answered there; a count on the tab | [#455](https://github.com/MarkNygaard/niles/pull/455) |
 | `ui-artifact-page-frame` | An artifact's page in a sealed frame, no network and no Niles: a Page / Built-in switch, links opened on a yes | [#440](https://github.com/MarkNygaard/niles/pull/440) |

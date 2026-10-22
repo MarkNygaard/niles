@@ -4,7 +4,7 @@ use crate::encrypt;
 use crate::error::{Error, Result};
 use crate::store::{PushStore, Subscription};
 use crate::vapid::{VapidKey, b64url_decode};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -23,6 +23,39 @@ pub struct Message {
     /// A newer notification with the same tag replaces the older one
     /// instead of stacking under it.
     pub tag: String,
+    /// What it asks the person to answer, on a notification that waits
+    /// for their yes: what its buttons answer, and until when.
+    pub approval: Option<Approval>,
+    /// Shown without a sound, and without alerting again: it replaces one
+    /// already there with what became of it, and asks nothing.
+    pub quiet: bool,
+}
+
+/// Something a notification asks the person to answer
+/// (crates/niles-bin/src/approvals.rs).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Approval {
+    /// What the buttons answer, by `POST /me/approvals/{id}`.
+    pub id: String,
+    /// When it lapses. The device shows it in its own time: "Waiting until 19:42".
+    #[serde(with = "chrono::serde::ts_milliseconds")]
+    pub until: DateTime<Utc>,
+    /// Its buttons, in order, where the browser draws them. Chrome,
+    /// Edge and Firefox do; iOS does not.
+    pub actions: Vec<Action>,
+}
+
+/// A button on a notification; the service worker names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Action {
+    /// Allow it once, without opening Niles.
+    Approve,
+    /// Deny it, without opening Niles.
+    Deny,
+    /// Open its card, to read it before answering.
+    Review,
 }
 
 /// What became of one message.
@@ -80,6 +113,17 @@ impl WebPush {
     /// does not stop the others, and is not an error: only not being
     /// able to look them up is.
     pub async fn send(&self, person: &str, message: &Message) -> Result<Delivery> {
+        self.send_except(person, message, None).await
+    }
+
+    /// `message` to each of `person`'s devices but the one at `except`:
+    /// the device something was just answered on, which needs no telling.
+    pub async fn send_except(
+        &self,
+        person: &str,
+        message: &Message,
+        except: Option<&str>,
+    ) -> Result<Delivery> {
         let payload = serde_json::to_vec(message).map_err(|e| Error::Invalid {
             kind: "push message",
             reason: e.to_string(),
@@ -90,7 +134,8 @@ impl WebPush {
                 reason: format!("it is {} bytes", payload.len()),
             });
         }
-        let subscriptions = self.store.subscriptions(person).await?;
+        let mut subscriptions = self.store.subscriptions(person).await?;
+        subscriptions.retain(|s| Some(s.endpoint.as_str()) != except);
         let mut delivery = Delivery::default();
         if subscriptions.is_empty() {
             return Ok(delivery);
@@ -206,6 +251,8 @@ mod tests {
             body: "Your Thailand plan is ready".into(),
             url: "/#/chat?artifact=7".into(),
             tag: "artifact-7".into(),
+            approval: None,
+            quiet: false,
         }
     }
 
@@ -367,5 +414,64 @@ mod tests {
         let mut big = message();
         big.body = "x".repeat(encrypt::MAX_PLAINTEXT);
         assert!(push(store).send("person:mark", &big).await.is_err());
+    }
+
+    #[test]
+    fn the_message_is_what_the_service_worker_reads() {
+        let m = Message {
+            title: "Let Linear create issue? · Linear".into(),
+            body: "Title: WLED presets".into(),
+            url: "/#/chat?approval=a1".into(),
+            tag: "approval-a1".into(),
+            approval: Some(Approval {
+                id: "a1".into(),
+                until: DateTime::from_timestamp_millis(1_792_531_320_000).unwrap(),
+                actions: vec![Action::Approve, Action::Deny],
+            }),
+            quiet: false,
+        };
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({
+                "title": "Let Linear create issue? · Linear",
+                "body": "Title: WLED presets",
+                "url": "/#/chat?approval=a1",
+                "tag": "approval-a1",
+                "approval": {
+                    "id": "a1",
+                    "until": 1_792_531_320_000_i64,
+                    "actions": ["approve", "deny"],
+                },
+                "quiet": false,
+            })
+        );
+        let plain = serde_json::to_value(message()).unwrap();
+        assert_eq!(plain["approval"], serde_json::json!(null));
+        assert_eq!(plain["quiet"], serde_json::json!(false));
+    }
+
+    #[tokio::test]
+    async fn a_device_left_out_is_not_sent_to() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+        let store = Arc::new(MemoryPush::default());
+        subscribed(&store, "person:mark", format!("{}/phone", server.uri())).await;
+        subscribed(&store, "person:mark", format!("{}/laptop", server.uri())).await;
+
+        let delivery = push(store)
+            .send_except(
+                "person:mark",
+                &message(),
+                Some(&format!("{}/phone", server.uri())),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delivery.sent, 1);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/laptop");
     }
 }

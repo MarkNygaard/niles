@@ -2,7 +2,8 @@ import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 import { mergeReported } from "@/lib/rooms";
-import { APPROVALS } from "@/lib/approvals";
+import { APPROVALS, approvalTag } from "@/lib/approvals";
+import { closeWaitingLater } from "@/lib/pwa";
 import { ARTIFACTS, ARTIFACT_LIST } from "@/lib/artifacts";
 import { NOTIFICATIONS } from "@/lib/notifications";
 import type { Artifact, ArtifactList, ArtifactStatus, Device, DeviceState } from "@/lib/api";
@@ -20,7 +21,9 @@ import type { Artifact, ArtifactList, ArtifactStatus, Device, DeviceState } from
  * The same stream says when a plugin's page or widget has changed,
  * which refetches it if it is on screen, and when one of the signed-in
  * person's artifacts moves on, which Saved and the status line follow,
- * when something of theirs waiting for a yes is asked or answered, and
+ * when something of theirs waiting for a yes is asked or answered —
+ * and once it is answered or lapses, its notification is taken off this
+ * device after Niles's own push had its chance to replace it — and
  * when a notification of theirs is kept or read, which the bell follows.
  *
  * One socket however many components ask: the bell in the header asks
@@ -97,6 +100,10 @@ function stream(queryClient: QueryClient): () => void {
         case "approval_changed":
           void queryClient.invalidateQueries({ queryKey: APPROVALS });
           void queryClient.invalidateQueries({ queryKey: ["chat"] });
+          // Answered elsewhere or lapsed: Niles's push replaces its
+          // notification here with what became of it, and should that
+          // push not come, the open app takes the waiting one off itself.
+          if (event.status !== "pending") closeWaitingLater(approvalTag(event.id));
           break;
         // Kept, or read on another device: the bell and the page.
         case "notification_added":

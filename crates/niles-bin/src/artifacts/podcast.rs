@@ -738,6 +738,7 @@ mod tests {
             slug: person.strip_prefix("person:").map(str::to_string),
             satellite: None,
             conversation: None,
+            in_chat: false,
         }
     }
 
@@ -1069,6 +1070,7 @@ mod tests {
             slug: Some("mark".into()),
             satellite: Some("10.0.0.9:1234".parse().unwrap()),
             conversation: None,
+            in_chat: false,
         };
         let out = call(
             &f,
@@ -1091,6 +1093,7 @@ mod tests {
             slug: None,
             satellite: Some("10.0.0.9:1234".parse().unwrap()),
             conversation: None,
+            in_chat: false,
         };
         let error = call(
             &f,

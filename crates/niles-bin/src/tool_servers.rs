@@ -558,6 +558,7 @@ mod tests {
             slug: Some("mark".into()),
             satellite: None,
             conversation: None,
+            in_chat: false,
         };
         let list = niles_llm::ToolCall {
             id: "2".into(),

@@ -131,6 +131,43 @@ impl DispatchCtx {
     }
 }
 
+/// The first thing somebody says to Niles in a morning is greeted, as
+/// Alexa does. Decided before the reply is built, because a greeting
+/// addresses them and the confirmation must not then do it again: the
+/// name greeted, how to address them, and whether today is their
+/// birthday.
+fn morning_greeting(
+    ctx: &DispatchCtx,
+    speaker: &SpeakerContext,
+    voice: Option<&[f32]>,
+) -> Option<(String, String, bool)> {
+    let SpeakerContext::Identified { name, known } = speaker else {
+        return None;
+    };
+    let local = ctx
+        .home
+        .timezone
+        .parse::<chrono_tz::Tz>()
+        .ok()
+        .map(|tz| Utc::now().with_timezone(&tz));
+    let whom = known.address.clone().or_else(|| {
+        let id = ctx.identifier.as_ref()?;
+        id.whose_voice(voice?).and_then(|slug| id.how_to_say(&slug))
+    });
+    local
+        .filter(|l| {
+            ctx.courtesy
+                .greet_now(name, l.date_naive(), l.hour(), Instant::now())
+        })
+        .map(|l| {
+            let birthday = known
+                .birthday
+                .as_deref()
+                .is_some_and(|b| niles_recognition::birthday::is_today(b, l.date_naive()));
+            (name.clone(), whom.unwrap_or_else(|| name.clone()), birthday)
+        })
+}
+
 pub(crate) async fn handle_transcript(
     ctx: &DispatchCtx,
     peer: SocketAddr,
@@ -142,36 +179,7 @@ pub(crate) async fn handle_transcript(
     answering: bool,
 ) -> Option<String> {
     let started = Instant::now();
-    // The first thing somebody says to Niles in a morning is greeted, as
-    // Alexa does. Decided before the reply is built, because a greeting
-    // addresses them and the confirmation must not then do it again.
-    let greeting = match speaker {
-        SpeakerContext::Identified { name, known } => {
-            let local = ctx
-                .home
-                .timezone
-                .parse::<chrono_tz::Tz>()
-                .ok()
-                .map(|tz| Utc::now().with_timezone(&tz));
-            let whom = known.address.clone().or_else(|| {
-                let id = ctx.identifier.as_ref()?;
-                id.whose_voice(voice?).and_then(|slug| id.how_to_say(&slug))
-            });
-            local
-                .filter(|l| {
-                    ctx.courtesy
-                        .greet_now(name, l.date_naive(), l.hour(), Instant::now())
-                })
-                .map(|l| {
-                    let birthday = known
-                        .birthday
-                        .as_deref()
-                        .is_some_and(|b| niles_recognition::birthday::is_today(b, l.date_naive()));
-                    (name.clone(), whom.unwrap_or_else(|| name.clone()), birthday)
-                })
-        }
-        _ => None,
-    };
+    let greeting = morning_greeting(ctx, speaker, voice);
     // The profile tools write to whoever is speaking, and nobody else:
     // the voice decides that, not the model.
     let slug = match speaker {
@@ -189,6 +197,7 @@ pub(crate) async fn handle_transcript(
         slug: slug.clone(),
         satellite: Some(peer),
         conversation: None,
+        in_chat: false,
     };
     let mut response = profile::SPEAKER
         .scope(

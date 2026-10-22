@@ -28,6 +28,6 @@ mod vapid;
 
 pub use error::{Error, Result};
 pub use inbox::{Inbox, MemoryInbox, Notice, Notification};
-pub use send::{Delivery, Message, TTL, WebPush};
+pub use send::{Action, Approval, Delivery, Message, TTL, WebPush};
 pub use store::{MemoryPush, NewSubscription, PushStore, Subscription, device_label};
 pub use vapid::{VapidKey, origin_of};

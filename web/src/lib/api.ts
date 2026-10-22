@@ -1731,17 +1731,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ turn, save }),
     }),
-  decideApproval: (id: number, approval: string, decision: Decision) =>
+  decideApproval: (id: number, approval: string, decision: Decision, device?: string | null) =>
     request<{ reply: string }>(
       `/chat/conversations/${id}/approvals/${encodeURIComponent(approval)}`,
-      { method: "POST", body: JSON.stringify({ decision }) },
+      { method: "POST", body: JSON.stringify({ decision, device: device ?? undefined }) },
     ),
   approvals: () => request<{ approvals: PendingApproval[] }>("/me/approvals"),
-  /** The same decision a card's button sends, by the approval's id alone. */
-  decideHeld: (approval: string, decision: Decision) =>
+  /** The same decision a card's button sends, by the approval's id
+      alone, and this device's push address, if it has one. */
+  decideHeld: (approval: string, decision: Decision, device?: string | null) =>
     request<{ reply: string }>(`/me/approvals/${encodeURIComponent(approval)}`, {
       method: "POST",
-      body: JSON.stringify({ decision }),
+      body: JSON.stringify({ decision, device: device ?? undefined }),
     }),
   approvalHistory: (before?: number) =>
     request<ApprovalHistory>(

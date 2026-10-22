@@ -142,6 +142,8 @@ pub async fn test(
         body: "This is how Niles tells you something is ready.".into(),
         url: "/#/me/profile".into(),
         tag: "test".into(),
+        approval: None,
+        quiet: false,
     };
     push.send(&person, &message)
         .await
