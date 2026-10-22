@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/MarkNygaard/niles/compare/v0.4.0...v0.5.0) (2026-10-22)
+
+
+### Features
+
+* **add-ons:** browse the add-on library, with install counts and no telemetry (NIL-35) ([#469](https://github.com/MarkNygaard/niles/issues/469)) ([d9514cc](https://github.com/MarkNygaard/niles/commit/d9514cc529680f6f13448a2d0e11fd7baef9a33a))
+* **artifacts:** edit saved items by part, and a timed-out change becomes a job (NIL-37) ([#474](https://github.com/MarkNygaard/niles/issues/474)) ([bca213a](https://github.com/MarkNygaard/niles/commit/bca213aaae54c9d656fa2461acbccd565b02f09f))
+* notifications page behind a bell; the dashboard is only the house (NIL-46) ([#483](https://github.com/MarkNygaard/niles/issues/483)) ([13f45dd](https://github.com/MarkNygaard/niles/commit/13f45dddae0f1cc729e36f3481bf7831fe146ef2))
+* **plugins:** host-managed speech sessions (NIL-42) ([#482](https://github.com/MarkNygaard/niles/issues/482)) ([d5a47cc](https://github.com/MarkNygaard/niles/commit/d5a47cc93344baf9eb860a073481beffb44e7b7f))
+* **plugins:** host-managed WebSocket support (NIL-36) ([#470](https://github.com/MarkNygaard/niles/issues/470)) ([e11a5c7](https://github.com/MarkNygaard/niles/commit/e11a5c7bf41e33ebe10379fb38866f724ee6f004))
+* **plugins:** room-only announcements with tracked delivery outcomes (NIL-43) ([#484](https://github.com/MarkNygaard/niles/issues/484)) ([a8595d2](https://github.com/MarkNygaard/niles/commit/a8595d246447d616f092179bf08f1fecd9ec628d))
+* push a notification when something waits for approval (NIL-16) ([#485](https://github.com/MarkNygaard/niles/issues/485)) ([254c23d](https://github.com/MarkNygaard/niles/commit/254c23dc4200e6996b9340789acfdb71d1f5b261))
+* **site:** getniles.app: a landing page, the docs and the add-on library ([#475](https://github.com/MarkNygaard/niles/issues/475)) ([73e5147](https://github.com/MarkNygaard/niles/commit/73e5147bb3822ee66c905ada2af37b5767be0473))
+* **web:** a share menu on an open artifact, with Word and Markdown downloads ([#472](https://github.com/MarkNygaard/niles/issues/472)) ([4160427](https://github.com/MarkNygaard/niles/commit/4160427a126e966c1f507d08447eb6983d77c65d))
+
 ## [0.4.0](https://github.com/MarkNygaard/niles/compare/v0.3.0...v0.4.0) (2026-10-17)
 
 
