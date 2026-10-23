@@ -1,0 +1,24 @@
+---
+title: "Overall architecture"
+description: "Where the crate map, the turn flows, the house rules and the big decisions are written down."
+---
+
+The map and the rules are one file at the root of the repository,
+[ARCHITECTURE.md](https://github.com/MarkNygaard/niles/blob/main/ARCHITECTURE.md).
+It changes in the same pull request as the thing it describes, so it is read
+there rather than copied here. It has:
+
+- what Niles is, what it is not, and its design principles
+- the crate map: a Cargo workspace of about 36 crates, with `niles-bin` the
+  only binary
+- how a voice turn, a chat turn and an automation flow through those crates
+- how an add-on is found through the add-on library
+- the 27 house rules every change keeps, each with its reason
+- the big decisions and what was rejected
+- the security notes: artifact pages, exposing Niles to the internet, the
+  sign-in allowlist and the plugin trust model
+
+On this site, [Voice loop](/docs/architecture/voice-loop) follows a command
+through the tiers and the system prompt, and the
+[feature manifest](/docs/architecture/features) lists everything Niles does.
+How a single piece works, and why, is in its crate's doc comments.

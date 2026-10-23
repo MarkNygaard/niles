@@ -1,0 +1,21 @@
+# What Niles needs before its app is up. Everything else is set in the
+# app and kept in Postgres, so this file stays this short.
+#
+# Values here never include a password or a key: each `*_env` line names
+# an environment variable, and compose.yaml passes those in from .env.
+
+[mqtt]
+# The broker Zigbee2MQTT publishes to, as Niles's container reaches it:
+# an IP address or a host name on your network.
+host = "192.168.1.10"
+port = 1883
+username_env = "NILES_MQTT_USERNAME"
+password_env = "NILES_MQTT_PASSWORD"
+
+# Hearing (ElevenLabs Scribe) and thinking (Cerebras). Niles builds both
+# clients at startup, so their keys have to be there on the first start.
+[stt]
+api_key_env = "ELEVENLABS_API_KEY"
+
+[llm]
+api_key_env = "CEREBRAS_API_KEY"

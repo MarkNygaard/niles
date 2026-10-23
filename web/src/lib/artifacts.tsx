@@ -39,7 +39,8 @@ export interface Kind {
   text: (content: unknown) => string;
 }
 
-function markdownOf(content: unknown): string {
+/** A document's markdown; "" when it has none. */
+export function markdownOf(content: unknown): string {
   if (content && typeof content === "object" && "markdown" in content) {
     const markdown = (content as { markdown: unknown }).markdown;
     if (typeof markdown === "string") return markdown;

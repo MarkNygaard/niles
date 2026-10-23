@@ -1,7 +1,8 @@
 //! Third-party plugins, in Postgres: what is installed, each plugin's
-//! private storage, and the devices Niles holds for it.
+//! private storage, the devices Niles holds for it, and what the
+//! add-on library counted.
 //!
-//! Three tables, created on first use:
+//! Four tables, created on first use:
 //!
 //! - `plugins`: the approved manifest, where it came from (the repo, the
 //!   release's tag and page), the component's bytes and sha256, the
@@ -14,8 +15,12 @@
 //! - `plugin_devices`: the devices it registered, so they stay in their
 //!   rooms, unavailable, while the plugin is stopped, and the rules that
 //!   name them stay valid.
+//! - `plugin_installs_counted`: the repos whose install this house has
+//!   counted, by downloading their release's `niles-installed` once.
+//!   Not tied to `plugins`, so removing a plugin keeps it and
+//!   installing it again is not counted again.
 //!
-//! The last two reference the first with `on delete cascade`, so
+//! The middle two reference the first with `on delete cascade`, so
 //! removing a plugin removes its data with it.
 
 use sha2::{Digest, Sha256};
@@ -69,6 +74,12 @@ create table if not exists plugin_devices (
 -- and a device of any class that has reported an action.
 alter table plugin_devices add column if not exists room_light boolean not null default true;
 alter table plugin_devices add column if not exists reports_actions boolean not null default false;
+-- Added with the add-on library: one row per repo whose install was
+-- counted. No reference to plugins, so a removal keeps it.
+create table if not exists plugin_installs_counted (
+    repo       text primary key,
+    counted_at timestamptz not null default now()
+);
 ";
 
 /// A plugin's manifest and component, to start it.
@@ -300,6 +311,17 @@ impl PostgresPlugins {
             .map_err(|e| self.storage(e))
     }
 
+    /// Note that an install from `repo` was counted: true the first time.
+    pub async fn count_install(&self, repo: &str) -> Result<bool, String> {
+        self.ensure_schema().await?;
+        sqlx::query(COUNT_INSTALL)
+            .bind(repo)
+            .execute(&self.pool)
+            .await
+            .map(|done| done.rows_affected() == 1)
+            .map_err(|e| self.storage(e))
+    }
+
     pub async fn logo(&self, id: &str) -> Result<Option<String>, String> {
         self.ensure_schema().await?;
         sqlx::query_scalar::<_, Option<String>>("select logo from plugins where id = $1")
@@ -508,6 +530,9 @@ const ALL: &str = "select id, manifest, version, repo, release_tag, release_url,
 
 const SET_NOTICE: &str = "update plugins set notice = $2 where id = $1";
 
+const COUNT_INSTALL: &str =
+    "insert into plugin_installs_counted (repo) values ($1) on conflict (repo) do nothing";
+
 fn plugin_row(r: &sqlx::postgres::PgRow) -> PluginRow {
     PluginRow {
         id: r.get("id"),
@@ -535,6 +560,19 @@ mod tests {
         assert!(SCHEMA.contains("add column if not exists notice text"));
         assert!(ALL.contains("notice"));
         assert!(SET_NOTICE.contains("set notice = $2 where id = $1"));
+    }
+
+    #[test]
+    fn the_count_of_installs_has_its_own_table_and_outlives_the_plugin() {
+        let marker = "create table if not exists plugin_installs_counted";
+        assert!(SCHEMA.contains(marker));
+        let start = SCHEMA.find(marker).unwrap();
+        let end = SCHEMA[start..].find(");").map(|i| start + i).unwrap();
+        assert!(
+            !SCHEMA[start..end].contains("references"),
+            "no reference to plugins, so a removal keeps the count"
+        );
+        assert!(COUNT_INSTALL.contains("on conflict (repo) do nothing"));
     }
 
     #[test]

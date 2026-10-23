@@ -200,49 +200,81 @@ function InlinePicture({ alt, src }: { alt: string; src: string }) {
   );
 }
 
-/** Bold, italic, code and links within a line, as elements. */
-export function inline(text: string): ReactNode[] {
-  const out: ReactNode[] = [];
+/** A line's text, read into its bold, italic, code, links and
+    pictures: for the view, and for a Word copy. */
+export type Inline =
+  | { type: "text"; text: string }
+  | { type: "code"; text: string }
+  | { type: "image"; alt: string; src: string }
+  /** `href` as written; `safeHref` says whether it may be followed. */
+  | { type: "link"; href: string; children: Inline[] }
+  | { type: "strong"; children: Inline[] }
+  | { type: "em"; children: Inline[] };
+
+export function parseInline(text: string): Inline[] {
+  const out: Inline[] = [];
   let last = 0;
-  let key = 0;
   for (const m of text.matchAll(INLINE)) {
     const at = m.index ?? 0;
-    if (at > last) out.push(text.slice(last, at));
+    if (at > last) out.push({ type: "text", text: text.slice(last, at) });
     const [, code, alt, src, label, href, bold, bold2, italic] = m;
     if (alt !== undefined) {
-      out.push(<InlinePicture key={key++} alt={alt} src={src} />);
+      out.push({ type: "image", alt, src });
     } else if (code !== undefined) {
-      out.push(
-        <code key={key++} className="bg-muted rounded px-1 py-0.5 font-mono text-[0.85em]">
-          {code}
-        </code>,
-      );
+      out.push({ type: "code", text: code });
     } else if (label !== undefined) {
-      const safe = safeHref(href);
-      out.push(
-        safe ? (
+      out.push({ type: "link", href, children: parseInline(label) });
+    } else if (bold !== undefined || bold2 !== undefined) {
+      out.push({ type: "strong", children: parseInline(bold ?? bold2) });
+    } else if (italic !== undefined) {
+      out.push({ type: "em", children: parseInline(italic) });
+    }
+    last = at + m[0].length;
+  }
+  if (last < text.length) out.push({ type: "text", text: text.slice(last) });
+  return out;
+}
+
+function inlineNodes(parts: Inline[]): ReactNode[] {
+  return parts.map((part, key) => {
+    switch (part.type) {
+      case "text":
+        return part.text;
+      case "image":
+        return <InlinePicture key={key} alt={part.alt} src={part.src} />;
+      case "code":
+        return (
+          <code key={key} className="bg-muted rounded px-1 py-0.5 font-mono text-[0.85em]">
+            {part.text}
+          </code>
+        );
+      case "link": {
+        const safe = safeHref(part.href);
+        return safe ? (
           <a
-            key={key++}
+            key={key}
             href={safe}
             target="_blank"
             rel="noopener noreferrer nofollow"
             className="text-primary underline underline-offset-2"
           >
-            {inline(label)}
+            {inlineNodes(part.children)}
           </a>
         ) : (
-          <span key={key++}>{inline(label)}</span>
-        ),
-      );
-    } else if (bold !== undefined || bold2 !== undefined) {
-      out.push(<strong key={key++}>{inline(bold ?? bold2)}</strong>);
-    } else if (italic !== undefined) {
-      out.push(<em key={key++}>{inline(italic)}</em>);
+          <span key={key}>{inlineNodes(part.children)}</span>
+        );
+      }
+      case "strong":
+        return <strong key={key}>{inlineNodes(part.children)}</strong>;
+      case "em":
+        return <em key={key}>{inlineNodes(part.children)}</em>;
     }
-    last = at + m[0].length;
-  }
-  if (last < text.length) out.push(text.slice(last));
-  return out;
+  });
+}
+
+/** Bold, italic, code and links within a line, as elements. */
+export function inline(text: string): ReactNode[] {
+  return inlineNodes(parseInline(text));
 }
 
 /** The words of a line without their markup: for a reason, or a label. */

@@ -2,15 +2,19 @@
 //! 0.2.0 and kept so, still loads and runs on a Niles that serves 0.2.1;
 //! `fixtures/printer.wasm`, built against 0.2.1, uses what 0.2.1 added.
 
+use futures_util::{SinkExt, StreamExt};
 use niles_core::{DeviceId, DeviceRegistry, Event, EventBus};
 use niles_plugins::{House, Limits, MemoryStore, PluginStore, Runtime, Status};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 const PRINTER_MANIFEST: &str = include_str!("fixtures/printer/niles-integration.toml");
 const PRINTER: &[u8] = include_bytes!("fixtures/printer.wasm");
 const RELAY_MANIFEST: &str = include_str!("fixtures/relay/niles-integration.toml");
 const RELAY: &[u8] = include_bytes!("fixtures/relay.wasm");
+const WS_MANIFEST: &str = include_str!("fixtures/websocket/niles-integration.toml");
+const WS_FIXTURE: &[u8] = include_bytes!("fixtures/websocket.wasm");
 
 struct Home {
     runtime: Runtime,
@@ -21,11 +25,24 @@ struct Home {
 
 impl Home {
     fn new(settings: toml::Table, store: Arc<MemoryStore>) -> Self {
+        Self::build(settings, store, false)
+    }
+
+    fn websocket_home(settings: toml::Table, store: Arc<MemoryStore>) -> Self {
+        Self::build(settings, store, true)
+    }
+
+    fn build(settings: toml::Table, store: Arc<MemoryStore>, loopback: bool) -> Self {
         let registry = Arc::new(DeviceRegistry::new());
         let bus = EventBus::new(1024);
         let house = House::new(registry.clone(), bus.clone(), store.clone())
             .with_settings(Arc::new(move |_| settings.clone()))
             .with_time_zone(Arc::new(|| "Europe/Copenhagen".to_string()));
+        let house = if loopback {
+            house.allowing_loopback()
+        } else {
+            house
+        };
         Self {
             runtime: Runtime::new(house, Limits::default()).expect("the runtime starts"),
             registry,
@@ -187,4 +204,227 @@ async fn a_plugin_light_can_keep_out_of_its_rooms_lights_and_is_remembered_so() 
             .any(|d| d.id == "office/chamber_light" && !d.room_light),
         "{known:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn interface_0_4_websocket_round_trip() {
+    websocket_journey(None).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn interface_0_4_connection_limit_and_slot_reuse() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let settings = toml::Table::from_iter([
+        ("address".into(), toml::Value::String("127.0.0.1".into())),
+        (
+            "url".into(),
+            toml::Value::String(format!("ws://127.0.0.1:{port}/")),
+        ),
+    ]);
+    let home = Home::websocket_home(settings, Arc::new(MemoryStore::new()));
+    let manifest = WS_MANIFEST.replace("port = 8088", &format!("port = {port}"));
+    home.runtime
+        .install(&manifest, WS_FIXTURE.to_vec())
+        .await
+        .unwrap();
+    home.running("wsfixture").await;
+    assert_eq!(
+        home.tool("wsfixture", "state", "{\"check_cap\":true}")
+            .await,
+        "cap verified"
+    );
+    home.runtime.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn interface_0_4_http_401_is_terminal_without_retry() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let home = websocket_fixture_home(port).await;
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        stream
+            .write_all(
+                b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), listener.accept())
+                .await
+                .is_err(),
+            "401 must not retry"
+        );
+    });
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap();
+    let state: serde_json::Value =
+        serde_json::from_str(&home.tool("wsfixture", "state", "{}").await).unwrap();
+    assert_eq!(state["failed"], 1);
+    assert_eq!(state["last_failure"], 1);
+    assert_eq!(state["connected"], 0);
+    home.runtime.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn interface_0_4_http_503_retries_then_upgrades_and_echoes() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let home = websocket_fixture_home(port).await;
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+        let (stream, _) = tokio::time::timeout(Duration::from_secs(4), listener.accept())
+            .await
+            .expect("503 retry arrives")
+            .unwrap();
+        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        assert_eq!(
+            ws.next().await.unwrap().unwrap().into_text().unwrap(),
+            "from-component"
+        );
+        ws.send(WsMessage::Text("from-server".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            ws.next().await.unwrap().unwrap().into_text().unwrap(),
+            "echo:from-server"
+        );
+        ws.close(None).await.unwrap();
+    });
+    tokio::time::timeout(Duration::from_secs(7), server)
+        .await
+        .expect("503 retry/echo finishes")
+        .unwrap();
+    let state: serde_json::Value =
+        serde_json::from_str(&home.tool("wsfixture", "state", "{}").await).unwrap();
+    assert_eq!(state["connected"], 1);
+    assert_eq!(state["received"], 1);
+    assert_eq!(state["failed"], 0);
+    home.runtime.shutdown().await;
+}
+
+async fn websocket_fixture_home(port: u16) -> Home {
+    let settings = toml::Table::from_iter([
+        ("address".into(), toml::Value::String("127.0.0.1".into())),
+        (
+            "url".into(),
+            toml::Value::String(format!("ws://127.0.0.1:{port}/")),
+        ),
+    ]);
+    let home = Home::websocket_home(settings, Arc::new(MemoryStore::new()));
+    let manifest = WS_MANIFEST.replace("port = 8088", &format!("port = {port}"));
+    home.runtime
+        .install(&manifest, WS_FIXTURE.to_vec())
+        .await
+        .unwrap();
+    home.running("wsfixture").await;
+    home
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn interface_0_4_rejects_oversized_binary() {
+    websocket_journey(Some(WsMessage::Binary(vec![0x5a; 64 * 1024 + 1].into()))).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn interface_0_4_rejects_oversized_text() {
+    websocket_journey(Some(WsMessage::Text("x".repeat(64 * 1024 + 1).into()))).await;
+}
+
+async fn websocket_journey(oversized: Option<WsMessage>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        #[allow(clippy::result_large_err)]
+        let request = tokio_tungstenite::accept_hdr_async(
+            stream,
+            |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                assert_eq!(request.uri().path(), "/socket/deep");
+                assert_eq!(request.uri().query(), Some("token=not-logged&x=1"));
+                Ok::<_, tokio_tungstenite::tungstenite::http::Response<Option<String>>>(response)
+            },
+        )
+        .await
+        .unwrap();
+        let mut ws = request;
+        let first = ws.next().await.unwrap().unwrap();
+        assert_eq!(first.into_text().unwrap(), "from-component");
+        ws.send(WsMessage::Text("from-server".into()))
+            .await
+            .unwrap();
+        let reply = ws.next().await.unwrap().unwrap();
+        assert_eq!(reply.into_text().unwrap(), "echo:from-server");
+        if let Some(frame) = oversized {
+            ws.send(frame).await.unwrap();
+            assert!(
+                matches!(
+                    ws.next().await,
+                    None | Some(Err(_)) | Some(Ok(WsMessage::Close(_)))
+                ),
+                "host must terminate the oversized stream, not echo it"
+            );
+        } else {
+            ws.close(None).await.unwrap();
+        }
+        drop(ws);
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+        assert_eq!(
+            ws.next().await.unwrap().unwrap().into_text().unwrap(),
+            "from-component"
+        );
+        ws.send(WsMessage::Text("after-reconnect".into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            ws.next().await.unwrap().unwrap().into_text().unwrap(),
+            "echo:after-reconnect"
+        );
+        ws.send(WsMessage::Text("close-now".into())).await.unwrap();
+        assert!(matches!(ws.next().await, Some(Ok(WsMessage::Close(_)))));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1500), listener.accept())
+                .await
+                .is_err(),
+            "explicit close must not reconnect"
+        );
+    });
+    let report = niles_plugins::check::check(WS_MANIFEST, Some(WS_FIXTURE.to_vec()), None).await;
+    assert!(report.ok(), "{:?}", report.problems);
+    let settings = toml::Table::from_iter([
+        ("address".into(), toml::Value::String("127.0.0.1".into())),
+        (
+            "url".into(),
+            toml::Value::String(format!(
+                "ws://127.0.0.1:{port}/socket/deep?token=not-logged&x=1"
+            )),
+        ),
+    ]);
+    let home = Home::websocket_home(settings, Arc::new(MemoryStore::new()));
+    let mut manifest = WS_MANIFEST.to_string();
+    manifest = manifest.replace("port = 8088", &format!("port = {port}"));
+    home.runtime
+        .install(&manifest, WS_FIXTURE.to_vec())
+        .await
+        .expect("v0.4 installs");
+    home.running("wsfixture").await;
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("the WebSocket server completes the oversized-frame reconnect journey")
+        .expect("the WebSocket server task succeeds");
+    let state: serde_json::Value =
+        serde_json::from_str(&home.tool("wsfixture", "state", "{}").await).unwrap();
+    assert_eq!(state["connected"], 2);
+    assert_eq!(state["received"], 2);
 }

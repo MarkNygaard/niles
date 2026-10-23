@@ -46,7 +46,7 @@ pub(crate) fn spawn_reminder(
                 && let Some(text) = reminder(&order, now)
             {
                 tracing::info!("[nemlig] {text}");
-                notifications.deliver(text, None, Priority::Routine);
+                notifications.deliver(text, None, Priority::Routine).await;
                 said_for = Some(order.id);
             }
         }

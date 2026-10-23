@@ -1,7 +1,7 @@
 //! `niles-integration.toml`: what a plugin is, what it may reach, and
 //! what its setup panel asks for.
 //!
-//! The rules are those of `docs/integrations/manifest.md`. Parsing is
+//! The rules are those of `site/content/docs/writing-add-ons/manifest.mdx`. Parsing is
 //! strict about the shape — an unknown key is an error, because a typo
 //! in `[permissions]` would otherwise quietly take a permission away —
 //! and [`Manifest::problems`] then lists everything else wrong, all at
@@ -15,7 +15,7 @@ use std::collections::HashSet;
 pub const NILES_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The `interface` versions this Niles runs, oldest first.
-pub const INTERFACES: &[&str] = &["0.1", "0.2", "0.3"];
+pub const INTERFACES: &[&str] = &["0.1", "0.2", "0.3", "0.4", "0.5", "0.6"];
 
 /// Memory a plugin gets unless its manifest asks for more.
 pub const DEFAULT_MEMORY_MB: u32 = 64;
@@ -93,6 +93,30 @@ pub struct Permissions {
     /// A secret address the internet may call, from interface 0.3.
     #[serde(default)]
     pub webhook: bool,
+    /// Named WebSocket endpoints. Introduced in interface 0.4.
+    #[serde(default)]
+    pub websocket: Vec<WebSocketGrant>,
+    /// Permission to use Niles's room-bound text speech stream (interface 0.5).
+    #[serde(default)]
+    pub speech_stream: Option<SpeechStreamGrant>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpeechStreamGrant {
+    /// The declared room setting whose current value fixes the session room.
+    pub room: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebSocketGrant {
+    pub name: String,
+    pub host: String,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub tls: bool,
 }
 
 /// One broker a plugin may connect to.
@@ -484,6 +508,7 @@ impl Manifest {
             out.push("pages and widgets need ui = true in [permissions]".into());
         }
         self.check_mqtt(out);
+        self.check_websocket(out);
         let older = matches!(self.interface.as_str(), "0.1" | "0.2");
         for (asked, name) in [(p.callback, "callback"), (p.webhook, "webhook")] {
             if asked && older {
@@ -538,6 +563,104 @@ impl Manifest {
                         out.push(format!("mqtt: broker {name:?}: {why}"));
                     }
                 }
+            }
+        }
+    }
+
+    fn check_websocket(&self, out: &mut Vec<String>) {
+        let mut names = HashSet::new();
+        for grant in &self.permissions.websocket {
+            if !is_identifier(&grant.name) || grant.name.len() > 32 {
+                out.push(format!(
+                    "websocket: grant name {:?} must be [a-z0-9_]+, at most 32 characters",
+                    grant.name
+                ));
+            }
+            if !names.insert(grant.name.as_str()) {
+                out.push(format!(
+                    "websocket: grant name {:?} is used twice",
+                    grant.name
+                ));
+            }
+            if grant.port == Some(0) {
+                out.push(format!("websocket: grant {:?} has port 0", grant.name));
+            }
+            match grant.host.strip_prefix("setting:") {
+                Some(key) => match self.setting(key) {
+                    Some(s) if s.kind == SettingKind::String => {}
+                    Some(_) => out.push(format!(
+                        "websocket: setting:{key} must name a string setting"
+                    )),
+                    None => out.push(format!(
+                        "websocket: setting:{key} names no declared setting"
+                    )),
+                },
+                None => {
+                    if let Err(why) = crate::policy::check_mqtt_host(
+                        &grant.host,
+                        if grant.tls {
+                            TlsMode::Verify
+                        } else {
+                            TlsMode::Plain
+                        },
+                    ) {
+                        out.push(format!("websocket: {why}"));
+                    }
+                    if !grant.tls {
+                        if let Ok(ip) = grant
+                            .host
+                            .trim_matches(['[', ']'])
+                            .parse::<std::net::IpAddr>()
+                        {
+                            if !crate::policy::is_local_network_address(ip) {
+                                out.push(
+                                    "websocket: plaintext grants must be on local_network".into(),
+                                );
+                            }
+                        } else if !self.permissions.local_network.iter().any(|entry| {
+                            entry
+                                .trim_end_matches('.')
+                                .eq_ignore_ascii_case(grant.host.trim_end_matches('.'))
+                        }) {
+                            out.push(
+                                "websocket: plaintext host must be declared in local_network"
+                                    .into(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        if !self.permissions.websocket.is_empty()
+            && self.interface != "0.4"
+            && self.interface != "0.5"
+            && self.interface != "0.6"
+        {
+            out.push("websocket: WebSockets are in interface 0.4; set interface = \"0.4\" and build against its WIT".into());
+        }
+        if self.permissions.speech_stream.is_some()
+            && self.interface != "0.5"
+            && self.interface != "0.6"
+        {
+            out.push("speech_stream: the speech stream is in interface 0.5; set interface = \"0.5\" and build against its WIT".into());
+        }
+        if let Some(grant) = &self.permissions.speech_stream {
+            match self.setting(&grant.room) {
+                Some(setting) if setting.kind == SettingKind::Room => {}
+                Some(_) => out.push(format!(
+                    "speech_stream: room setting {:?} must have type room",
+                    grant.room
+                )),
+                None => out.push(format!(
+                    "speech_stream: room setting {:?} is not declared",
+                    grant.room
+                )),
+            }
+            match self.setting("speech_stream_enabled") {
+                Some(setting) if setting.kind == SettingKind::Boolean
+                    && setting.default.as_ref().is_none_or(|v| matches!(v, toml::Value::Boolean(false))) => {}
+                Some(_) => out.push("speech_stream: speech_stream_enabled must be a boolean setting with no default or default = false".into()),
+                None => out.push("speech_stream: requires a boolean speech_stream_enabled setting with no default or default = false".into()),
             }
         }
     }
@@ -888,6 +1011,48 @@ room = "setting:room"
     }
 
     #[test]
+    fn speech_stream_requires_false_or_absent_boolean_and_room_settings() {
+        let valid = format!(
+            "{}\n[[settings]]\nkey = \"speech_stream_enabled\"\nlabel = \"Enabled\"\ntype = \"boolean\"\ndefault = false\n\n[[settings]]\nkey = \"room\"\nlabel = \"Room\"\ntype = \"room\"",
+            SPOTPRICE
+                .replace(
+                    "devices = true",
+                    "devices = true\nspeech_stream = { room = \"room\" }"
+                )
+                .replace("interface = \"0.1\"", "interface = \"0.5\"")
+        );
+        let manifest = Manifest::parse(&valid).unwrap();
+        assert!(manifest.problems().is_empty(), "{:?}", manifest.problems());
+
+        for (needle, replacement, expected) in [
+            (
+                "\nkey = \"speech_stream_enabled\"",
+                "\nkey = \"other_enabled\"",
+                "speech_stream_enabled",
+            ),
+            (
+                "type = \"boolean\"",
+                "type = \"string\"",
+                "speech_stream_enabled",
+            ),
+            ("default = false", "default = true", "speech_stream_enabled"),
+            ("type = \"room\"", "type = \"string\"", "room"),
+            ("key = \"room\"", "key = \"other_room\"", "room setting"),
+        ] {
+            let invalid = valid.replacen(needle, replacement, 1);
+            let parsed = Manifest::parse(&invalid).expect("invalid declarations still parse");
+            assert!(
+                parsed
+                    .problems()
+                    .iter()
+                    .any(|problem| problem.contains(expected)),
+                "{expected}: {:?}",
+                parsed.problems()
+            );
+        }
+    }
+
+    #[test]
     fn an_unknown_key_is_an_error_not_a_lost_permission() {
         let problems = replacing("devices = true", "device = true");
         assert!(problems[0].contains("unknown field"), "{problems:?}");
@@ -910,9 +1075,10 @@ room = "setting:room"
             replacing(r#"min_niles = "0.2.0""#, r#"min_niles = "9.0.0""#)[0]
                 .contains("needs Niles")
         );
-        assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.4""#)[0].contains("interface"));
+        assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.4""#).is_empty());
         assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.2""#).is_empty());
         assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.3""#).is_empty());
+        assert!(replacing(r#"interface = "0.1""#, r#"interface = "0.6""#).is_empty());
     }
 
     #[test]

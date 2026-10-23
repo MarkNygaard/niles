@@ -45,6 +45,7 @@ pub mod logs;
 pub mod me;
 pub mod memory;
 pub mod music;
+pub mod notifications;
 pub mod places;
 pub mod plugins;
 pub mod podcasts;

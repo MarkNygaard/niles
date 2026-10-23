@@ -65,3 +65,4 @@ tokio-tungstenite.workspace = true
 hex.workspace = true
 wiremock = "0.6"
 image.workspace = true
+parking_lot.workspace = true

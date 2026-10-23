@@ -136,7 +136,13 @@ impl Notifier for CenterNotifier {
                 niles_notifications::Priority::Routine
             }
         };
-        self.center.deliver(body, room.map(String::from), p);
+        // The rule goes on to its next action while this is spoken, and a
+        // run replaced by the next one does not cut it short.
+        let center = self.center.clone();
+        let (body, room) = (body.to_string(), room.map(String::from));
+        tokio::spawn(async move {
+            center.deliver(body, room, p).await;
+        });
     }
 }
 

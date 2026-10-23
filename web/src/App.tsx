@@ -8,6 +8,8 @@ import { GroceriesPage } from "@/components/GroceriesPage";
 import { MediaPage, somethingPlays } from "@/components/MediaPage";
 import { AvatarMenu } from "@/components/AvatarMenu";
 import { MyProfile } from "@/components/MyProfile";
+import { NotificationBell } from "@/components/NotificationBell";
+import { NotificationsPage } from "@/components/NotificationsPage";
 import { PluginPageView } from "@/components/PluginPageView";
 import { RoomDashboard } from "@/components/RoomDashboard";
 import { SignIn } from "@/components/SignIn";
@@ -208,6 +210,8 @@ export function App() {
         {/* Nothing after Home until the arrangement is known: an entry
             somebody hid should not flash up on every load. */}
         <TabBar route={screen.at} menu={layout?.main ?? []} pages={pages} />
+        {/* Notifications are someone's own, so only with someone signed in. */}
+        {email && <NotificationBell current={screen.at === "/notifications"} />}
         <AvatarMenu
           email={email}
           avatarUrl={avatarUrl}
@@ -249,6 +253,8 @@ function screenFor(route: string, pages: PluginPageEntry[]): Screen {
       };
     case "/skills":
       return { at: route, title: "Skills", body: <SkillsPage /> };
+    case "/notifications":
+      return { at: route, title: "Notifications", body: <NotificationsPage /> };
   }
   // A section of My profile, by its id: `#/me/profile/strava`.
   if (route.startsWith("/me/profile/")) {

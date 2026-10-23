@@ -9,12 +9,14 @@ config. Settings live in Postgres and are changed from the app (see
 
 Built and pushed to **GHCR** by [`.github/workflows/image.yml`](../../.github/workflows/image.yml):
 
-- **Tag a release** — push a git tag `v*` (e.g. `v0.1.0`) → publishes
-  `ghcr.io/marknygaard/niles:0.1.0` + `:latest` + `:sha-<sha>`.
-- **Manual** — run the `image` workflow (Actions → image → Run workflow) on
-  `main` → publishes `:latest` + `:sha-<sha>`.
+- **A merge into `main`** publishes `:latest` and `:sha-<sha>`, and the
+  version (`:0.4.0`) when what was merged is a release.
+- **Manual**: run the `image` workflow (Actions → image → Run workflow),
+  which publishes `:sha-<sha>`, and `:latest` from `main`.
 
-No local Docker needed — the build runs in CI.
+The image is `linux/amd64` only. CI's `compose (up + healthz)` job also
+builds it on every pull request and starts it with
+[`deploy/compose`](../compose/).
 
 ## Speaker recognition
 
@@ -68,40 +70,30 @@ image ships without a model.
 
 ### GHCR visibility
 
-GHCR packages are **private by default**. Either:
-
-- make the package public (GitHub → Packages → niles → Package settings →
-  Change visibility → Public), or
-- create an image pull secret in your namespace and reference it:
-  ```sh
-  kubectl create secret docker-registry ghcr \
-    --docker-server=ghcr.io \
-    --docker-username=<github-user> \
-    --docker-password=<a PAT with read:packages> \
-    -n <namespace>
-  ```
-  then add `imagePullSecrets: [{ name: ghcr }]` to the pod spec.
+The package `ghcr.io/marknygaard/niles` is public, so pulling it needs no
+login.
 
 ## Configuration (runtime, not baked in)
 
-The image runs `niles serve` with no config file. Give it a Secret with
+The image runs `niles serve` with no config file. Give it
 `NILES_DATABASE_URL` (a Postgres connection string) and `NILES_SECRET_KEY`
-(base64 of 32 bytes, which seals the keys typed into the app), and set
-everything else from the app's Settings: the MQTT broker, speech and AI
-providers, integrations, the lighting curve. It is all kept in the
-database, so nothing needs a ConfigMap.
+(base64 of 32 bytes, which seals the keys typed into the app). Most of the
+rest is set from the app's Settings and kept in the database: integrations,
+the lighting curve, the providers.
 
-A file still works for starting from fixed values: mount one and run
-`niles serve --config /etc/niles/niles.toml`. What the app saves is layered
-on top of it.
+A fresh install also needs, before its first start, the MQTT broker's
+address and login and the keys for hearing (ElevenLabs) and thinking
+(Cerebras): `serve` connects to the broker and builds both clients before
+the API is up, and exits without them. Mount a small `niles.toml` with the
+broker's address and the `*_env` names of the variables holding the rest,
+and run `niles serve --config /etc/niles/niles.toml`.
+[`deploy/compose/niles.toml`](../compose/niles.toml) is one. What the app
+saves is layered on top of the file.
 
-`serve` runs the full stack, but with no satellite connected the Wyoming
-voice server just sits idle — the lighting curve, room light-switches, and
-morning routine all run regardless. `serve` does need a key for the thinking
-provider (Cerebras, by default) to start, because it builds the LLM client
-eagerly: set one in the app under Settings → System → Voice & AI, or name an
-environment variable with `api_key_env`. The hearing provider is only used
-once a satellite speaks.
+With no satellite connected the Wyoming voice server sits idle, and the
+lighting curve, room light-switches and morning routine all run regardless.
+Without a reachable broker, `serve` exits at its first curve tick, a minute
+after starting.
 
 ### Sample config — circadian + switches + morning (no voice yet)
 

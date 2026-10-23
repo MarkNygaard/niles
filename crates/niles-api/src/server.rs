@@ -140,6 +140,7 @@ pub fn router(state: AppState) -> Router {
             post(crate::tool_servers::refresh),
         )
         .route("/plugins", get(crate::plugins::list))
+        .route("/plugins/install/library", get(crate::plugins::library))
         .route("/plugins/install/preview", post(crate::plugins::preview))
         .route("/plugins/install", post(crate::plugins::install))
         .route("/plugins/{id}", delete(crate::plugins::remove))
@@ -270,6 +271,8 @@ pub fn router(state: AppState) -> Router {
                 .delete(crate::push::unsubscribe),
         )
         .route("/me/push/test", post(crate::push::test))
+        .route("/me/notifications", get(crate::notifications::list))
+        .route("/me/notifications/read", post(crate::notifications::read))
         .route(
             "/me/strava",
             get(crate::training::status).delete(crate::training::remove),

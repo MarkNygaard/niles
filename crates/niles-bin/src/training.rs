@@ -609,6 +609,7 @@ mod tests {
             slug: None,
             satellite: None,
             conversation: None,
+            in_chat: false,
         };
         let tools = shared(store);
         let out = approvals::ASKER

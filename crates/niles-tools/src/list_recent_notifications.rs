@@ -109,8 +109,12 @@ mod tests {
     #[tokio::test]
     async fn lists_recent_items() {
         let center = make_center();
-        center.deliver("first", None, niles_notifications::Priority::Routine);
-        center.deliver("second", None, niles_notifications::Priority::Important);
+        center
+            .deliver("first", None, niles_notifications::Priority::Routine)
+            .await;
+        center
+            .deliver("second", None, niles_notifications::Priority::Important)
+            .await;
         let tool = ListRecentNotificationsTool::new(center);
         let result = tool.execute(json!({"limit": 2})).await.unwrap();
         let arr = result["notifications"].as_array().unwrap();
@@ -123,11 +127,13 @@ mod tests {
     async fn clamps_limit_to_max() {
         let center = Arc::new(NotificationCenter::new(60));
         for i in 0..60 {
-            center.deliver(
-                format!("msg-{i}"),
-                None,
-                niles_notifications::Priority::Routine,
-            );
+            center
+                .deliver(
+                    format!("msg-{i}"),
+                    None,
+                    niles_notifications::Priority::Routine,
+                )
+                .await;
         }
         let tool = ListRecentNotificationsTool::new(center);
         let result = tool.execute(json!({"limit": 100})).await.unwrap();
@@ -139,11 +145,13 @@ mod tests {
     async fn defaults_limit_to_ten() {
         let center = make_center();
         for i in 0..20 {
-            center.deliver(
-                format!("msg-{i}"),
-                None,
-                niles_notifications::Priority::Routine,
-            );
+            center
+                .deliver(
+                    format!("msg-{i}"),
+                    None,
+                    niles_notifications::Priority::Routine,
+                )
+                .await;
         }
         let tool = ListRecentNotificationsTool::new(center);
         let result = tool.execute(json!({})).await.unwrap();
@@ -154,8 +162,12 @@ mod tests {
     #[tokio::test]
     async fn zero_limit_clamps_to_one() {
         let center = make_center();
-        center.deliver("first", None, niles_notifications::Priority::Routine);
-        center.deliver("second", None, niles_notifications::Priority::Routine);
+        center
+            .deliver("first", None, niles_notifications::Priority::Routine)
+            .await;
+        center
+            .deliver("second", None, niles_notifications::Priority::Routine)
+            .await;
         let tool = ListRecentNotificationsTool::new(center);
         let result = tool.execute(json!({"limit": 0})).await.unwrap();
         let arr = result["notifications"].as_array().unwrap();
@@ -167,11 +179,13 @@ mod tests {
     async fn negative_limit_defaults_to_ten() {
         let center = make_center();
         for i in 0..15 {
-            center.deliver(
-                format!("msg-{i}"),
-                None,
-                niles_notifications::Priority::Routine,
-            );
+            center
+                .deliver(
+                    format!("msg-{i}"),
+                    None,
+                    niles_notifications::Priority::Routine,
+                )
+                .await;
         }
         let tool = ListRecentNotificationsTool::new(center);
         // serde_json parses -1 as i64, as_u64() returns None, so default=10, then clamp(1,50)

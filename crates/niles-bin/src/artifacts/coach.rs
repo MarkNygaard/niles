@@ -132,6 +132,7 @@ impl Artifacts {
                     summary: None,
                     page: niles_artifacts::PageChange::Keep,
                 },
+                None,
             )
             .await
             .map_err(storage)?
@@ -145,6 +146,9 @@ impl Artifacts {
             tracked.reason()
         );
         self.announce(&saved);
+        if saved.notify && !tracked.done.is_empty() {
+            self.notifier.counted(&saved, &tracked.done, today).await;
+        }
         let runs: Vec<Done> = tracked
             .done
             .into_iter()
@@ -200,6 +204,7 @@ impl Artifacts {
             slug: person.strip_prefix("person:").map(str::to_string),
             satellite: None,
             conversation: None,
+            in_chat: false,
         };
         let tools = self.job_tools(plan.id, TRAINING_PLAN, Some(today));
         let outcome =
@@ -523,7 +528,7 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct Told(Mutex<Vec<(i64, String)>>);
+    struct Told(Mutex<Vec<(i64, String)>>, Mutex<Vec<String>>);
 
     #[async_trait]
     impl Notifier for Told {
@@ -531,6 +536,13 @@ mod tests {
 
         async fn changed(&self, artifact: &Artifact, note: &str) {
             self.0.lock().unwrap().push((artifact.id, note.into()));
+        }
+
+        async fn counted(&self, plan: &Artifact, done: &[Done], today: NaiveDate) {
+            self.1.lock().unwrap().extend(
+                done.iter()
+                    .map(|d| crate::artifacts::counted_notice(plan, d, today).body),
+            );
         }
     }
 
@@ -730,6 +742,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_workout_that_marks_a_session_is_told_once() {
+        let f = fixture(Arc::new(FakeCoach {
+            off: true,
+            ..FakeCoach::default()
+        }));
+        made(&f, TRAINING_PLAN, plan()).await;
+        let today = day("2026-10-14");
+        f.artifacts.follow(MAJSE, &[tuesday_run()], today).await;
+        f.artifacts.follow(MAJSE, &[tuesday_run()], today).await;
+        assert_eq!(
+            *f.told.1.lock().unwrap(),
+            ["Your 6.2 km run yesterday was counted as the easy run."]
+        );
+    }
+
+    #[tokio::test]
+    async fn sessions_only_missed_tell_nothing() {
+        let f = fixture(FakeCoach::doing(vec![]));
+        made(&f, TRAINING_PLAN, plan()).await;
+        f.artifacts.follow(MAJSE, &[], day("2026-10-17")).await;
+        assert_eq!(
+            f.store
+                .get(MAJSE, 1)
+                .await
+                .unwrap()
+                .unwrap()
+                .current_revision,
+            2
+        );
+        assert!(f.told.1.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn the_days_gone_by_are_missed_with_no_run_at_all() {
         let f = fixture(FakeCoach::doing(vec![]));
         made(&f, TRAINING_PLAN, plan()).await;
@@ -838,6 +883,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_coach_s_edits_keep_the_past_too() {
+        let f = fixture(FakeCoach::doing(vec![]));
+        let plan = made(&f, TRAINING_PLAN, plan()).await;
+        let tools = f
+            .artifacts
+            .job_tools(plan.id, TRAINING_PLAN, Some(day("2026-10-15")));
+        assert!(tools.has("artifact_edit"));
+        assert!(!tools.has("artifact_edit_page"));
+        let asker = Asker {
+            person: MAJSE.into(),
+            slug: Some("majse".into()),
+            satellite: None,
+            conversation: None,
+            in_chat: false,
+        };
+        let e = call(
+            &tools,
+            &asker,
+            "artifact_edit",
+            json!({
+                "id": plan.id,
+                "edits": [{ "op": "set", "path": "/weeks/0/sessions/0/distance_km", "value": 8 }],
+                "reason": "Longer",
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert!(e.contains("before today"), "{e}");
+        call(
+            &tools,
+            &asker,
+            "artifact_edit",
+            json!({
+                "id": plan.id,
+                "edits": [{ "op": "set", "path": "/weeks/0/sessions/2/distance_km", "value": 8 }],
+                "reason": "Longer",
+            }),
+        )
+        .await
+        .unwrap();
+        let a = f.store.get(MAJSE, plan.id).await.unwrap().unwrap();
+        assert_eq!(a.current_revision, 2, "the planned session changed");
+    }
+
+    #[tokio::test]
     async fn a_look_that_changes_what_is_coming_tells_her_with_its_note() {
         let f = fixture(FakeCoach::doing(vec![Does::Saves(|p| {
             p["weeks"][1]["sessions"][0]["distance_km"] = json!(4);
@@ -898,6 +988,12 @@ mod tests {
             !f.artifacts
                 .job_tools(plan.id, TRAINING_PLAN, Some(day("2026-10-13")))
                 .has("artifact_set_page"),
+            "the coach has no way to touch the page"
+        );
+        assert!(
+            !f.artifacts
+                .job_tools(plan.id, TRAINING_PLAN, Some(day("2026-10-13")))
+                .has("artifact_edit_page"),
             "the coach has no way to touch the page"
         );
         f.artifacts

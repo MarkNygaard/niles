@@ -6,7 +6,8 @@
 //! and the keys to encrypt for it), and Niles keeps it under the same
 //! person key as their chat. When something of theirs needs them — a
 //! document written in the background is ready — [`WebPush`] sends to
-//! every device they have.
+//! every device they have. What it tells them is kept too ([`inbox`]),
+//! for their Notifications page in the app.
 //!
 //! Everything is outbound: Niles posts to Apple's, Google's or
 //! Mozilla's push service and the service wakes the device. Nothing has
@@ -20,11 +21,13 @@
 
 pub mod encrypt;
 mod error;
+pub mod inbox;
 mod send;
 mod store;
 mod vapid;
 
 pub use error::{Error, Result};
-pub use send::{Delivery, Message, TTL, WebPush};
+pub use inbox::{Inbox, MemoryInbox, Notice, Notification};
+pub use send::{Action, Approval, Delivery, Message, TTL, WebPush};
 pub use store::{MemoryPush, NewSubscription, PushStore, Subscription, device_label};
 pub use vapid::{VapidKey, origin_of};

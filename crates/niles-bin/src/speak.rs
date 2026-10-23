@@ -392,9 +392,12 @@ pub async fn speak_back(
     satellites: &SatelliteRegistry,
     // A question: ask the satellite to listen for the answer afterwards.
     listen: bool,
-) -> Result<()> {
-    let duck_handle = try_duck(speakers, satellites, peer).await;
-    let result: Result<()> = async {
+) -> Result<Duration> {
+    let ducked = Ducked {
+        peer,
+        speakers: try_duck(speakers, satellites, peer).await,
+    };
+    let result: Result<Duration> = async {
         let synth = piper.synthesize(text, None).await?;
         let (pcm, format) = wav_to_pcm(&synth.audio_wav)?;
         let (pcm, format) = for_satellite(pcm, format);
@@ -402,16 +405,58 @@ pub async fn speak_back(
         sender
             .send_audio_then(peer, &quieted, format, listen)
             .await?;
-        Ok(())
+        Ok(playing_time(quieted.len(), format))
     }
     .await;
+    ducked.restore().await;
+    result
+}
 
-    for (sonos, original) in duck_handle {
+/// Speakers turned down for a reply, and their volume before. Dropped
+/// without `restore` — a caller that gave up on `speak_back`, a timeout
+/// or an aborted task — it still puts them back, so the music is never
+/// left down.
+struct Ducked {
+    peer: SocketAddr,
+    speakers: Vec<(Arc<SonosClient>, u8)>,
+}
+
+impl Ducked {
+    async fn restore(mut self) {
+        restore_volumes(self.peer, std::mem::take(&mut self.speakers)).await;
+    }
+}
+
+impl Drop for Ducked {
+    fn drop(&mut self) {
+        let speakers = std::mem::take(&mut self.speakers);
+        if speakers.is_empty() {
+            return;
+        }
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(restore_volumes(self.peer, speakers));
+        }
+    }
+}
+
+async fn restore_volumes(peer: SocketAddr, speakers: Vec<(Arc<SonosClient>, u8)>) {
+    for (sonos, original) in speakers {
         if let Err(e) = sonos.set_volume(original).await {
             tracing::warn!("[{peer}] duck restore failed: {e:#}");
         }
     }
-    result
+}
+
+/// How long `bytes` of PCM in `format` take to play. `speak_back` returns
+/// once the audio is written, well before the satellite has played it.
+pub(crate) fn playing_time(bytes: usize, format: AudioFormat) -> Duration {
+    let bytes_per_second = u64::from(format.sample_rate_hz)
+        * u64::from(format.bits_per_sample / 8)
+        * u64::from(format.channels);
+    if bytes_per_second == 0 {
+        return Duration::ZERO;
+    }
+    Duration::from_secs_f64(bytes as f64 / bytes_per_second as f64)
 }
 
 #[cfg(test)]
@@ -850,6 +895,26 @@ room = "living_room"
 
     fn test_peer() -> SocketAddr {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1234)
+    }
+
+    #[tokio::test]
+    async fn a_reply_given_up_on_still_puts_the_volume_back() {
+        let mock = RecordingTransport::with_responses(vec![Ok(String::new())]);
+        let ducked = Ducked {
+            peer: test_peer(),
+            speakers: vec![(Arc::new(on(mock.clone())), 60)],
+        };
+        drop(ducked);
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        let calls = mock.calls();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(calls[0].1.contains("SetVolume"), "{calls:?}");
+        assert!(
+            calls[0].2.contains("<DesiredVolume>60</DesiredVolume>"),
+            "{calls:?}"
+        );
     }
 
     #[tokio::test]

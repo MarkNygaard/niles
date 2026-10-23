@@ -4,16 +4,11 @@
 /// at the bottom of this file: it imports the host interfaces below and
 /// exports the lifecycle and tool functions Niles calls.
 ///
-/// Spec and author guide: docs/integrations/.
+/// Spec and author guide: site/content/docs/writing-add-ons/.
 ///
-/// Status: v0.3.0 (`crates/niles-plugins`). 0.3.0 is 0.2.1 plus the
-/// `secrets` and `inbound` interfaces and the exports `authorize-url`,
-/// `on-callback` and `on-webhook`: connecting an account through its
-/// own sign-in page, keeping the tokens it hands back, and a secret
-/// address the internet may call. Nothing 0.2.1 had changed.
-/// Niles still runs plugins built for 0.2 and 0.1, whose interfaces are
-/// kept, frozen, in `niles-integration-0.2.wit` and
-/// `niles-integration-0.1.wit` beside this file.
+/// Status: v0.6.0 (`crates/niles-plugins`). 0.6 adds tracked notification
+/// requests. 0.5's speech-stream and older worlds are
+/// frozen in adjacent versioned files and remain supported.
 ///
 /// Conventions, the same as the rest of Niles:
 /// - brightness and position are percent, 0-100 (position 0 is shut,
@@ -26,7 +21,7 @@
 /// Every call is synchronous from the plugin's point of view. Niles never
 /// calls into a plugin while that plugin is waiting on a host function,
 /// and never makes two calls into the same plugin at once.
-package niles:integration@0.3.0;
+package niles:integration@0.6.0;
 
 /// Types shared by several interfaces and by the exports.
 interface types {
@@ -401,9 +396,24 @@ interface notify {
         urgent,
     }
 
+    /// What happened to an accepted notification request.
+    enum request-status {
+        pending,
+        completed,
+        partial,
+        suppressed,
+        failed,
+    }
+
     /// Say `message`, one or two short sentences, most important fact
     /// first. `room` picks the room; none lets Niles choose.
     say: func(message: string, priority: priority, room: option<string>) -> result<_, host-error>;
+
+    /// Accept a bounded request and return its id before transport begins.
+    request: func(message: string, priority: priority, room: option<string>) -> result<u64, host-error>;
+
+    /// Read the tracked transport outcome for this plugin instance's request.
+    status: func(request: u64) -> result<request-status, host-error>;
 }
 
 /// Declarative UI: what the plugin's menu pages and widgets show.
@@ -721,6 +731,61 @@ interface mqtt {
     disconnect: func(conn: conn-id);
 }
 
+/// Host-managed WebSocket connections.
+///
+/// Niles owns DNS, TCP, TLS, reconnect and cancellation. At most four
+/// connections per plugin and 64 KiB per assembled message.
+interface websocket {
+    use types.{host-error};
+    type conn-id = u32;
+    variant message {
+        text(string),
+        binary(list<u8>),
+    }
+    enum failure-kind {
+        policy,
+        authentication,
+        tls,
+        protocol,
+    }
+    variant connection-status {
+        connected,
+        disconnected(string),
+        failed(failure-kind),
+        overflow(u32),
+    }
+    /// Open asynchronously. The grant is a name in permissions.websocket.
+    connect: func(grant: string, url: string, headers: list<tuple<string, string>>) -> result<conn-id, host-error>;
+    /// Enqueue one bounded frame; unavailable while disconnected.
+    send: func(conn: conn-id, message: message) -> result<_, host-error>;
+    /// Idempotent.
+    close: func(conn: conn-id);
+}
+
+/// Room-bound plugin speech streams. Separate from notifications:
+/// acceptance means only that a bounded request was recorded. Host work is
+/// asynchronous; polling reports transport outcomes, never human audibility.
+interface speech-stream {
+    use types.{host-error};
+    type session-id = u32;
+    type request-id = u64;
+    enum outcome { pending, delivered, busy, quiet, expired, failed, cancelled, replaced, rate-limited, no-satellite }
+    record request-status { request: request-id, outcome: outcome }
+    /// Open one stream in the selected room. Requires the speech-stream
+    /// permission, its declared household room setting, and a user-enabled
+    /// boolean `speech_stream_enabled` setting. The room must match that setting.
+    open: func(room: string) -> result<session-id, host-error>;
+    /// Queue one short utterance without waiting for synthesis or output.
+    /// At most 32 uncollected requests per session; excess is `limit`.
+    submit: func(session: session-id, text: string) -> result<request-id, host-error>;
+    /// Results stay correlated with submissions and ordered by request id.
+    /// Until transport starts, a newer accepted submission replaces older
+    /// pending work and reports `replaced`; expiry is checked at transport start.
+    poll: func(session: session-id) -> result<list<request-status>, host-error>;
+    /// Idempotently close an owned session and cancel its pending work.
+    close: func(session: session-id);
+}
+
 /// Credentials the plugin keeps itself, such as an OAuth token it
 /// refreshed, in Niles's encrypted secret store. Since 0.3.0.
 ///
@@ -793,6 +858,7 @@ world plugin {
     use ui.{action-result, action-value, render-context, ui-tree};
     use mqtt.{conn-id, connection-status};
     use inbound.{inbound-request, inbound-response};
+    use websocket.{conn-id as ws-conn-id, connection-status as ws-status, message as ws-message};
 
     import log;
     import config;
@@ -806,6 +872,8 @@ world plugin {
     import mqtt;
     import secrets;
     import inbound;
+    import websocket;
+    import speech-stream;
 
     /// Called once per instance, after the plugin starts and after every
     /// settings change (each of which starts a fresh instance). Read
@@ -854,6 +922,12 @@ world plugin {
     /// messages, so `connected` comes before the messages after it.
     export on-mqtt-status: func(conn: conn-id, status: connection-status);
 
+    /// A WebSocket message arrived.
+    export on-websocket-message: func(conn: ws-conn-id, message: ws-message);
+
+    /// A connection changed state; overflow is delivered before later messages.
+    export on-websocket-status: func(conn: ws-conn-id, status: ws-status);
+
     /// Somebody asked to connect an account: answer the address of the
     /// service's sign-in page. Put `callback-url` and `state` in it as
     /// that service names them (usually `redirect_uri` and `state`).
@@ -877,7 +951,7 @@ world plugin {
     /// The instance is about to be dropped: Niles is stopping, the plugin
     /// is being updated, disabled or removed, or its settings changed.
     /// Two seconds; nothing is guaranteed to run after it. Niles closes
-    /// the instance's MQTT connections after it.
+    /// the instance's MQTT and WebSocket connections after it.
     ///
     /// Named `stop` rather than `shutdown`: a world-level export called
     /// `shutdown` clashes with a symbol in componentize-py's runtime,

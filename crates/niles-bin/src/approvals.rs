@@ -6,6 +6,12 @@
 //! in Niles's panel, or a spoken yes at the satellite that asked — and
 //! Niles runs what it held, never what the model says next.
 //!
+//! Each held call is a notification for its person ([`push`]). It is
+//! kept for their page at once, and pushed to their own devices at
+//! once, or a minute later if they asked in the open chat and it still
+//! waits. Once it is answered or lapses, a pushed one is replaced on
+//! their devices with what became of it.
+//!
 //! Held calls are kept in memory. A restart lapses them; a card still
 //! pending in a conversation then reads as lapsed. What was asked, and
 //! what became of it, is kept in the approval log: the card's title and
@@ -24,6 +30,8 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod push;
+
 /// How long a question asked aloud waits for its yes.
 const BY_VOICE: Duration = Duration::from_secs(5 * 60);
 /// How long a card in the app waits: long enough to be answered from
@@ -38,6 +46,10 @@ const SUMMARY_CHARS: usize = 200;
 const SWEEP_EVERY: Duration = Duration::from_secs(30);
 /// One page of history.
 const PAGE: usize = 30;
+/// How long a card asked for in the open chat waits for an answer
+/// there before the person's devices are told. They were there a
+/// moment ago, and have probably seen it.
+const PUSH_AFTER: Duration = Duration::from_secs(60);
 
 /// Who a turn is for, and where they are: what a held call is kept
 /// against, and who may answer it.
@@ -52,6 +64,11 @@ pub(crate) struct Asker {
     pub(crate) satellite: Option<SocketAddr>,
     /// The app conversation, once it has one.
     pub(crate) conversation: Option<i64>,
+    /// Whether they are in front of the turn as it happens: a message
+    /// typed in the app's chat, whose card is drawn under the reply they
+    /// are waiting for. Not a voice, a background job, or the assistant
+    /// working on its own.
+    pub(crate) in_chat: bool,
 }
 
 tokio::task_local! {
@@ -80,6 +97,28 @@ impl Via {
             Via::App => "app",
             Via::Voice => "voice",
         }
+    }
+}
+
+/// Where a held call may be allowed. The one answer for both a yes
+/// aloud and the Approve on its notification, so the two cannot
+/// drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Allow {
+    /// Wherever the person is: on its card, aloud at the satellite that
+    /// asked, or with the Approve on its notification. A remote tool set
+    /// to Ask first.
+    Anywhere,
+    /// Only on its card, read in full first: a mail. It is too long to
+    /// hear and judge, and more than a notification's two lines can show.
+    OnItsCard,
+}
+
+impl Allow {
+    /// Whether a yes may come from where its card is not being read:
+    /// aloud, or a notification's button.
+    fn without_its_card(self) -> bool {
+        self == Allow::Anywhere
     }
 }
 
@@ -129,6 +168,13 @@ pub(crate) struct Held {
     lapses: Instant,
     asked_at: DateTime<Utc>,
     expires_at: DateTime<Utc>,
+    allow: Allow,
+    /// Whether a push about it went to the person's devices, which its
+    /// answer or lapse then replaces.
+    pushed: bool,
+    /// The push address of the device it is being answered on, which
+    /// needs no telling what became of it.
+    device: Option<String>,
 }
 
 /// Where a held call's card is, for answering it by its id.
@@ -141,13 +187,15 @@ pub(crate) struct Placed {
 
 #[derive(Default)]
 pub(crate) struct Approvals {
-    held: Mutex<HashMap<String, Held>>,
+    held: Arc<Mutex<HashMap<String, Held>>>,
     /// "Allow for this conversation": (person, conversation, tool).
     grants: Mutex<HashSet<(String, i64, String)>>,
     /// Where each person hears that something waits, or no longer does.
     bus: EventBus,
     /// What was asked and decided. None without a database.
     ledger: Option<Arc<dyn Ledger>>,
+    /// Where a person is told that something waits for them.
+    notify: Option<Arc<crate::notify::Notify>>,
 }
 
 impl Approvals {
@@ -159,13 +207,19 @@ impl Approvals {
         }
     }
 
+    /// Each call held is a notification for the person it waits for.
+    pub(crate) fn with_notify(mut self, notify: Arc<crate::notify::Notify>) -> Self {
+        self.notify = Some(notify);
+        self
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Held>> {
         self.held.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Keep `tool` called with `args` for `asker`'s yes. `label` names
-    /// what it is for: "Linear", "Mail". Answers the card as it is to be
-    /// shown.
+    /// what it is for: "Linear", "Mail". `allow` is where it may be
+    /// answered. Answers the card as it is to be shown.
     pub(crate) fn hold(
         &self,
         asker: &Asker,
@@ -173,6 +227,7 @@ impl Approvals {
         label: &str,
         args: Value,
         mut card: ApprovalCard,
+        allow: Allow,
     ) -> ApprovalCard {
         let now = Instant::now();
         let wait = if asker.satellite.is_some() {
@@ -198,6 +253,9 @@ impl Approvals {
             lapses: now + wait,
             asked_at,
             expires_at: asked_at + chrono::Duration::from_std(wait).unwrap_or_default(),
+            allow,
+            pushed: false,
+            device: None,
         };
         if let Some(ledger) = self.ledger.clone() {
             let entry = entry(&held, &card);
@@ -207,7 +265,29 @@ impl Approvals {
                 }
             });
         }
+        // In the map before anything goes looking for it there.
         self.lock().insert(card.id.clone(), held);
+        if let Some(notify) = self.notify.clone() {
+            let (held, id, person) = (self.held.clone(), card.id.clone(), asker.person.clone());
+            let notice = push::waiting_notice(&card);
+            // Asked in the open chat, the card is under the reply they are
+            // reading, so their devices hear of it only if it still waits a
+            // minute later. Asked anywhere else, they are away from it.
+            let after = asker.in_chat.then_some(PUSH_AFTER);
+            tokio::spawn(async move {
+                // On their page at once. A voice nobody recognised has no page,
+                // and no devices either.
+                if !notify.keep(&person, &notice).await {
+                    return;
+                }
+                if let Some(after) = after {
+                    tokio::time::sleep(after).await;
+                }
+                if let Some(message) = due(&held, &id) {
+                    notify.push(&person, &message, None).await;
+                }
+            });
+        }
         self.changed(&asker.person, &card);
         card
     }
@@ -287,13 +367,15 @@ impl Approvals {
         if ok { held.remove(id) } else { None }
     }
 
-    /// The question asked aloud at `satellite` that is still waiting, if
-    /// one is: the newest.
+    /// The question asked aloud at `satellite` that is still waiting and
+    /// that a yes aloud may answer, if one is: the newest.
     pub(crate) fn spoken(&self, satellite: SocketAddr) -> Option<(String, Asker)> {
         let now = Instant::now();
         self.lock()
             .values()
-            .filter(|h| h.asker.satellite == Some(satellite) && h.lapses > now)
+            .filter(|h| {
+                h.asker.satellite == Some(satellite) && h.allow.without_its_card() && h.lapses > now
+            })
             .max_by_key(|h| h.made)
             .map(|h| (h.card.id.clone(), h.asker.clone()))
     }
@@ -337,10 +419,14 @@ impl Approvals {
             self.grant(&held.asker.person, conversation, &held.name);
         }
         let mut logged = entry(&held, &held.card);
+        let (pushed, device) = (held.pushed, held.device.clone());
         let (card, reply) = match decision {
             Decision::Deny => held.deny(),
             Decision::Once | Decision::Conversation => held.run().await,
         };
+        if pushed {
+            self.take_back(&logged.person, &card, device);
+        }
         logged.status = status_name(card.status).into();
         logged.outcome = card.outcome.clone();
         logged.decision = Some(decision_name(decision).into());
@@ -357,6 +443,17 @@ impl Approvals {
             id: card.id.clone(),
             status: status_name(card.status).into(),
         });
+    }
+
+    /// What became of `card`, over the notification sent about it, on
+    /// `person`'s devices and quietly: all of them but the one it was
+    /// answered on, if it was answered on one.
+    fn take_back(&self, person: &str, card: &ApprovalCard, except: Option<String>) {
+        let Some(notify) = self.notify.clone() else {
+            return;
+        };
+        let (person, message) = (person.to_string(), push::answered_push(card));
+        tokio::spawn(async move { notify.push(&person, &message, except.as_deref()).await });
     }
 
     async fn keep(&self, entry: &ApprovalEntry) {
@@ -383,6 +480,9 @@ impl Approvals {
         for held in lapsed {
             let mut card = held.card.clone();
             card.status = ApprovalStatus::Lapsed;
+            if held.pushed {
+                self.take_back(&held.asker.person, &card, None);
+            }
             let mut logged = entry(&held, &card);
             logged.decided_at = Some(held.expires_at);
             tracing::info!(
@@ -403,6 +503,12 @@ impl Approvals {
                 self.sweep().await;
             }
         })
+    }
+
+    /// The buttons a held call's notification has. For other modules' tests.
+    #[cfg(test)]
+    pub(crate) fn buttons(&self, id: &str) -> Option<Vec<niles_webpush::Action>> {
+        self.lock().get(id).map(|h| push::buttons(h.allow))
     }
 
     /// A page of `person`'s history, newest first.
@@ -457,6 +563,15 @@ fn asked_via(asker: &Asker) -> Via {
     } else {
         Via::App
     }
+}
+
+/// The push for `id` while it still waits, noted as sent so that its
+/// answer or lapse replaces it. Nothing once it was answered or lapsed.
+fn due(held: &Mutex<HashMap<String, Held>>, id: &str) -> Option<niles_webpush::Message> {
+    let mut held = held.lock().unwrap_or_else(|e| e.into_inner());
+    let h = held.get_mut(id).filter(|h| h.lapses > Instant::now())?;
+    h.pushed = true;
+    Some(push::waiting_push(&h.card, h.expires_at, h.allow))
 }
 
 /// The log's row for a held call, its card as `card` says now: not yet
@@ -554,6 +669,12 @@ impl Held {
         &self.name
     }
 
+    /// Answered on the device with this push address, if one was named.
+    pub(crate) fn answered_on(mut self, device: Option<&str>) -> Self {
+        self.device = device.map(str::to_string);
+        self
+    }
+
     /// Run what was held, with what was held. Answers the card as it now
     /// stands and a sentence for the person.
     async fn run(mut self) -> (ApprovalCard, String) {
@@ -592,6 +713,11 @@ fn gist(result: &Value) -> String {
         Value::Null => String::new(),
         other => other.to_string(),
     };
+    first_line(&text)
+}
+
+/// The first line of `text` with anything on it, cut to 200 characters.
+fn first_line(text: &str) -> String {
     let line = text
         .lines()
         .find(|l| !l.trim().is_empty())
@@ -719,6 +845,7 @@ impl Tool for AskFirst {
             &self.card.subtitle,
             args.clone(),
             self.card.for_args(&args),
+            Allow::Anywhere,
         );
         tracing::info!("[approvals] {name} is waiting for {}'s yes", asker.person);
         let note = if asker.satellite.is_some() {
@@ -852,6 +979,7 @@ mod tests {
             slug: Some("mark".into()),
             satellite: None,
             conversation,
+            in_chat: true,
         }
     }
 
@@ -887,6 +1015,7 @@ mod tests {
             "Linear",
             json!({ "title": "x" }),
             card().for_args(&json!({ "title": "x" })),
+            Allow::Anywhere,
         );
         (card.id, tool)
     }
@@ -896,6 +1025,36 @@ mod tests {
         for _ in 0..10 {
             tokio::task::yield_now().await;
         }
+    }
+
+    #[tokio::test]
+    async fn a_held_call_is_a_notification_for_its_person_alone() {
+        use niles_webpush::Inbox;
+        let inbox = Arc::new(niles_webpush::MemoryInbox::default());
+        let bus = EventBus::default();
+        let notify = Arc::new(crate::notify::Notify::new(
+            Some(inbox.clone()),
+            None,
+            bus.clone(),
+        ));
+        let approvals = Approvals::new(bus, None).with_notify(notify);
+        let (id, _) = held_for(&approvals, "person:mark", Some(4));
+        settle_writes().await;
+
+        let kept = inbox.page("person:mark", None, 10).await.unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].kind, "approval");
+        assert_eq!(kept[0].title, "Let Linear create issue? · Linear");
+        assert_eq!(kept[0].body, "Title: x");
+        assert_eq!(kept[0].url, format!("/#/chat?approval={id}"));
+        assert_eq!(kept[0].tag, format!("approval-{id}"));
+        assert!(
+            inbox
+                .page("person:majse", None, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -926,6 +1085,14 @@ mod tests {
             ]
         );
         assert!(card.allow_conversation);
+        assert_eq!(
+            approvals.buttons(&card.id),
+            Some(vec![
+                niles_webpush::Action::Approve,
+                niles_webpush::Action::Deny
+            ]),
+            "a tool set to Ask first gets Approve"
+        );
     }
 
     #[tokio::test]
@@ -983,6 +1150,7 @@ mod tests {
         let kitchen: SocketAddr = "192.168.1.20:40000".parse().unwrap();
         let spoken = Asker {
             satellite: Some(kitchen),
+            in_chat: false,
             ..in_the_app(None)
         };
         ASKER
@@ -1249,6 +1417,7 @@ mod tests {
             "Linear",
             args.clone(),
             card().for_args(&args),
+            Allow::Anywhere,
         );
         settle_writes().await;
         let entry = kept.of(&card.id).unwrap();
@@ -1284,5 +1453,315 @@ mod tests {
         let line = summary(&mail);
         assert_eq!(line, "To: jakob@example.com · Subject: Running late");
         assert!(!line.contains("4321"));
+    }
+
+    /// Each person a push was sent to, in order. Nobody has a device, so
+    /// nothing leaves the test.
+    #[derive(Default)]
+    struct Devices(parking_lot::Mutex<Vec<String>>);
+
+    impl Devices {
+        fn to(&self) -> Vec<String> {
+            self.0.lock().clone()
+        }
+    }
+
+    #[async_trait]
+    impl niles_webpush::PushStore for Devices {
+        async fn vapid_key(&self) -> niles_webpush::Result<Option<String>> {
+            Ok(None)
+        }
+        async fn keep_vapid_key(&self, key: &str) -> niles_webpush::Result<String> {
+            Ok(key.into())
+        }
+        async fn subscribe(
+            &self,
+            _person: &str,
+            _subscription: &niles_webpush::NewSubscription,
+        ) -> niles_webpush::Result<()> {
+            Ok(())
+        }
+        async fn unsubscribe(&self, _person: &str, _endpoint: &str) -> niles_webpush::Result<bool> {
+            Ok(false)
+        }
+        async fn subscriptions(
+            &self,
+            person: &str,
+        ) -> niles_webpush::Result<Vec<niles_webpush::Subscription>> {
+            self.0.lock().push(person.to_string());
+            Ok(Vec::new())
+        }
+        async fn delivered(
+            &self,
+            _endpoint: &str,
+            _at: DateTime<Utc>,
+        ) -> niles_webpush::Result<()> {
+            Ok(())
+        }
+        async fn gone(&self, _endpoint: &str) -> niles_webpush::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Approvals whose pushes are counted, not sent: nobody has a device.
+    fn told() -> (
+        Arc<Approvals>,
+        Arc<Devices>,
+        Arc<niles_webpush::MemoryInbox>,
+    ) {
+        let devices = Arc::new(Devices::default());
+        let inbox = Arc::new(niles_webpush::MemoryInbox::default());
+        let bus = EventBus::default();
+        let push = Arc::new(niles_webpush::WebPush::new(
+            devices.clone(),
+            reqwest::Client::new(),
+        ));
+        let notify = Arc::new(crate::notify::Notify::new(
+            Some(inbox.clone()),
+            Some(push),
+            bus.clone(),
+        ));
+        let approvals = Arc::new(Approvals::new(bus, None).with_notify(notify));
+        (approvals, devices, inbox)
+    }
+
+    /// The asker of something asked aloud at the kitchen satellite.
+    fn aloud() -> Asker {
+        Asker {
+            satellite: Some("192.168.1.20:40000".parse().unwrap()),
+            in_chat: false,
+            ..in_the_app(None)
+        }
+    }
+
+    /// Hold a counted call asked aloud, and answer its id.
+    fn held_aloud(approvals: &Approvals) -> String {
+        let card = approvals.hold(
+            &aloud(),
+            Arc::new(Counted::default()),
+            "Linear",
+            json!({ "title": "x" }),
+            card().for_args(&json!({ "title": "x" })),
+            Allow::Anywhere,
+        );
+        card.id
+    }
+
+    /// Wait until `n` pushes were looked up for their person.
+    async fn pushed(devices: &Devices, n: usize) {
+        for _ in 0..100 {
+            if devices.to().len() >= n {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(devices.to().len(), n);
+    }
+
+    #[tokio::test]
+    async fn asked_aloud_it_is_pushed_at_once_to_its_person_alone() {
+        use niles_webpush::Inbox;
+        let (approvals, devices, inbox) = told();
+        held_aloud(&approvals);
+        pushed(&devices, 1).await;
+        assert_eq!(devices.to(), ["person:mark"]);
+        assert!(
+            inbox
+                .page("person:majse", None, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn asked_in_the_open_chat_it_is_pushed_only_if_it_still_waits_a_minute_later() {
+        use niles_webpush::Inbox;
+        let (approvals, devices, inbox) = told();
+        let first = held_for(&approvals, "person:mark", Some(3)).0;
+        let second = held_for(&approvals, "person:mark", Some(3)).0;
+        settle_writes().await;
+        assert_eq!(inbox.unread("person:mark").await.unwrap(), 2);
+
+        tokio::time::sleep(PUSH_AFTER - Duration::from_secs(1)).await;
+        assert!(devices.to().is_empty(), "a moment in, no device was told");
+
+        let held = approvals.take(&first, "person:mark").unwrap();
+        approvals.settle(held, Decision::Deny, Via::App, None).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(devices.to(), ["person:mark"]);
+        // One push, for the one still waiting, and no take-back for the
+        // one answered before any push.
+        assert!(approvals.waiting(&second));
+    }
+
+    #[tokio::test]
+    async fn once_pushed_an_answer_replaces_it_on_the_devices() {
+        let (approvals, devices, _) = told();
+        let id = held_aloud(&approvals);
+        pushed(&devices, 1).await;
+        let held = approvals.take(&id, "person:mark").unwrap();
+        approvals
+            .settle(held, Decision::Deny, Via::Voice, None)
+            .await;
+        pushed(&devices, 2).await;
+        assert_eq!(devices.to(), ["person:mark", "person:mark"]);
+    }
+
+    #[tokio::test]
+    async fn once_pushed_a_lapse_replaces_it_too() {
+        let (approvals, devices, _) = told();
+        let id = held_aloud(&approvals);
+        pushed(&devices, 1).await;
+        approvals.lock().get_mut(&id).unwrap().lapses = Instant::now() - Duration::from_secs(1);
+        approvals.sweep().await;
+        pushed(&devices, 2).await;
+        assert_eq!(devices.to(), ["person:mark", "person:mark"]);
+    }
+
+    #[tokio::test]
+    async fn a_voice_nobody_recognised_is_pushed_nothing() {
+        let (approvals, devices, _) = told();
+        let stranger = Asker {
+            person: "satellite:192.168.1.20:40000".into(),
+            slug: None,
+            ..aloud()
+        };
+        let card = approvals.hold(
+            &stranger,
+            Arc::new(Counted::default()),
+            "Linear",
+            json!({ "title": "x" }),
+            card().for_args(&json!({ "title": "x" })),
+            Allow::Anywhere,
+        );
+        settle_writes().await;
+        let held = approvals
+            .take(&card.id, "satellite:192.168.1.20:40000")
+            .unwrap();
+        approvals
+            .settle(held, Decision::Deny, Via::Voice, None)
+            .await;
+        settle_writes().await;
+        assert!(devices.to().is_empty());
+    }
+
+    #[tokio::test]
+    async fn somebody_elses_answer_is_refused_and_it_still_waits() {
+        let (approvals, devices, _) = told();
+        let id = held_aloud(&approvals);
+        pushed(&devices, 1).await;
+        assert!(approvals.take(&id, "person:majse").is_none());
+        assert_eq!(
+            approvals.placed(&id, "person:majse"),
+            Err(Undecidable::NoSuchApproval)
+        );
+        assert_eq!(approvals.pending("person:mark").len(), 1);
+        settle_writes().await;
+        assert_eq!(devices.to().len(), 1, "nothing more went to anybody");
+    }
+
+    #[tokio::test]
+    async fn a_call_only_its_card_may_allow_is_never_answered_aloud() {
+        let (approvals, _, _) = told();
+        let kitchen: SocketAddr = "192.168.1.20:40000".parse().unwrap();
+        let card = approvals.hold(
+            &aloud(),
+            Arc::new(Counted::default()),
+            "Mail",
+            Value::Null,
+            card().for_args(&json!({ "title": "x" })),
+            Allow::OnItsCard,
+        );
+        assert_eq!(approvals.spoken(kitchen), None, "no yes aloud answers it");
+        assert_eq!(
+            approvals.buttons(&card.id),
+            Some(vec![
+                niles_webpush::Action::Review,
+                niles_webpush::Action::Deny
+            ])
+        );
+    }
+
+    /// How many requests a mock push service received at `path`.
+    async fn received(server: &wiremock::MockServer, path: &str) -> usize {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() == path)
+            .count()
+    }
+
+    #[tokio::test]
+    async fn the_device_it_was_answered_on_is_left_out() {
+        use niles_webpush::PushStore;
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(wiremock::ResponseTemplate::new(201))
+            .mount(&server)
+            .await;
+        let store = Arc::new(niles_webpush::MemoryPush::default());
+        // RFC 8291 Appendix A, as encrypt.rs's test uses.
+        let p256dh = "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4";
+        let auth = "BTBZMqHH6r4Tts7J_aSIgg";
+        for (path, device) in [("/phone", "Phone"), ("/laptop", "Laptop")] {
+            store
+                .subscribe(
+                    "person:mark",
+                    &niles_webpush::NewSubscription {
+                        endpoint: format!("{}{path}", server.uri()),
+                        p256dh: p256dh.into(),
+                        auth: auth.into(),
+                        device: device.into(),
+                        origin: "https://niles.example".into(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let bus = EventBus::default();
+        let push = Arc::new(niles_webpush::WebPush::new(store, reqwest::Client::new()));
+        let notify = Arc::new(crate::notify::Notify::new(
+            Some(Arc::new(niles_webpush::MemoryInbox::default())),
+            Some(push),
+            bus.clone(),
+        ));
+        let approvals = Arc::new(Approvals::new(bus, None).with_notify(notify));
+
+        let id = held_aloud(&approvals);
+        for _ in 0..300 {
+            if received(&server, "/phone").await >= 1 && received(&server, "/laptop").await >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(received(&server, "/phone").await, 1);
+        assert_eq!(received(&server, "/laptop").await, 1);
+
+        let phone = format!("{}/phone", server.uri());
+        let held = approvals.take(&id, "person:mark").unwrap();
+        approvals
+            .settle(
+                held.answered_on(Some(&phone)),
+                Decision::Deny,
+                Via::App,
+                None,
+            )
+            .await;
+        for _ in 0..300 {
+            if received(&server, "/laptop").await >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(received(&server, "/laptop").await, 2);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            received(&server, "/phone").await,
+            1,
+            "the device it was answered on hears no take-back"
+        );
     }
 }

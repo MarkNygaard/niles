@@ -360,6 +360,46 @@ export interface PluginPreview {
   removed: string[];
 }
 
+/** Where an add-on stands in the library. */
+export type LibraryStanding = "listed" | "unreviewed" | "removed";
+
+/** One add-on in the library. Mirrors `niles_plugins::library::ShelfEntry`. */
+export interface LibraryEntry {
+  /** `https://github.com/<owner>/<repo>`, built by Niles from the checked repo. */
+  repo: string;
+  owner: string;
+  standing: LibraryStanding;
+  /** For `removed`: why it was taken off the list. */
+  removed_reason: string | null;
+  name: string;
+  description: string;
+  version: string | null;
+  published_at: string | null;
+  /** Fresh installs, counted by its `niles-installed`; null when it has none. */
+  installs: number | null;
+  /** Downloads of its component, previews and updates included. */
+  downloads: number;
+  stars: number;
+  /** The sanitised SVG itself. */
+  logo: string | null;
+  readme: string | null;
+  /** What it may do, in the approval screen's words; null when this Niles can't read its manifest. */
+  permissions: string[] | null;
+  min_niles: string | null;
+  needs_newer_niles: boolean;
+  /** Why it can't be installed from Browse, when it can't. */
+  blocked: string | null;
+}
+
+/** The add-on library, as Browse shows it. Mirrors `niles_plugins::library::Shelf`. */
+export interface PluginLibrary {
+  /** When the registry built the index it came from. */
+  generated_at: string | null;
+  /** What no add-on may do, always the same sentence. */
+  cannot: string;
+  addons: LibraryEntry[];
+}
+
 /** One Sonos room: a speaker, a stereo pair, or a soundbar with the
     speakers around it — always played as one. */
 export interface SonosSpeaker {
@@ -564,6 +604,8 @@ export interface PodcastVoices {
     is the retention date the app shows. */
 export interface EpisodeAudio {
   url: string;
+  /** The same recording, which the bucket answers as a file to save. */
+  download_url: string;
   expires_at: string;
   kept_until: string;
 }
@@ -1360,6 +1402,34 @@ export interface DecidedApproval {
   conversation_id: number | null;
 }
 
+/** What a notification is about. Mirrors `Kind` in crates/niles-webpush/src/inbox.rs. */
+export type NotificationKind = "artifact" | "shared" | "plan_changed" | "workout" | "approval";
+
+/** One notification Niles kept for the signed-in person. */
+export interface AppNotification {
+  id: number;
+  /** A string the page may not know yet, from a newer Niles. */
+  kind: NotificationKind | string;
+  title: string;
+  body: string;
+  /** Where the item links: `/#/chat?artifact=7`. */
+  url: string;
+  created_at: string;
+  read_at: string | null;
+}
+
+/** Mirrors `List` in crates/niles-api/src/notifications.rs. */
+export interface NotificationList {
+  /** Newest first. */
+  notifications: AppNotification[];
+  /** Unread among all of them, on this page or not. */
+  unread: number;
+  /** What to ask for the next page with, while there is one. */
+  next: number | null;
+  /** False without a database: nothing is kept. */
+  kept: boolean;
+}
+
 export interface ApprovalHistory {
   entries: DecidedApproval[];
   /** What to ask for the next page with, while there is one. */
@@ -1661,22 +1731,32 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ turn, save }),
     }),
-  decideApproval: (id: number, approval: string, decision: Decision) =>
+  decideApproval: (id: number, approval: string, decision: Decision, device?: string | null) =>
     request<{ reply: string }>(
       `/chat/conversations/${id}/approvals/${encodeURIComponent(approval)}`,
-      { method: "POST", body: JSON.stringify({ decision }) },
+      { method: "POST", body: JSON.stringify({ decision, device: device ?? undefined }) },
     ),
   approvals: () => request<{ approvals: PendingApproval[] }>("/me/approvals"),
-  /** The same decision a card's button sends, by the approval's id alone. */
-  decideHeld: (approval: string, decision: Decision) =>
+  /** The same decision a card's button sends, by the approval's id
+      alone, and this device's push address, if it has one. */
+  decideHeld: (approval: string, decision: Decision, device?: string | null) =>
     request<{ reply: string }>(`/me/approvals/${encodeURIComponent(approval)}`, {
       method: "POST",
-      body: JSON.stringify({ decision }),
+      body: JSON.stringify({ decision, device: device ?? undefined }),
     }),
   approvalHistory: (before?: number) =>
     request<ApprovalHistory>(
       before === undefined ? "/me/approvals/history" : `/me/approvals/history?before=${before}`,
     ),
+  notifications: (before?: number) =>
+    request<NotificationList>(
+      before === undefined ? "/me/notifications" : `/me/notifications?before=${before}`,
+    ),
+  readNotifications: (upTo?: number) =>
+    request<{ unread: number }>("/me/notifications/read", {
+      method: "POST",
+      body: JSON.stringify(upTo === undefined ? {} : { up_to: upTo }),
+    }),
   deleteConversation: (id: number) =>
     request<void>(`/chat/conversations/${id}`, { method: "DELETE" }),
   dictate: (audio: Blob) =>
@@ -1763,6 +1843,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ repo }),
     }),
+  pluginLibrary: () => request<PluginLibrary>("/plugins/install/library"),
   installPlugin: (preview: PluginPreview) =>
     request<PluginSummary>("/plugins/install", {
       method: "POST",

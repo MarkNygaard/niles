@@ -307,6 +307,24 @@ async fn a_plugin_is_installed_its_storage_holds_its_quota_and_removal_takes_its
 
 #[tokio::test]
 #[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn an_install_is_counted_once() {
+    let Some(backend) = backend() else {
+        return;
+    };
+    let plugins = niles_db::PostgresPlugins::new(backend.pool(), "test".into());
+    let repo = format!("test/counted-{}", chrono::Utc::now().timestamp_micros());
+    assert!(
+        plugins.count_install(&repo).await.expect("first claim"),
+        "the first install from a repo is counted"
+    );
+    assert!(
+        !plugins.count_install(&repo).await.expect("second claim"),
+        "ever after, even once the plugin is removed, it is not"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
 async fn training_saved_twice_is_saved_once() {
     use niles_training::TrainingStore;
     let Some(backend) = backend() else {
@@ -453,7 +471,7 @@ async fn an_artifact_s_page_is_kept_once_and_follows_its_versions() {
         .expect("create");
     let page = a.page.expect("made with a page");
     let marked = store
-        .revise(&person, a.id, version("# marked", PageChange::Keep))
+        .revise(&person, a.id, version("# marked", PageChange::Keep), None)
         .await
         .expect("revise")
         .expect("theirs");
@@ -521,6 +539,129 @@ async fn an_artifact_s_page_is_kept_once_and_follows_its_versions() {
         "no version kept draws with it"
     );
     assert!(store.delete(&person, a.id).await.expect("delete"));
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one stale-edit scenario from create to delete; each step depends on the one before"
+)]
+async fn stale_artifact_edits_cannot_discard_another_writer() {
+    use niles_artifacts::{ArtifactStore, Author, NewArtifact, NewRevision, PageChange, Status};
+    let Some(backend) = backend() else {
+        return;
+    };
+    let store = niles_db::PostgresArtifacts::new(backend.pool(), "test".into());
+    let person = format!("person:test-stale-edits-{}", std::process::id());
+    let version = |markdown: &str, page| NewRevision {
+        content: serde_json::json!({ "markdown": markdown }),
+        reason: "Edit".into(),
+        author: Author::Claude,
+        by: None,
+        summary: None,
+        page,
+    };
+    let a = store
+        .create(
+            &person,
+            NewArtifact {
+                kind: "document".into(),
+                title: "Plan".into(),
+                summary: String::new(),
+                notify: true,
+                status: Status::Ready,
+                status_text: None,
+                job_id: None,
+                brief: None,
+                conversation_id: None,
+                first: Some(version(
+                    "alpha beta",
+                    PageChange::New("<p>alpha beta</p>".into()),
+                )),
+            },
+        )
+        .await
+        .unwrap();
+    let first = version("ALPHA beta", PageChange::Keep);
+    let second = version("alpha BETA", PageChange::Keep);
+    let kept = store
+        .revise(&person, a.id, first, Some(a.current_revision))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        store
+            .revise(&person, a.id, second.clone(), Some(a.current_revision))
+            .await
+            .is_err()
+    );
+    let now = store.get(&person, a.id).await.unwrap().unwrap();
+    assert_eq!(now.current_revision, kept.current_revision);
+    let current = store
+        .revision(&person, a.id, now.current_revision)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.content["markdown"], "ALPHA beta");
+    let replaced = store
+        .revise(&person, a.id, second, None)
+        .await
+        .unwrap()
+        .unwrap();
+    let current = store
+        .revision(&person, a.id, replaced.current_revision)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.content["markdown"], "alpha BETA");
+    let from = a.page.unwrap();
+    let edit = |html: &str| PageChange::Edit {
+        from,
+        html: html.into(),
+    };
+    let kept = store
+        .set_page(
+            &person,
+            a.id,
+            edit("<p>ALPHA beta</p>"),
+            "Edit".into(),
+            Author::Claude,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        store
+            .set_page(
+                &person,
+                a.id,
+                edit("<p>alpha BETA</p>"),
+                "Edit".into(),
+                Author::Claude,
+                None
+            )
+            .await
+            .is_err()
+    );
+    let now = store.get(&person, a.id).await.unwrap().unwrap();
+    assert_eq!(now.current_revision, kept.current_revision);
+    assert_eq!(
+        store
+            .page(&person, a.id, now.page.unwrap())
+            .await
+            .unwrap()
+            .unwrap(),
+        "<p>ALPHA beta</p>"
+    );
+    let current = store
+        .revision(&person, a.id, now.current_revision)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.content["markdown"], "alpha BETA");
+    assert!(store.delete(&person, a.id).await.unwrap());
 }
 
 #[tokio::test]
@@ -629,6 +770,7 @@ async fn an_artifact_is_shared_with_its_own_pin_and_goes_with_it() {
                 summary: None,
                 page: PageChange::Keep,
             },
+            None,
         )
         .await
         .expect("revise")
@@ -716,4 +858,54 @@ async fn an_approval_is_logged_when_asked_and_again_when_decided() {
     let after = restarted.page(&person, None, 10).await.expect("page");
     assert_eq!(after[0].entry.approval, tag(5));
     assert_eq!(after[0].entry.status, "lapsed");
+}
+
+fn notice(tag: &str) -> niles_webpush::Notice {
+    niles_webpush::Notice {
+        kind: niles_webpush::inbox::Kind::Workout,
+        title: "Hellerup plan".into(),
+        body: "Your 6.2 km run today was counted as the easy run.".into(),
+        url: "/#/chat?artifact=1".into(),
+        tag: tag.into(),
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn a_persons_notifications_are_theirs_capped_and_replaced_by_tag() {
+    use niles_webpush::Inbox;
+    let Some(backend) = backend() else {
+        return;
+    };
+    let inbox = niles_db::PostgresPersonNotifications::new(backend.pool(), "test".into());
+    let person = format!("person:notified-{}", std::process::id());
+    let other = format!("person:other-{}", std::process::id());
+
+    let first = inbox.add(&person, &notice("a")).await.expect("add");
+    let second = inbox.add(&person, &notice("b")).await.expect("add");
+    inbox.add(&other, &notice("a")).await.expect("another's");
+    assert_eq!(inbox.unread(&person).await.unwrap(), 2);
+
+    assert_eq!(inbox.read(&person, Some(first.id)).await.unwrap(), 1);
+    assert_eq!(inbox.unread(&person).await.unwrap(), 1);
+
+    // The same tag again: one row, newest, unread.
+    let again = inbox.add(&person, &notice("a")).await.expect("again");
+    assert!(again.id > second.id);
+    let page = inbox.page(&person, None, 50).await.unwrap();
+    assert_eq!(page.len(), 2);
+    assert_eq!(page[0].id, again.id);
+    assert!(page[0].read_at.is_none());
+
+    let older = inbox.page(&person, Some(again.id), 50).await.unwrap();
+    assert_eq!(older.len(), 1);
+    assert_eq!(older[0].id, second.id);
+
+    for n in 0..niles_webpush::inbox::KEPT_PER_PERSON {
+        inbox.add(&person, &notice(&format!("w{n}"))).await.unwrap();
+    }
+    let all = inbox.page(&person, None, 1_000).await.unwrap();
+    assert_eq!(all.len() as i64, niles_webpush::inbox::KEPT_PER_PERSON);
+    assert_eq!(inbox.page(&other, None, 50).await.unwrap().len(), 1);
+    assert_eq!(inbox.read(&other, None).await.unwrap(), 1);
 }

@@ -1,0 +1,142 @@
+---
+title: "Approvals"
+description: "Every mail, and every tool set to ask first, waits for your yes in the app."
+---
+
+Some things Niles never does on its own. It holds them, shows you exactly
+what it is about to do, and waits for your yes. Two kinds of thing wait:
+
+- **Every mail it writes.** Niles never sends a mail by itself, whoever
+  asked and however.
+- **A tool set to ask first.** A remote tool server, such as Linear, lists
+  its tools on its panel under **Settings → Add-ons**. Each tool can be
+  **On**, **Ask first** or **Off**. A tool with no setting is on. The
+  badges **Reads only** and **Can delete** help you choose.
+
+Niles's own tools (lights, timers, Saved and the rest) never ask.
+
+When you say yes, Niles runs exactly the call it showed you, with the
+same values. The model has no say in it after that.
+
+## The card
+
+A tool card is titled after what it would do, such as "Let Linear create
+an issue?", and lists each value it would send. Long values fold behind
+an arrow.
+
+A mail card is titled **Send this email?**, says which account it is from,
+and shows To, Cc, Subject and the whole message.
+
+The buttons are:
+
+- **Allow once**: do this one thing.
+- **Allow for this conversation**: do it, and let this tool run without
+  asking for the rest of this conversation. Only tool cards in the app
+  have this. Mail never does, and nor does anything asked by voice.
+- **Deny**: do nothing.
+
+After you decide, the card says what happened: **Allowed. Done.**,
+**Denied. Nothing was done.**, **Lapsed. Nothing was done.**, or that it
+was allowed but did not work, and why.
+
+"Allow for this conversation" lasts until Niles restarts.
+
+## Where the cards are
+
+- **In the chat**, under the reply that asked.
+- **In Niles's panel**, on the **Approvals** tab (the shield). A badge
+  shows how many wait. A link to `#/chat?panel=approvals` opens it.
+- **On My profile → Approvals**: "What Niles would not do on its own: a
+  mail to send, a tool set to Ask first. Only you see yours."
+
+The panel and the profile show the same two lists. **Needs review** has
+the cards still waiting, each folded to one line with **Details** to open
+it, when it was asked and how long it waits, and **Show in the chat** when
+it belongs to a conversation. **Approvals history** lists what you
+decided, such as "Allowed once · 15:34" or "Denied by voice · 12 Oct", 30
+at a time with **Show older**.
+
+A link to `#/chat?approval=` followed by an approval's id opens that card
+in its conversation, scrolled into view and outlined. One asked by voice
+has no conversation, so the link opens it in **Approvals** instead. Every
+notification about an approval links there.
+
+Deciding in the panel is the same as pressing the button on the card in
+the chat.
+
+Only the person who asked sees an approval and can answer it. To anyone
+else it does not exist.
+
+## Answering by voice
+
+When a tool asks first after a spoken request, Niles asks you out loud.
+A plain "yes" or "no" to the same satellite decides it. Niles reads the
+words itself; anything else leaves the question waiting. If Niles knew
+the voice that asked, only that voice can answer. A spoken yes is
+**Allow once**.
+
+The same question also shows in the app and goes to your phone, so you
+can answer it there instead.
+
+Mail is never approved by voice. Ask for a mail by voice and Niles tells
+you it is written and waiting in the app for you to check and send.
+
+Typing "yes" in the chat does not approve a card. Use the buttons.
+
+## How long it waits
+
+| Asked | Waits |
+|---|---|
+| by voice | 5 minutes |
+| in the app | 1 hour |
+
+After that it lapses and nothing is done. A restart of Niles also lapses
+everything still waiting.
+
+A request that asks first, made where nobody is there to answer (by an
+automation, say), fails at once rather than waiting.
+
+## On your phone or computer
+
+Each approval Niles holds for you is on your
+[Notifications](/docs/using/notifications) page at once. It also goes to
+every phone and computer where you turned notifications on, and only to
+yours. A voice Niles did not recognise gets none.
+
+It is sent at once when it was asked by voice. Asked in the chat, it is
+sent only if it still waits a minute later. Answer the card within the minute and no device is told.
+
+It says the card's question and whose it is ("Send this email? · From your
+Gmail, mark@gmail.com"), one line of what it would do, and how long it
+waits ("Waiting until 19:42"). Tapping it opens the card.
+
+On Android and on a computer it has buttons. Every notification has
+**Deny**. **Approve** is **Allow once**, offered only when a spoken yes
+could also allow it, which means a tool set to ask first. A mail has
+**Review** instead, which opens the card, because a mail is read in full
+before it is sent.
+
+A button answers without opening Niles, as you, signed in on that device.
+The notification then says what happened. If Niles can't be reached, or
+that device is signed out, it says "Couldn't answer. Open Niles to answer
+it." Tapping that opens the card.
+
+An iPhone or iPad shows no buttons on notifications from a Home Screen
+app. Tap the notification, then answer on the card.
+
+Once it is answered, wherever that happened, or once it lapses, Niles
+replaces the notification on your other devices with what became of it,
+such as **Allowed. Done.** On Android and a computer the replacement
+makes no sound.
+
+## What the history keeps
+
+The history keeps, for each decision, what the tool was, the card's
+title, a short summary, what you decided, how and when. It never keeps
+the values themselves. A value whose label looks like a password, a token
+or a key shows as dots in the summary, and a mail's summary is only who it
+was to and its subject, never the text.
+
+Each person keeps their newest 500 entries. Without Niles's database
+there is no history: "Niles has no database here, so it keeps no history
+of what you decided."

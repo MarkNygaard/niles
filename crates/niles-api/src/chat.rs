@@ -81,7 +81,8 @@ pub trait Chat: Send + Sync {
 
     /// Allow, or deny, what an approval card in conversation `id` is
     /// holding — the tap on one of its buttons. Answers what became of
-    /// it, in a sentence.
+    /// it, in a sentence. `device` is the push address of the device it
+    /// was answered on, if any.
     async fn decide(
         &self,
         who: &str,
@@ -89,6 +90,7 @@ pub trait Chat: Send + Sync {
         id: i64,
         approval: &str,
         decision: Decision,
+        device: Option<&str>,
     ) -> Result<String, Undecidable>;
 
     /// Forget one of theirs. False when there was none by that id.
@@ -422,6 +424,10 @@ pub async fn answer(
 #[derive(Deserialize)]
 pub struct Decide {
     pub decision: Decision,
+    /// This device's push address, when it has one. It was answered
+    /// here, so the push telling the person's devices what became of
+    /// it skips this one.
+    pub device: Option<String>,
 }
 
 /// `POST /chat/conversations/{id}/approvals/{approval}` — Allow once,
@@ -434,10 +440,17 @@ pub async fn decide(
 ) -> Result<Json<Answered>, Failure> {
     let chat = chat(&state)?;
     let (who, speaker) = caller(&state, &headers);
-    chat.decide(&who, speaker.as_deref(), id, &approval, body.decision)
-        .await
-        .map(|reply| Json(Answered { reply }))
-        .map_err(undecided)
+    chat.decide(
+        &who,
+        speaker.as_deref(),
+        id,
+        &approval,
+        body.decision,
+        body.device.as_deref(),
+    )
+    .await
+    .map(|reply| Json(Answered { reply }))
+    .map_err(undecided)
 }
 
 /// Why an approval could not be answered, as the app is told it: the
@@ -791,6 +804,7 @@ mod tests {
             id: i64,
             approval: &str,
             decision: Decision,
+            _device: Option<&str>,
         ) -> Result<String, Undecidable> {
             match (id, approval, decision) {
                 (1, "a1", Decision::Once) => Ok("Done.".into()),

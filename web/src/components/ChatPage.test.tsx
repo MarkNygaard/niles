@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { ChatPage, landingOn, linkedArtifact, panelStatus } from "@/components/ChatPage";
+import {
+  ChatPage,
+  landingOn,
+  linkedApproval,
+  linkedArtifact,
+  linkedPanel,
+  panelStatus,
+} from "@/components/ChatPage";
 import { ApiError, api } from "@/lib/api";
 import type {
   Artifact,
@@ -10,6 +17,7 @@ import type {
   ArtifactRef,
   Conversation,
   ConversationSummary,
+  PendingApproval,
   Turn,
 } from "@/lib/api";
 
@@ -104,6 +112,7 @@ function show(
   list: ConversationSummary[],
   conversations: Record<number, Conversation> = {},
   saved: ArtifactList = NOTHING_SAVED,
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 ) {
   vi.stubGlobal("WebSocket", FakeSocket);
   if (!vi.isMockFunction(api.artifacts)) vi.spyOn(api, "artifacts").mockResolvedValue(saved);
@@ -116,7 +125,6 @@ function show(
     if (!conversations[id]) throw new ApiError("no such conversation", 404);
     return conversations[id];
   });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
       <ChatPage />
@@ -195,6 +203,25 @@ describe("linkedArtifact", () => {
   });
 });
 
+describe("linkedPanel", () => {
+  it("is the Approvals tab a waiting notification links to, and nothing else", () => {
+    expect(linkedPanel("#/chat?panel=approvals")).toBe("approvals");
+    expect(linkedPanel("#/chat")).toBeNull();
+    expect(linkedPanel("#/chat?panel=saved")).toBeNull();
+  });
+});
+
+describe("linkedApproval", () => {
+  it("is the approval a notification's link names", () => {
+    expect(linkedApproval("#/chat?approval=a1")).toBe("a1");
+  });
+
+  it("is nothing without one, or with an empty one", () => {
+    expect(linkedApproval("#/chat")).toBeNull();
+    expect(linkedApproval("#/chat?approval=")).toBeNull();
+  });
+});
+
 describe("ChatPage", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -264,7 +291,7 @@ describe("ChatPage", () => {
     const tab = await dialog.findByRole("tab", { name: "Approvals, 1 waiting" });
     fireEvent.click(tab);
     fireEvent.click(await dialog.findByRole("button", { name: "Allow once" }));
-    await waitFor(() => expect(decide).toHaveBeenCalledWith("a1", "once"));
+    await waitFor(() => expect(decide).toHaveBeenCalledWith("a1", "once", null));
   });
 
   it("opens the artifact a notification's link names, and puts the address back", async () => {
@@ -281,6 +308,178 @@ describe("ChatPage", () => {
     ).toBeInTheDocument();
     expect(api.artifact).toHaveBeenCalledWith(9);
     expect(window.location.hash).toBe("#/chat");
+  });
+
+  const CARD = {
+    id: "a1",
+    title: "Let Linear create issue?",
+    subtitle: "Linear",
+    icon: "linear",
+    fields: [{ label: "Title", value: "WLED presets" }],
+    body: null,
+    allow_conversation: true,
+    status: "pending" as const,
+    outcome: null,
+  };
+
+  function waiting(rest: Partial<PendingApproval> = {}): PendingApproval {
+    return {
+      ...CARD,
+      tool: "Linear",
+      summary: "Title: WLED presets",
+      conversation_id: 7,
+      asked_at: ago(MINUTE),
+      expires_at: ago(-59 * MINUTE),
+      via: "app",
+      ...rest,
+    };
+  }
+
+  it("looks up a notification even when the pending cache is still fresh", async () => {
+    window.history.replaceState(null, "", "#/chat?approval=a1");
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 2_000 } },
+    });
+    client.setQueryData(["approvals", "pending"], { approvals: [] });
+    vi.spyOn(api, "approvals").mockResolvedValue({ approvals: [waiting()] });
+    show(
+      [MILK],
+      { 7: conversationOf(MILK, [turn("file it", "Waiting.", { approval: CARD })]) },
+      NOTHING_SAVED,
+      client,
+    );
+    expect(await screen.findByRole("region", { name: CARD.title })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    expect(api.conversation).toHaveBeenCalledWith(7);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("does not let an older approval lookup replace a newer notification link", async () => {
+    window.history.replaceState(null, "", "#/chat?approval=a1");
+    let finish!: (value: { approvals: PendingApproval[] }) => void;
+    vi.spyOn(api, "approvals").mockReturnValue(
+      new Promise((resolve) => { finish = resolve; }),
+    );
+    vi.spyOn(api, "artifact").mockResolvedValue({
+      ...artifact(9, "Thailand travel plan"),
+      content: { markdown: "# Thailand" },
+      revisions: [],
+    });
+    show([MILK], {
+      7: conversationOf(MILK, [turn("file it", "Waiting.", { approval: CARD })]),
+    });
+    await screen.findByRole("textbox", { name: "Message Niles" });
+    act(() => {
+      window.history.replaceState(null, "", "#/chat?artifact=9");
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    await screen.findByRole("heading", { name: "Thailand travel plan" });
+    await act(async () => { finish({ approvals: [waiting()] }); });
+    expect(screen.getByRole("dialog", { name: "Niles" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Thailand travel plan" })).toBeInTheDocument();
+    expect(api.conversation).not.toHaveBeenCalledWith(7);
+  });
+
+  it("opens the conversation an approval's notification leads to, with its card drawn out, and puts the address back", async () => {
+    window.history.replaceState(null, "", "#/chat?approval=a1");
+    vi.spyOn(api, "approvals").mockResolvedValue({ approvals: [waiting()] });
+    show(
+      [CURTAINS, summary(7, "Email jakob", { last_at: ago(MINUTE) })],
+      {
+        7: conversationOf(summary(7, "Email jakob"), [
+          turn("email jakob", "It's ready for you to check.", { approval: CARD }),
+        ]),
+      },
+    );
+    expect(
+      await screen.findByRole("region", { name: "Let Linear create issue?" }),
+    ).toHaveAttribute("aria-current", "true");
+    expect(api.conversation).toHaveBeenCalledWith(7);
+    expect(window.location.hash).toBe("#/chat");
+  });
+
+  it("opens Approvals with the card drawn out for one asked aloud", async () => {
+    window.history.replaceState(null, "", "#/chat?approval=a1");
+    vi.spyOn(api, "approvals").mockResolvedValue({
+      approvals: [waiting({ conversation_id: null, via: "voice" })],
+    });
+    show([CURTAINS], { 42: conversationOf(CURTAINS, CURTAINS_TURNS) });
+    const dialog = within(await screen.findByRole("dialog", { name: "Niles" }));
+    expect(await dialog.findByRole("tab", { name: "Approvals, 1 waiting" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(
+      await dialog.findByRole("region", { name: "Let Linear create issue?" }),
+    ).toHaveAttribute("aria-current", "true");
+    expect(window.location.hash).toBe("#/chat");
+  });
+
+  it("finds one no longer waiting in the history", async () => {
+    window.history.replaceState(null, "", "#/chat?approval=a1");
+    vi.spyOn(api, "approvals").mockResolvedValue({ approvals: [] });
+    vi.spyOn(api, "approvalHistory").mockResolvedValue({
+      entries: [
+        {
+          id: 1,
+          approval: "a1",
+          tool: "Linear",
+          icon: "linear",
+          title: "Let Linear create issue?",
+          summary: "Title: WLED presets",
+          status: "allowed",
+          decision: "once",
+          outcome: "Done",
+          decided_via: "app",
+          asked_via: "app",
+          asked_at: ago(2 * MINUTE),
+          decided_at: ago(MINUTE),
+          conversation_id: 7,
+        },
+      ],
+      next: null,
+      kept: true,
+    });
+    show([CURTAINS], {
+      7: conversationOf(summary(7, "Email jakob"), [
+        turn("email jakob", "It's ready for you to check.", { approval: CARD }),
+      ]),
+    });
+    await screen.findByRole("region", { name: "Let Linear create issue?" });
+    expect(api.conversation).toHaveBeenCalledWith(7);
+    expect(window.location.hash).toBe("#/chat");
+  });
+
+  it("sends this device's push address with an answer, and takes its notification off here", async () => {
+    const live = { data: { approval: "a1" }, close: vi.fn() };
+    const registration = {
+      pushManager: {
+        getSubscription: async () => ({ endpoint: "https://push.example/me" }),
+      },
+      getNotifications: vi.fn(async () => [live]),
+    };
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: { getRegistration: async () => registration },
+    });
+    try {
+      vi.spyOn(api, "decideApproval").mockResolvedValue({ reply: "Done." });
+      const asked = summary(7, "Email jakob", { last_at: ago(MINUTE) });
+      show([asked], {
+        7: conversationOf(asked, [
+          turn("email jakob", "It's ready for you to check.", { approval: CARD }),
+        ]),
+      });
+      fireEvent.click(await screen.findByRole("button", { name: "Allow once" }));
+      await waitFor(() =>
+        expect(api.decideApproval).toHaveBeenCalledWith(7, "a1", "once", "https://push.example/me"),
+      );
+      await waitFor(() => expect(live.close).toHaveBeenCalled());
+    } finally {
+      Reflect.deleteProperty(navigator, "serviceWorker");
+    }
   });
 
   it("shows the job being written in the status line, as the stream says", async () => {

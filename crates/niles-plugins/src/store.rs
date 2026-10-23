@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use niles_core::{Device, DeviceClass, DeviceId, DeviceState, LightCapabilities};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -140,6 +140,10 @@ pub trait PluginStore: Send + Sync {
     /// Record what happened to the plugin, or forget it. An install,
     /// an update and a rollback forget it on their own.
     async fn set_notice(&self, id: &str, notice: Option<&str>) -> Result<(), String>;
+    /// Note that this house counted an install from `repo` (`owner/name`,
+    /// lowercase): true the first time, false ever after, even once the
+    /// plugin is removed, so installing it again is not counted again.
+    async fn count_install(&self, repo: &str) -> Result<bool, String>;
     async fn logo(&self, id: &str) -> Result<Option<String>, String>;
     /// Forget the plugin, its storage and its devices.
     async fn remove(&self, id: &str) -> Result<(), String>;
@@ -169,6 +173,7 @@ struct Memory {
     installed: BTreeMap<String, Kept>,
     storage: BTreeMap<String, BTreeMap<String, String>>,
     devices: BTreeMap<String, BTreeMap<String, KnownDevice>>,
+    counted: BTreeSet<String>,
 }
 
 struct Kept {
@@ -324,6 +329,10 @@ impl PluginStore for MemoryStore {
             kept.notice = notice.map(str::to_string);
         }
         Ok(())
+    }
+
+    async fn count_install(&self, repo: &str) -> Result<bool, String> {
+        Ok(self.lock().counted.insert(repo.to_string()))
     }
 
     async fn logo(&self, id: &str) -> Result<Option<String>, String> {
@@ -513,6 +522,10 @@ impl PluginStore for niles_db::PostgresPlugins {
 
     async fn set_notice(&self, id: &str, notice: Option<&str>) -> Result<(), String> {
         niles_db::PostgresPlugins::set_notice(self, id, notice).await
+    }
+
+    async fn count_install(&self, repo: &str) -> Result<bool, String> {
+        niles_db::PostgresPlugins::count_install(self, repo).await
     }
 
     async fn logo(&self, id: &str) -> Result<Option<String>, String> {
@@ -711,5 +724,24 @@ mod tests {
         ] {
             assert_eq!(class_from_name(class_name(class)), Some(class));
         }
+    }
+
+    #[tokio::test]
+    async fn an_install_is_counted_once_and_removal_keeps_the_count() {
+        let store = MemoryStore::new();
+        assert!(store.count_install("jane/hello").await.unwrap());
+        assert!(
+            !store.count_install("jane/hello").await.unwrap(),
+            "ever after, even once the plugin is removed"
+        );
+        store
+            .install("hello", "0.1.0", &package("0.1.0"))
+            .await
+            .unwrap();
+        store.remove("hello").await.unwrap();
+        assert!(
+            !store.count_install("jane/hello").await.unwrap(),
+            "installing it again is not counted again"
+        );
     }
 }

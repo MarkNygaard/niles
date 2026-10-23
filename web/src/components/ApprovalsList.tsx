@@ -6,7 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import type { DecidedApproval, Decision, PendingApproval } from "@/lib/api";
-import { APPROVALS, HISTORY, PENDING, historyLine, waitingLine } from "@/lib/approvals";
+import { APPROVALS, HISTORY, PENDING, approvalTag, historyLine, waitingLine } from "@/lib/approvals";
+import { closeWaiting } from "@/lib/pwa";
+import { thisDevice } from "@/lib/push";
 
 export interface ApprovalsViewProps {
   /** Undefined while they are fetched. */
@@ -23,6 +25,8 @@ export interface ApprovalsViewProps {
   onDecide: (approval: string, decision: Decision) => void;
   /** Go to the conversation a card is in, where there is one to go to. */
   onOpenConversation?: (id: number) => void;
+  /** The card a link led to. */
+  highlight?: string | null;
   error?: string;
 }
 
@@ -42,6 +46,7 @@ export function ApprovalsView({
   deciding,
   onDecide,
   onOpenConversation,
+  highlight,
   error,
 }: ApprovalsViewProps) {
   const waitingId = useId();
@@ -67,6 +72,7 @@ export function ApprovalsView({
               folded
               summary={approval.summary}
               deciding={deciding === approval.id}
+              highlighted={approval.id === highlight}
               onDecide={(decision) => onDecide(approval.id, decision)}
               footer={
                 <div className="text-muted-foreground flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -105,7 +111,12 @@ export function ApprovalsView({
         ) : (
           <ul className="bg-muted/50 divide-border/60 divide-y overflow-hidden rounded-2xl">
             {history.map((entry) => (
-              <li key={entry.id} className="flex items-start gap-3 px-3 py-2.5">
+              <li
+                key={entry.id}
+                data-approval={entry.approval}
+                aria-current={entry.approval === highlight ? "true" : undefined}
+                className="flex items-start gap-3 px-3 py-2.5 aria-current:ring-primary aria-current:ring-2 aria-current:ring-inset"
+              >
                 <ApprovalIcon icon={entry.icon} label={entry.tool} small />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{entry.title}</p>
@@ -141,8 +152,10 @@ export function ApprovalsView({
  */
 export function Approvals({
   onOpenConversation,
+  highlight,
 }: {
   onOpenConversation?: (id: number) => void;
+  highlight?: string | null;
 }) {
   const queryClient = useQueryClient();
   const pending = useQuery({ queryKey: PENDING, queryFn: api.approvals, retry: false });
@@ -154,8 +167,11 @@ export function Approvals({
     retry: false,
   });
   const decide = useMutation({
-    mutationFn: ({ approval, decision }: { approval: string; decision: Decision }) =>
-      api.decideHeld(approval, decision),
+    mutationFn: async ({ approval, decision }: { approval: string; decision: Decision }) =>
+      api.decideHeld(approval, decision, await thisDevice()),
+    // Answered here: its notification on this device goes now. Niles's
+    // push saying what became of it skips the device it was answered on.
+    onSuccess: (_, { approval }) => void closeWaiting(approvalTag(approval)),
     // Either way: a 409 means it lapsed or was answered elsewhere, and
     // both lists, and the card in the chat, should say so.
     onSettled: () => {
@@ -175,6 +191,7 @@ export function Approvals({
       deciding={decide.isPending ? decide.variables.approval : null}
       onDecide={(approval, decision) => decide.mutate({ approval, decision })}
       onOpenConversation={onOpenConversation}
+      highlight={highlight}
       error={decide.error?.message ?? pending.error?.message ?? history.error?.message}
     />
   );

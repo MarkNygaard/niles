@@ -40,6 +40,17 @@ const AUDIO_CHUNK_BYTES: usize = 2048;
 /// generous floor that still reclaims dead sockets.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 
+struct OutboundMessage {
+    event: Event,
+    written: tokio::sync::oneshot::Sender<bool>,
+}
+
+impl OutboundMessage {
+    fn cancelled(&self) -> bool {
+        self.written.is_closed()
+    }
+}
+
 /// Sleep this long after a transient `accept()` error to avoid
 /// spinning a hot loop if the error condition (e.g. FD exhaustion)
 /// is persistent.
@@ -72,7 +83,7 @@ pub struct WyomingServer {
     /// sender. The corresponding receiver drives a per-connection
     /// writer task. Removed on disconnect so subsequent sends
     /// return `SendError::NotConnected`.
-    outbound: Arc<Mutex<HashMap<SocketAddr, mpsc::Sender<Event>>>>,
+    outbound: Arc<Mutex<HashMap<SocketAddr, mpsc::Sender<OutboundMessage>>>>,
 }
 
 impl WyomingServer {
@@ -152,7 +163,7 @@ impl WyomingServer {
 /// Handle for sending Wyoming events to specific connected peers.
 #[derive(Clone)]
 pub struct WyomingSender {
-    outbound: Arc<Mutex<HashMap<SocketAddr, mpsc::Sender<Event>>>>,
+    outbound: Arc<Mutex<HashMap<SocketAddr, mpsc::Sender<OutboundMessage>>>>,
 }
 
 impl WyomingSender {
@@ -171,7 +182,14 @@ impl WyomingSender {
             .get(&peer)
             .cloned()
             .ok_or(SendError::NotConnected)?;
-        tx.send(event).await.map_err(|_| SendError::NotConnected)
+        let (written, result) = tokio::sync::oneshot::channel();
+        tx.send(OutboundMessage { event, written })
+            .await
+            .map_err(|_| SendError::NotConnected)?;
+        match result.await {
+            Ok(true) => Ok(()),
+            Ok(false) | Err(_) => Err(SendError::NotConnected),
+        }
     }
 
     /// Tell `peer` an answer is still coming. A satellite gives up on a
@@ -305,7 +323,7 @@ async fn handle_connection(
     stream: TcpStream,
     peer: SocketAddr,
     tx: mpsc::Sender<IncomingEvent>,
-    outbound: Arc<Mutex<HashMap<SocketAddr, mpsc::Sender<Event>>>>,
+    outbound: Arc<Mutex<HashMap<SocketAddr, mpsc::Sender<OutboundMessage>>>>,
 ) -> bool {
     let (read_half, write_half) = stream.into_split();
     let mut reader = WyomingReader::new(read_half);
@@ -350,11 +368,18 @@ async fn handle_connection(
     };
 
     let write_fut = async {
-        while let Some(event) = outbound_rx.recv().await {
-            if let Err(e) = writer.write_event(&event).await {
+        while let Some(message) = outbound_rx.recv().await {
+            // A caller can time out after enqueueing but before this
+            // message reaches the writer. Do not speak stale queued text.
+            if message.cancelled() {
+                continue;
+            }
+            if let Err(e) = writer.write_event(&message.event).await {
                 warn!("Wyoming write error to {peer}: {e}");
+                let _ = message.written.send(false);
                 break;
             }
+            let _ = message.written.send(true);
         }
     };
 
@@ -384,6 +409,58 @@ mod tests {
             payload: Vec::new(),
             version: None,
         }
+    }
+
+    fn sender_fixture() -> (WyomingSender, SocketAddr, mpsc::Receiver<OutboundMessage>) {
+        let peer = "127.0.0.1:12345".parse().unwrap();
+        let (tx, rx) = mpsc::channel(1);
+        let outbound = Arc::new(Mutex::new(HashMap::from([(peer, tx)])));
+        (WyomingSender { outbound }, peer, rx)
+    }
+
+    #[tokio::test]
+    async fn send_to_waits_for_writer_acknowledgement() {
+        let (sender, peer, mut rx) = sender_fixture();
+        let send = tokio::spawn(async move { sender.send_to(peer, event(EventKind::Pong)).await });
+        let message = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("message should enqueue")
+            .expect("message");
+        assert!(!send.is_finished(), "enqueue alone is not delivery");
+        assert_eq!(message.event.kind, EventKind::Pong);
+        message.written.send(true).unwrap();
+        assert_eq!(send.await.unwrap(), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn send_to_propagates_a_negative_writer_acknowledgement() {
+        let (sender, peer, mut rx) = sender_fixture();
+        let send = tokio::spawn(async move { sender.send_to(peer, event(EventKind::Pong)).await });
+        let message = rx.recv().await.expect("message");
+        message.written.send(false).unwrap();
+        assert_eq!(send.await.unwrap(), Err(SendError::NotConnected));
+    }
+
+    #[tokio::test]
+    async fn send_to_fails_if_the_writer_drops_a_queued_message() {
+        let (sender, peer, mut rx) = sender_fixture();
+        let send = tokio::spawn(async move { sender.send_to(peer, event(EventKind::Pong)).await });
+        let message = rx.recv().await.expect("message");
+        drop(message);
+        assert_eq!(send.await.unwrap(), Err(SendError::NotConnected));
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_queued_send_is_skipped_by_the_writer() {
+        let (sender, peer, mut rx) = sender_fixture();
+        let send = tokio::spawn(async move { sender.send_to(peer, event(EventKind::Pong)).await });
+        let message = rx.recv().await.expect("message");
+        send.abort();
+        assert!(send.await.unwrap_err().is_cancelled());
+        assert!(
+            message.cancelled(),
+            "cancelled speech must not be written later"
+        );
     }
 
     /// End-to-end: bind on an OS-assigned port, connect a client,

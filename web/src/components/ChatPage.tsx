@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { Bookmark, MessagesSquare, ShieldCheck } from "lucide-react";
 import { Approvals } from "@/components/ApprovalsList";
 import { ArtifactView } from "@/components/ArtifactView";
@@ -13,8 +14,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useDeviceStream } from "@/hooks/useDeviceStream";
 import { api } from "@/lib/api";
 import type { Artifact, ArtifactPatch, Conversation, ConversationSummary, Decision } from "@/lib/api";
-import { APPROVALS, PENDING } from "@/lib/approvals";
+import { APPROVALS, PENDING, approvalTag } from "@/lib/approvals";
 import { ARTIFACTS, ARTIFACT_LIST, workingLine } from "@/lib/artifacts";
+import { closeWaiting } from "@/lib/pwa";
+import { thisDevice } from "@/lib/push";
 import { hashQuery } from "@/lib/route";
 import { relativeTime } from "@/lib/skills";
 
@@ -65,6 +68,37 @@ export function linkedArtifact(hash: string): number | null {
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
+/** The approval a link is about: `#/chat?approval=…`, where every
+    notification about one leads. */
+export function linkedApproval(hash: string): string | null {
+  return hashQuery(hash).get("approval") || null;
+}
+
+/** The panel tab a link asks the chat to open: `#/chat?panel=approvals`. */
+export function linkedPanel(hash: string): "approvals" | null {
+  return hashQuery(hash).get("panel") === "approvals" ? "approvals" : null;
+}
+
+/** Where an approval's card is, for a link to it: the conversation it is
+    in, from what waits or else what was decided lately; none for one
+    asked aloud, or one Niles has no record of. */
+async function whereIs(queryClient: QueryClient, approval: string): Promise<number | null> {
+  try {
+    const { approvals } = await queryClient.fetchQuery({
+      queryKey: PENDING,
+      queryFn: api.approvals,
+      retry: false,
+      staleTime: 0,
+    });
+    const waiting = approvals.find((a) => a.id === approval);
+    if (waiting) return waiting.conversation_id;
+    const { entries } = await api.approvalHistory();
+    return entries.find((e) => e.approval === approval)?.conversation_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Every conversation the signed-in person has had with Niles, spoken or
  * typed, one on screen at a time, kept on the server so the next message
@@ -83,7 +117,23 @@ export function ChatPage() {
   // or a refetch after five quiet minutes would empty the screen under
   // whoever is reading it.
   const [chosen, setChosen] = useState<number | null>();
-  if (chosen === undefined && list.data) {
+  // The card a notification's link led to, drawn out in its conversation
+  // or in Approvals.
+  const [highlight, setHighlight] = useState<string | null>(null);
+  // A link to an approval, still being looked up: the conversation the
+  // chat lands on waits for it.
+  const [following, setFollowing] = useState<string | null>(() =>
+    linkedApproval(window.location.hash),
+  );
+  const navigation = useRef(0);
+  const stopFollowing = () => {
+    navigation.current += 1;
+    setFollowing(null);
+    if (linkedApproval(window.location.hash) !== null) {
+      window.history.replaceState(null, "", "#/chat");
+    }
+  };
+  if (chosen === undefined && list.data && following === null) {
     setChosen(landingOn(list.data));
   }
   const current = chosen ?? null;
@@ -157,8 +207,18 @@ export function ChatPage() {
   });
 
   const decide = useMutation({
-    mutationFn: ({ id, approval, decision }: { id: number; approval: string; decision: Decision }) =>
-      api.decideApproval(id, approval, decision),
+    mutationFn: async ({
+      id,
+      approval,
+      decision,
+    }: {
+      id: number;
+      approval: string;
+      decision: Decision;
+    }) => api.decideApproval(id, approval, decision, await thisDevice()),
+    // Answered here: its notification on this device goes now. Niles's
+    // push saying what became of it skips the device it was answered on.
+    onSuccess: (_, { approval }) => void closeWaiting(approvalTag(approval)),
     // Refetched either way: a 409 means it lapsed or was answered
     // elsewhere, and the card should say so — and the panel with it.
     onSettled: () => {
@@ -184,6 +244,7 @@ export function ChatPage() {
   });
 
   const openArtifact = (id: number) => {
+    stopFollowing();
     setTab("saved");
     setOpened(id);
     setPanelOpen(true);
@@ -194,17 +255,47 @@ export function ChatPage() {
   // bare chat afterwards, or a refresh would open it again.
   useEffect(() => {
     const follow = () => {
-      const id = linkedArtifact(window.location.hash);
-      if (id === null) return;
-      setTab("saved");
-      setOpened(id);
-      setPanelOpen(true);
+      const hash = window.location.hash;
+      const id = linkedArtifact(hash);
+      const approval = linkedApproval(hash);
+      const panel = linkedPanel(hash);
+      const request = ++navigation.current;
+      setFollowing(null);
+      if (id !== null) {
+        setTab("saved");
+        setOpened(id);
+        setPanelOpen(true);
+      } else if (approval !== null) {
+        setFollowing(approval);
+        void whereIs(queryClient, approval).then((conversation) => {
+          if (navigation.current !== request) return;
+          setHighlight(approval);
+          if (conversation !== null) {
+            setChosen(conversation);
+            setPanelOpen(false);
+          } else {
+            setTab("approvals");
+            setPanelOpen(true);
+          }
+          setFollowing(null);
+          window.history.replaceState(null, "", "#/chat");
+        });
+        return;
+      } else if (panel !== null) {
+        setTab(panel);
+        setPanelOpen(true);
+      } else {
+        return;
+      }
       window.history.replaceState(null, "", "#/chat");
     };
     follow();
     window.addEventListener("hashchange", follow);
-    return () => window.removeEventListener("hashchange", follow);
-  }, []);
+    return () => {
+      navigation.current += 1;
+      window.removeEventListener("hashchange", follow);
+    };
+  }, [queryClient]);
 
   const remove = useMutation({
     mutationFn: (id: number) => api.deleteConversation(id),
@@ -216,14 +307,18 @@ export function ChatPage() {
   });
 
   const startNew = () => {
+    stopFollowing();
     setChosen(null);
+    setHighlight(null);
     setPanelOpen(false);
     send.reset();
     answer.reset();
   };
 
   const pick = (id: number) => {
+    stopFollowing();
     setChosen(id);
+    setHighlight(null);
     setPanelOpen(false);
     send.reset();
     answer.reset();
@@ -267,7 +362,7 @@ export function ChatPage() {
       label: "Approvals",
       icon: ShieldCheck,
       badge: pending.data?.approvals.length ?? 0,
-      render: () => <Approvals onOpenConversation={pick} />,
+      render: () => <Approvals onOpenConversation={pick} highlight={highlight} />,
     },
   ];
 
@@ -318,6 +413,7 @@ export function ChatPage() {
         onDictate={async (audio) => (await api.dictate(audio)).text}
         onOpenArtifact={openArtifact}
         working={saved.data?.artifacts.filter((a) => a.status === "working").map((a) => a.id)}
+        highlight={highlight}
       />
       <NilesPanel
         open={panelOpen}

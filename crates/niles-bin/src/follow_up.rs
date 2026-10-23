@@ -12,9 +12,15 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// Long enough for the reply to be spoken and the answer to begin. The
-/// satellite gives up on its own after six seconds of nobody talking.
-const WAITING: Duration = Duration::from_secs(60);
+/// Host-side expiry for a stored question. The satellite itself stops
+/// listening after six seconds of nobody talking; this longer expiry is a
+/// conservative fallback when no answer event arrives to consume the question.
+pub(crate) const WAITING: Duration = Duration::from_secs(60);
+
+/// How long the satellite listens for an answer once a question has been
+/// played: its six seconds of nobody talking, and a second for the answer's
+/// first audio to arrive. An answer then holds the room as a turn of its own.
+pub(crate) const ANSWER_WINDOW: Duration = Duration::from_secs(7);
 
 /// Questions answered in a row before the wake word is needed again: a
 /// conversation, not an open microphone.

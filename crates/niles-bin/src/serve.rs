@@ -11,10 +11,14 @@ use crate::lighting::{
 use crate::prompt::{build_capability_index, build_capability_loader, build_initial_device_index};
 use crate::recognition::build_speaker_identifier;
 use crate::satellites::SatelliteRegistry;
+use crate::speech_stream::{
+    CommentaryOutput, CommentaryPolicy, ConversationLease, RoomArbiter,
+    take_conversation_after_audio,
+};
 use crate::timers::spawn_timer_driver;
 use crate::voice::{hush_on_wake, spawn_dispatch_task};
 use crate::wiring::accounts::{
-    build_calendars, build_push, build_secret_store, build_strava, build_tado_tokens,
+    build_calendars, build_notify, build_push, build_secret_store, build_strava, build_tado_tokens,
     build_weather_client, ensure_session_key, forget_retired_provider_keys,
 };
 use crate::wiring::automations::{
@@ -187,10 +191,12 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     );
     // Remote tool servers put their tools beside the plugins'. After the
     // secrets are loaded, since each connects with its key.
-    let approvals = Arc::new(approvals::Approvals::new(
-        bus.clone(),
-        build_approval_log(&cfg),
-    ));
+    let push = build_push(&cfg);
+    let notify = build_notify(&cfg, push.clone(), bus.clone());
+    let approvals = Arc::new(
+        approvals::Approvals::new(bus.clone(), build_approval_log(&cfg))
+            .with_notify(notify.clone()),
+    );
     let _approvals_sweep = approvals.clone().spawn_sweep();
     let tool_servers =
         tool_servers::ToolServers::start(store.clone(), plugin_tools.clone(), approvals.clone());
@@ -451,7 +457,6 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let (arrivals, mut arrived) = tokio::sync::mpsc::unbounded_channel();
     let strava = build_strava(&cfg, arrivals);
     let chat_log = build_chat_log(&cfg);
-    let push = build_push(&cfg);
     // Made by the assistant, which runs their jobs: the runner is handed
     // the assistant once it has started serving the tools.
     let artifact_runner = Arc::new(artifacts::AssistantRunner {
@@ -465,7 +470,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         chat_log.clone(),
         search.clone(),
         strava.as_ref().map(|s| s.store().clone()),
-        push.clone(),
+        notify.clone(),
     );
     if let (Some(strava), Ok(tz)) = (&strava, cfg.home.timezone.parse::<chrono_tz::Tz>()) {
         let imperial = cfg.home.resolved_units() == niles_config::Units::Imperial;
@@ -558,6 +563,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .with_context(|| format!("binding Wyoming server on {wyoming_bind}"))?;
 
     let satellites = Arc::new(SatelliteRegistry::from_config(&cfg.satellites));
+    let speech_arbiter = Arc::new(RoomArbiter::default());
     let speakers = Arc::new(speakers::SpeakerRegistry::new(store.clone()));
     let music =
         Arc::new(music::Music::new(speakers.clone(), store.clone(), build_room_music(&cfg)).await);
@@ -586,9 +592,56 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         satellites: satellites.clone(),
         peer_index: peer_index.clone(),
         tv: tv.clone(),
+        speech_arbiter: speech_arbiter.clone(),
     });
     notifications.set_delivery(wyoming_delivery);
     let notifications = Arc::new(notifications);
+
+    let speech_manager = if let Some(runtime) = &plugin_runtime {
+        let quiet = cfg
+            .notifications
+            .to_quiet_hours_config(&cfg.home.timezone)
+            .unwrap_or_default();
+        let output = Arc::new(CommentaryOutput::new(
+            piper.clone(),
+            satellites.clone(),
+            speech_arbiter.clone(),
+        ));
+        let policy = Arc::new(CommentaryPolicy::new(
+            speech_arbiter.clone(),
+            satellites.clone(),
+            quiet,
+        ));
+        let output_prepare = output.clone();
+        let output_deliver = output.clone();
+        let output = niles_tts::speech_session::SpeechOutput::new(
+            move |room, text| {
+                let output = output_prepare.clone();
+                async move { output.prepare(&room, &text).await }
+            },
+            move |prepared| {
+                let output = output_deliver.clone();
+                async move { output.deliver(prepared).await }
+            },
+        );
+        let policy = niles_tts::speech_session::SpeechEligibility::new(move |owner, room| {
+            let policy = policy.clone();
+            async move { policy.check(&owner, &room).await }
+        });
+        let manager = Arc::new(niles_tts::speech_session::SpeechSessionManager::new(
+            output, policy,
+        ));
+        let route_registry = satellites.clone();
+        let host = niles_plugins::speech_stream::SessionSpeechHost::with_route_validator(
+            manager.clone(),
+            tokio::runtime::Handle::current(),
+            move |room| route_registry.ip_for(room).is_some(),
+        );
+        runtime.connect_speech_stream(Arc::new(host));
+        Some(manager)
+    } else {
+        None
+    };
 
     // Automation engine
     let automation_sink = Arc::new(MqttDeviceSink {
@@ -712,6 +765,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         satellites.clone(),
         peer_index.clone(),
         notifications.clone(),
+        speech_arbiter.clone(),
     );
     // Half an hour before a nemlig.com delivery, the satellites say so.
     let _grocery_reminder = nemlig.clone().map(|client| {
@@ -764,6 +818,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_calendars(calendars.clone())
     .with_strava(strava.clone())
     .with_push(push.clone())
+    .with_notifications(notify.inbox())
     .with_artifacts(
         artifacts.as_ref().map(|a| a.store().clone()),
         artifacts
@@ -838,6 +893,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // nothing else.
     let _plugin_settings = match &plugin_runtime {
         Some(runtime) => {
+            runtime.connect_notification_rooms(satellites.rooms());
             runtime.connect_notifications(notifications.clone());
             let started = runtime.load_installed().await;
             if started > 0 {
@@ -877,6 +933,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     );
 
     let mut session_tracker = SessionTracker::new();
+    let mut conversations: HashMap<SocketAddr, ConversationLease> = HashMap::new();
     let ctx = DispatchCtx {
         publisher: publisher.clone(),
         registry: registry.clone(),
@@ -931,12 +988,23 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             biased;
             incoming = rx.recv() => match incoming {
                 Some(incoming) => {
+                    let audio_stop = incoming.event.kind == niles_wyoming::EventKind::AudioStop;
+                    let peer = incoming.from;
                     if let Some(room) = satellites.room_for(incoming.from) {
                         peer_index.lock().unwrap_or_else(|e| e.into_inner()).insert(room.clone(), incoming.from);
                     }
-                    hush_on_wake(&ctx, &incoming);
-                    if let Some(session) = session_tracker.feed(incoming) {
-                        spawn_dispatch_task(&whisper, &ctx, &piper, &wyoming_sender, session);
+                    if let Some(conversation) = hush_on_wake(&ctx, &speech_arbiter, &incoming) {
+                        conversations.insert(incoming.from, conversation);
+                    }
+                    let session = session_tracker.feed(incoming);
+                    let conversation = take_conversation_after_audio(
+                        &mut conversations,
+                        peer,
+                        audio_stop,
+                        session.is_some(),
+                    );
+                    if let Some(session) = session {
+                        spawn_dispatch_task(&whisper, &ctx, &piper, &wyoming_sender, session, conversation);
                     }
                 }
                 None => {
@@ -947,6 +1015,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             disconnect = disconnects_rx.recv() => {
                 if let Some(peer) = disconnect {
                     session_tracker.drop_peer(peer);
+                    conversations.remove(&peer);
                     let mut index = peer_index.lock().unwrap_or_else(|e| e.into_inner());
                     index.retain(|_, addr| *addr != peer);
                 }
@@ -1067,6 +1136,9 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     };
 
+    if let Some(manager) = &speech_manager {
+        manager.shutdown().await;
+    }
     server_handle.abort();
     source_handle.abort();
     if let Some(h) = wled_handle {

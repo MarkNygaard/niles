@@ -44,3 +44,9 @@ export function waitingLine(approval: PendingApproval, now: Date = new Date()): 
 export function badgeText(count: number): string {
   return count > 9 ? "9+" : String(count);
 }
+
+/** The tag of an approval's notifications on a device, as Niles pushes
+    them (crates/niles-bin/src/approvals/push.rs `tag`). */
+export function approvalTag(id: string): string {
+  return `approval-${id}`;
+}

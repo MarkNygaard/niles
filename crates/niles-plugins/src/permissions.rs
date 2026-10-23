@@ -1,6 +1,6 @@
 //! What a plugin asks for, in the words the approval screen uses.
 //!
-//! The wording is `docs/integrations/permissions.md`'s, line for line.
+//! The wording is `site/content/docs/writing-add-ons/permissions.mdx`'s, line for line.
 //! Each line is a [`Grant`] with a key that names the permission itself
 //! rather than how it is worded, so an update's difference is what it
 //! may now do that it could not before — not a page label that changed,
@@ -100,6 +100,30 @@ pub fn grants(manifest: &Manifest, tools: Option<&[String]>) -> Vec<Grant> {
             text,
         );
     }
+    for grant in &p.websocket {
+        let location = match grant.host.strip_prefix("setting:") {
+            Some(key) => format!(
+                "the address you enter under {}",
+                manifest.setting(key).map_or(key, |s| s.label.as_str())
+            ),
+            None => grant.host.clone(),
+        };
+        let port = grant.port.unwrap_or(if grant.tls { 443 } else { 80 });
+        add(
+            format!(
+                "websocket:{}:{}:{}:{}",
+                grant.name, grant.host, port, grant.tls
+            ),
+            format!(
+                "Keep a connection open to {location}, port {port}, and receive what it sends{}",
+                if grant.tls {
+                    " over a TLS connection with certificate verification"
+                } else {
+                    " over an unencrypted connection on your home network"
+                }
+            ),
+        );
+    }
     if p.callback {
         add(
             "callback".into(),
@@ -154,6 +178,12 @@ pub fn grants(manifest: &Manifest, tools: Option<&[String]>) -> Vec<Grant> {
             "notify:urgent".into(),
             "Speak through your satellites, even during quiet hours".into(),
         ),
+    }
+    if p.speech_stream.is_some() {
+        add(
+            "speech_stream".into(),
+            "Speak frequent commentary in a selected room when you explicitly enable it".into(),
+        );
     }
     if p.ui {
         for entry in &manifest.ui.menu {
@@ -264,6 +294,26 @@ room = "living_room"
     }
 
     #[test]
+    fn speech_stream_is_a_distinct_approval_grant() {
+        let before = Manifest::parse(BASE).unwrap();
+        let mut after = before.clone();
+        after.permissions.speech_stream = Some(crate::manifest::SpeechStreamGrant {
+            room: "room".into(),
+        });
+        let change = diff(&grants(&before, None), &grants(&after, None));
+        assert_eq!(
+            change.added,
+            vec!["Speak frequent commentary in a selected room when you explicitly enable it"]
+        );
+        assert!(change.removed.is_empty());
+        assert!(
+            grants(&after, None)
+                .iter()
+                .any(|grant| grant.key == "speech_stream")
+        );
+    }
+
+    #[test]
     fn every_permission_reads_as_the_author_guide_says() {
         let manifest = Manifest::parse(&format!("memory_mb = 128\n{BASE}")).unwrap();
         let tools = ["prices".to_string(), "cheapest_window".to_string()];
@@ -363,6 +413,78 @@ type = "string"
         );
         let keys: Vec<String> = grants(&manifest, None).into_iter().map(|g| g.key).collect();
         assert_eq!(keys[0], "mqtt:printer:setting:address:8883:trust-device");
+    }
+
+    #[test]
+    fn websocket_grants_are_plain_and_explicit_about_receive_access() {
+        let manifest = Manifest::parse(
+            r#"
+id = "feed"
+name = "Feed"
+version = "0.1.0"
+description = "x"
+authors = ["a"]
+min_niles = "0.4.0"
+interface = "0.4"
+
+[permissions]
+websocket = [
+    { name = "public", host = "stream.example.com", tls = true },
+    { name = "device", host = "192.168.1.50", tls = false },
+]
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            texts(&grants(&manifest, None)),
+            vec![
+                "Keep a connection open to stream.example.com, port 443, and receive what it sends over a TLS connection with certificate verification",
+                "Keep a connection open to 192.168.1.50, port 80, and receive what it sends over an unencrypted connection on your home network",
+            ]
+        );
+    }
+
+    #[test]
+    fn websocket_keyed_diff_reports_added_widened_and_unchanged_grants() {
+        let parse = |websocket: &str| {
+            Manifest::parse(&format!(
+                "id = \"feed\"\nname = \"Feed\"\nversion = \"0.1.0\"\ndescription = \"x\"\nauthors = [\"a\"]\nmin_niles = \"0.4.0\"\ninterface = \"0.4\"\n[permissions]\nwebsocket = [{websocket}]\n"
+            ))
+            .unwrap()
+        };
+        let before = parse(
+            "{ name = \"events\", host = \"feed.example.test\", port = 8443, tls = true }, { name = \"local\", host = \"127.0.0.1\", port = 8080 }",
+        );
+        let after = parse(
+            "{ name = \"events\", host = \"feed.example.test\", port = 9443, tls = true }, { name = \"local\", host = \"127.0.0.1\", port = 8080 }, { name = \"updates\", host = \"updates.example.test\", tls = true }",
+        );
+        let change = diff(&grants(&before, None), &grants(&after, None));
+        assert_eq!(change.added.len(), 2);
+        assert_eq!(change.removed.len(), 1);
+        assert!(
+            change
+                .added
+                .iter()
+                .any(|text| text.contains("feed.example.test, port 9443"))
+        );
+        assert!(
+            change
+                .added
+                .iter()
+                .any(|text| text.contains("updates.example.test, port 443"))
+        );
+        assert!(change.removed[0].contains("feed.example.test, port 8443"));
+
+        let changed = parse(
+            "{ name = \"events\", host = \"other.example.test\", port = 8443, tls = false }, { name = \"local\", host = \"127.0.0.1\", port = 8080 }",
+        );
+        let change = diff(&grants(&before, None), &grants(&changed, None));
+        assert_eq!(change.added.len(), 1);
+        assert_eq!(change.removed.len(), 1);
+        assert!(change.added[0].contains("other.example.test, port 8443"));
+        assert!(change.added[0].contains("unencrypted"));
+        assert!(change.removed[0].contains("feed.example.test, port 8443"));
+        assert!(change.removed[0].contains("TLS"));
     }
 
     #[test]

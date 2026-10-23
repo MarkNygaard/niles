@@ -138,7 +138,7 @@ pub(crate) async fn run(
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
 
-    let output = tokio::time::timeout(run.timeout, async {
+    let output = crate::assistant::within(run.timeout, async {
         let mut child = command
             .spawn()
             .context("starting `pi` — is it installed in this image?")?;
@@ -150,8 +150,7 @@ pub(crate) async fn run(
         }
         child.wait_with_output().await.context("waiting for `pi`")
     })
-    .await
-    .map_err(|_| anyhow!("no answer within {}s", run.timeout.as_secs()))??;
+    .await?;
     // `staged` drops here, after the run has ended, taking the
     // directory and its files with it.
 

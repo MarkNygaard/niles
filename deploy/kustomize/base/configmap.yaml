@@ -39,8 +39,14 @@ data:
     [wyoming]
     bind_address = "0.0.0.0:10300"
 
-    # Who hears and who thinks — ElevenLabs and Cerebras by default — and
-    # their API keys are set up in the app, under Settings → System → Voice & AI.
+    # Who hears and who thinks: ElevenLabs and Cerebras by default. Niles
+    # builds both clients at startup, so a first start reads their keys
+    # from these variables. Settings → Voice & AI changes the providers.
+    [stt]
+    api_key_env = "ELEVENLABS_API_KEY"
+
+    [llm]
+    api_key_env = "CEREBRAS_API_KEY"
 
     [tts]
     base_url = "http://piper.home-automation.svc.cluster.local:5000"

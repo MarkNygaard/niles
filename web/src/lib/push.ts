@@ -117,6 +117,17 @@ export async function currentSubscription(): Promise<PushSubscription | null> {
   return (await registration?.pushManager.getSubscription()) ?? null;
 }
 
+/** This device's push address while it has notifications on. An answer
+    given here sends it, so the push telling the person's devices what
+    became of an approval skips the device it was answered on. */
+export async function thisDevice(): Promise<string | null> {
+  try {
+    return (await currentSubscription())?.endpoint ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Ask, subscribe and tell Niles. Call it straight from a tap: Safari
  * shows its question only to a page acting on one, which is also why

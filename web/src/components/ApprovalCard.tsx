@@ -23,6 +23,9 @@ export interface ApprovalCardProps {
   summary?: string;
   /** Under the buttons: where it was asked, how long it waits. */
   footer?: ReactNode;
+  /** The card a notification's link led to: drawn out until another
+      conversation is chosen. */
+  highlighted?: boolean;
 }
 
 /**
@@ -39,6 +42,7 @@ export function ApprovalCard({
   folded,
   summary,
   footer,
+  highlighted,
 }: ApprovalCardProps) {
   const pending = card.status === "pending";
   const hasDetails = card.fields.length > 0 || Boolean(card.body);
@@ -62,7 +66,12 @@ export function ApprovalCard({
   return (
     <section
       aria-label={card.title}
-      className="bg-muted/60 ring-foreground/10 flex w-full max-w-xl flex-col gap-3 self-start rounded-2xl p-4 ring-1"
+      data-approval={card.id}
+      aria-current={highlighted ? "true" : undefined}
+      className={cn(
+        "bg-muted/60 flex w-full max-w-xl flex-col gap-3 self-start rounded-2xl p-4",
+        highlighted ? "ring-primary ring-2" : "ring-foreground/10 ring-1",
+      )}
     >
       <div className="flex items-start gap-3">
         <ApprovalIcon icon={card.icon} label={card.subtitle} />

@@ -8,11 +8,13 @@
 //! weeks of dated sessions, a trip its days and places, a podcast a
 //! two-host episode's script. An artifact may also have a [`page`]
 //! that draws that content: kept once, and named by each version drawn
-//! with it, and [`images`]: Niles's own copies of pictures, which its
-//! content and page name by id. Its owner may [`share`] it with others
-//! in the household, to read or to edit.
+//! and [`images`]: Niles's own copies of pictures, which its
+//! content and page name by id. A change may be said as [`edit`]s, the
+//! part that changes, rather than a whole new version. Its owner may
+//! [`share`] it with others in the household, to read or to edit.
 
 mod document;
+pub mod edit;
 mod error;
 pub mod images;
 pub mod kinds;

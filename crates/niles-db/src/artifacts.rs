@@ -168,7 +168,13 @@ impl PostgresArtifacts {
         match change {
             PageChange::Keep => Ok(current),
             PageChange::Remove => Ok(None),
-            PageChange::New(html) => Ok(Some(
+            PageChange::Edit { from, .. } if current != Some(*from) => Err(Error::Invalid {
+                kind: "edit",
+                reason:
+                    "the page changed while these edits were being made; read it again and retry"
+                        .into(),
+            }),
+            PageChange::New(html) | PageChange::Edit { html, .. } => Ok(Some(
                 sqlx::query(
                     "insert into artifact_pages (artifact_id, html) values ($1, $2) returning id",
                 )
@@ -503,12 +509,20 @@ impl ArtifactStore for PostgresArtifacts {
         person: &str,
         id: i64,
         revision: NewRevision,
+        expected: Option<i32>,
     ) -> Result<Option<Artifact>> {
         self.ensure_schema().await?;
         let mut tx = self.pool.begin().await.map_err(|e| self.storage(e))?;
-        let Some((kind, current, _)) = self.lock(&mut tx, person, id).await? else {
+        let Some((kind, current, n)) = self.lock(&mut tx, person, id).await? else {
             return Ok(None);
         };
+        if expected.is_some_and(|expected| expected != n) {
+            return Err(Error::Invalid {
+                kind: "edit",
+                reason: "the artifact changed while these edits were being made; read it again and retry"
+                    .into(),
+            });
+        }
         let page = self.page_for(&mut tx, id, current, &revision.page).await?;
         let content = serde_json::to_string(&revision.content).map_err(|e| self.storage(e))?;
         self.keep(

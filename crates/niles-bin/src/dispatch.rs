@@ -131,6 +131,43 @@ impl DispatchCtx {
     }
 }
 
+/// The first thing somebody says to Niles in a morning is greeted, as
+/// Alexa does. Decided before the reply is built, because a greeting
+/// addresses them and the confirmation must not then do it again: the
+/// name greeted, how to address them, and whether today is their
+/// birthday.
+fn morning_greeting(
+    ctx: &DispatchCtx,
+    speaker: &SpeakerContext,
+    voice: Option<&[f32]>,
+) -> Option<(String, String, bool)> {
+    let SpeakerContext::Identified { name, known } = speaker else {
+        return None;
+    };
+    let local = ctx
+        .home
+        .timezone
+        .parse::<chrono_tz::Tz>()
+        .ok()
+        .map(|tz| Utc::now().with_timezone(&tz));
+    let whom = known.address.clone().or_else(|| {
+        let id = ctx.identifier.as_ref()?;
+        id.whose_voice(voice?).and_then(|slug| id.how_to_say(&slug))
+    });
+    local
+        .filter(|l| {
+            ctx.courtesy
+                .greet_now(name, l.date_naive(), l.hour(), Instant::now())
+        })
+        .map(|l| {
+            let birthday = known
+                .birthday
+                .as_deref()
+                .is_some_and(|b| niles_recognition::birthday::is_today(b, l.date_naive()));
+            (name.clone(), whom.unwrap_or_else(|| name.clone()), birthday)
+        })
+}
+
 pub(crate) async fn handle_transcript(
     ctx: &DispatchCtx,
     peer: SocketAddr,
@@ -142,36 +179,7 @@ pub(crate) async fn handle_transcript(
     answering: bool,
 ) -> Option<String> {
     let started = Instant::now();
-    // The first thing somebody says to Niles in a morning is greeted, as
-    // Alexa does. Decided before the reply is built, because a greeting
-    // addresses them and the confirmation must not then do it again.
-    let greeting = match speaker {
-        SpeakerContext::Identified { name, known } => {
-            let local = ctx
-                .home
-                .timezone
-                .parse::<chrono_tz::Tz>()
-                .ok()
-                .map(|tz| Utc::now().with_timezone(&tz));
-            let whom = known.address.clone().or_else(|| {
-                let id = ctx.identifier.as_ref()?;
-                id.whose_voice(voice?).and_then(|slug| id.how_to_say(&slug))
-            });
-            local
-                .filter(|l| {
-                    ctx.courtesy
-                        .greet_now(name, l.date_naive(), l.hour(), Instant::now())
-                })
-                .map(|l| {
-                    let birthday = known
-                        .birthday
-                        .as_deref()
-                        .is_some_and(|b| niles_recognition::birthday::is_today(b, l.date_naive()));
-                    (name.clone(), whom.unwrap_or_else(|| name.clone()), birthday)
-                })
-        }
-        _ => None,
-    };
+    let greeting = morning_greeting(ctx, speaker, voice);
     // The profile tools write to whoever is speaking, and nobody else:
     // the voice decides that, not the model.
     let slug = match speaker {
@@ -189,6 +197,7 @@ pub(crate) async fn handle_transcript(
         slug: slug.clone(),
         satellite: Some(peer),
         conversation: None,
+        in_chat: false,
     };
     let mut response = profile::SPEAKER
         .scope(
@@ -607,8 +616,11 @@ pub(crate) async fn ask_assistant(
         system_prompt.push_str(artifacts::spoken_prompt());
     }
     system_prompt.push_str(&assistant::attachments_section(attachments));
-    match assistant
-        .answer(&chosen, &system_prompt, &history, text, slug, attachments)
+    match assistant::TURN
+        .scope(
+            Some(started),
+            assistant.answer(&chosen, &system_prompt, &history, text, slug, attachments),
+        )
         .await
     {
         Ok(reply) => {
@@ -620,7 +632,24 @@ pub(crate) async fn ask_assistant(
             Some(reply)
         }
         Err(e) => {
-            tracing::warn!("[{peer}] {name} could not answer ({e:#}); using [llm]");
+            let ms = started.elapsed().as_millis();
+            // A change it ran out of time in the middle of goes on as a
+            // job: in the app's chat, where the job's card follows it,
+            // and not with files, which a job cannot see.
+            if attachments.is_empty()
+                && matches!(thread, conversation::Thread::Chat(_))
+                && let (Some(artifacts), Some(asker)) = (&ctx.artifacts, approvals::asker())
+                && let Some(reply) = artifacts
+                    .carry_on(&e, &asker, started, &assistant::transcript(&history, text))
+                    .await
+            {
+                tracing::info!(
+                    "[{peer}] {name} ran out of time after {ms}ms; the change goes on as a job"
+                );
+                note_chat(|n| n.via = Some(chosen.via()));
+                return Some(reply);
+            }
+            tracing::warn!("[{peer}] {name} could not answer after {ms}ms ({e:#}); using [llm]");
             note_chat(|n| {
                 n.fallback = Some((chosen.via(), format!("{name} could not answer: {e:#}")));
             });

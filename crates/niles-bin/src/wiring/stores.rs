@@ -19,7 +19,7 @@ pub(crate) fn build_artifacts(
     chat_log: Option<Arc<chat_log::ChatLog>>,
     search: niles_tools::Search,
     training: Option<Arc<dyn niles_training::TrainingStore>>,
-    push: Option<Arc<niles_webpush::WebPush>>,
+    notify: Arc<crate::notify::Notify>,
 ) -> Option<Arc<artifacts::Artifacts>> {
     // The household is who the settings allow in: the same store the
     // assistant is chosen from.
@@ -50,10 +50,7 @@ pub(crate) fn build_artifacts(
         Arc::new(store),
         bus,
         runner,
-        match push {
-            Some(push) => Arc::new(artifacts::Devices(push)) as Arc<dyn artifacts::Notifier>,
-            None => Arc::new(artifacts::Nobody),
-        },
+        notify as Arc<dyn artifacts::Notifier>,
         chat_log.map(|log| log as Arc<dyn artifacts::Conversations>),
         extras,
     )

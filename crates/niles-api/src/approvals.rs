@@ -22,13 +22,15 @@ pub trait Approvals: Send + Sync {
     /// Theirs still waiting, newest first.
     async fn waiting(&self, who: &str, speaker: Option<&str>) -> Vec<Waiting>;
 
-    /// Answer one by its id, as its card's button would.
+    /// Answer one by its id, as its card's button would. `device` is the
+    /// push address of the device it was answered on, if any.
     async fn decide(
         &self,
         who: &str,
         speaker: Option<&str>,
         approval: &str,
         decision: Decision,
+        device: Option<&str>,
     ) -> Result<String, Undecidable>;
 
     /// A page of theirs decided or lapsed, newest first, all before the
@@ -136,7 +138,13 @@ pub async fn decide(
     let approvals = approvals(&state)?;
     let (who, speaker) = caller(&state, &headers);
     approvals
-        .decide(&who, speaker.as_deref(), &approval, body.decision)
+        .decide(
+            &who,
+            speaker.as_deref(),
+            &approval,
+            body.decision,
+            body.device.as_deref(),
+        )
         .await
         .map(|reply| Json(Answered { reply }))
         .map_err(undecided)
@@ -168,8 +176,9 @@ mod tests {
     use axum::http::Request;
     use http_body_util::BodyExt;
     use niles_core::{DeviceRegistry, EventBus};
+    use parking_lot::Mutex;
     use serde_json::{Value, json};
-    use std::sync::Mutex;
+    use std::sync::Arc;
     use tower::ServiceExt;
 
     struct NoopPublisher;
@@ -184,7 +193,7 @@ mod tests {
     /// One waiting call, `a1`, and what was asked of it.
     #[derive(Default)]
     struct Held {
-        decided: Mutex<Vec<(String, Decision)>>,
+        decided: Mutex<Vec<(String, Decision, Option<String>)>>,
         asked_before: Mutex<Option<Option<i64>>>,
     }
 
@@ -222,11 +231,11 @@ mod tests {
             _speaker: Option<&str>,
             approval: &str,
             decision: Decision,
+            device: Option<&str>,
         ) -> Result<String, Undecidable> {
             self.decided
                 .lock()
-                .unwrap()
-                .push((approval.to_string(), decision));
+                .push((approval.to_string(), decision, device.map(str::to_string)));
             match (approval, decision) {
                 ("a1", Decision::Deny) => Ok("All right, I didn't.".into()),
                 ("a1", _) => Ok("Done.".into()),
@@ -242,7 +251,7 @@ mod tests {
             _speaker: Option<&str>,
             before: Option<i64>,
         ) -> Result<History, String> {
-            *self.asked_before.lock().unwrap() = Some(before);
+            *self.asked_before.lock() = Some(before);
             Ok(History {
                 entries: Vec::new(),
                 next: before.map(|b| b - 30),
@@ -331,11 +340,36 @@ mod tests {
             StatusCode::UNPROCESSABLE_ENTITY
         );
         assert_eq!(
-            held.decided.lock().unwrap()[..2],
+            held.decided.lock()[..2],
             [
-                ("a1".to_string(), Decision::Conversation),
-                ("a1".to_string(), Decision::Deny)
+                ("a1".to_string(), Decision::Conversation, None),
+                ("a1".to_string(), Decision::Deny, None)
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_device_it_was_answered_on_is_passed_on() {
+        let held = Arc::new(Held::default());
+        let app = app(Some(held.clone()));
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/me/approvals/a1",
+            Some(json!({
+                "decision": "deny",
+                "device": "https://push.example/1",
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            held.decided.lock().last().unwrap(),
+            &(
+                "a1".to_string(),
+                Decision::Deny,
+                Some("https://push.example/1".to_string())
+            )
         );
     }
 
@@ -347,10 +381,10 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["kept"], true);
         assert_eq!(body["next"], Value::Null);
-        assert_eq!(*held.asked_before.lock().unwrap(), Some(None));
+        assert_eq!(*held.asked_before.lock(), Some(None));
 
         let (_, body) = call(&app, "GET", "/me/approvals/history?before=90", None).await;
-        assert_eq!(*held.asked_before.lock().unwrap(), Some(Some(90)));
+        assert_eq!(*held.asked_before.lock(), Some(Some(90)));
         assert_eq!(body["next"], 60);
     }
 

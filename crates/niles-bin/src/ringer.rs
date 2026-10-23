@@ -9,6 +9,7 @@
 //! mid-chime, and cuts the chime off where it is.
 
 use crate::satellites::SatelliteRegistry;
+use crate::speech_stream::RoomArbiter;
 use niles_core::{Event, EventBus, RoomName};
 use niles_notifications::NotificationCenter;
 use niles_scheduler::{TimerId, TimerStore};
@@ -134,6 +135,7 @@ pub fn spawn_timer_alarms(
     satellites: Arc<SatelliteRegistry>,
     peer_index: Arc<Mutex<HashMap<RoomName, SocketAddr>>>,
     center: Arc<NotificationCenter>,
+    speech_arbiter: Arc<RoomArbiter>,
 ) -> tokio::task::JoinHandle<()> {
     let mut bus_rx = bus.subscribe();
     tokio::spawn(async move {
@@ -147,11 +149,15 @@ pub fn spawn_timer_alarms(
                             Some(n) => format!("'{n}' timer finished"),
                             None => "Timer finished".to_string(),
                         };
-                        center.deliver(
-                            text,
-                            room.map(|r| r.as_str().to_string()),
-                            niles_notifications::Priority::Important,
-                        );
+                        // Spawned: the next timer must not wait for this
+                        // one to be spoken, nor the bus fill up meanwhile.
+                        let center = center.clone();
+                        let room = room.map(|r| r.as_str().to_string());
+                        tokio::spawn(async move {
+                            center
+                                .deliver(text, room, niles_notifications::Priority::Important)
+                                .await;
+                        });
                         continue;
                     };
                     let (pcm, format) = chime();
@@ -163,7 +169,9 @@ pub fn spawn_timer_alarms(
                     .into_owned();
                     let timers = timers.clone();
                     let peer_index = peer_index.clone();
+                    let reservation = speech_arbiter.reserve_notification(&room);
                     tokio::spawn(async move {
+                        let _reservation = reservation;
                         let id = TimerId(id);
                         let ended = ring(
                             || timers.list().iter().any(|t| t.id == id && t.is_ringing()),

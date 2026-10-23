@@ -18,7 +18,7 @@ use crate::manifest::{EventPermission, Manifest};
 use crate::store::{KnownDevice, Package, PluginStore};
 use crate::ui::{ActionOutcome, ActionValue, Context, Surface};
 use async_trait::async_trait;
-use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus, PresenceState};
+use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus, PresenceState, RoomName};
 use niles_mqtt::DeviceCommander;
 use niles_notifications::NotificationCenter;
 use niles_tools::DynamicTools;
@@ -109,6 +109,10 @@ pub struct House {
     pub(crate) tools: DynamicTools,
     pub(crate) store: Arc<dyn PluginStore>,
     pub(crate) notifications: OnceLock<Arc<NotificationCenter>>,
+    pub(crate) notification_requests:
+        OnceLock<Arc<crate::notification_requests::NotificationRequests>>,
+    pub(crate) notification_rooms: OnceLock<HashSet<RoomName>>,
+    pub(crate) speech_stream: OnceLock<Arc<dyn crate::speech_stream::SpeechStreamHost>>,
     pub(crate) settings: SettingsFn,
     pub(crate) secrets: SecretsFn,
     pub(crate) mqtt_watch: Option<MqttWatch>,
@@ -133,6 +137,9 @@ impl House {
             tools: DynamicTools::new(),
             store,
             notifications: OnceLock::new(),
+            notification_requests: OnceLock::new(),
+            notification_rooms: OnceLock::new(),
+            speech_stream: OnceLock::new(),
             settings: Arc::new(|_| toml::Table::new()),
             secrets: Arc::new(|_, _| None),
             mqtt_watch: None,
@@ -374,9 +381,32 @@ impl Runtime {
         Ok(Self { inner })
     }
 
+    pub fn connect_speech_stream(
+        &self,
+        speech_stream: Arc<dyn crate::speech_stream::SpeechStreamHost>,
+    ) {
+        let _ = self.inner.house.speech_stream.set(speech_stream);
+    }
+
     /// Let plugins speak, once the notification centre exists.
     pub fn connect_notifications(&self, center: Arc<NotificationCenter>) {
-        let _ = self.inner.house.notifications.set(center);
+        if self.inner.house.notifications.set(center.clone()).is_ok() {
+            let _ = self.inner.house.notification_requests.set(Arc::new(
+                crate::notification_requests::NotificationRequests::new(
+                    center,
+                    self.inner.house.handle.clone(),
+                ),
+            ));
+        }
+    }
+
+    /// Configure the household rooms that have a notification route.
+    pub fn connect_notification_rooms(&self, rooms: impl IntoIterator<Item = RoomName>) {
+        let _ = self
+            .inner
+            .house
+            .notification_rooms
+            .set(rooms.into_iter().collect());
     }
 
     /// Start every plugin the store holds as enabled. One that cannot be
@@ -1153,9 +1183,10 @@ pub(crate) struct Plugin {
     log_window: Mutex<LogWindow>,
     log: Arc<PluginLog>,
     failures: std::sync::atomic::AtomicU64,
-    /// The last MQTT connection id handed out. Ids are never reused, so
-    /// a message for a connection that is gone cannot reach a new one.
+    /// Last MQTT connection id; ids are not reused.
     connections: std::sync::atomic::AtomicU32,
+    /// Last WebSocket id; separately monotonic for this plugin instance.
+    websocket_connections: std::sync::atomic::AtomicU32,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     /// The webhook's rate limit, the requests waiting for the plugin,
     /// and the last one, for the panel.
@@ -1215,6 +1246,7 @@ impl Plugin {
             log,
             failures: Default::default(),
             connections: Default::default(),
+            websocket_connections: Default::default(),
             thread: Mutex::default(),
             hook_bucket: Mutex::default(),
             hooks_waiting: Default::default(),
@@ -1278,6 +1310,13 @@ impl Plugin {
             Level::Warn => tracing::warn!(plugin = %id, "{line}"),
             Level::Error => tracing::error!(plugin = %id, "{line}"),
         }
+    }
+
+    /// An id for a new WebSocket connection.
+    pub fn next_websocket_connection(&self) -> u32 {
+        self.websocket_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
     }
 
     /// An id for a new MQTT connection.
@@ -1591,6 +1630,7 @@ pub(crate) enum Next {
     Start,
     Event(wit::Event),
     Mqtt(crate::mqtt::Delivery),
+    WebSocket(crate::websocket::Delivery),
 }
 
 /// A plugin's work, in the order it is done: jobs somebody is waiting
@@ -1607,8 +1647,11 @@ struct Pending {
     events: VecDeque<wit::Event>,
     dropped: u64,
     mqtt: crate::mqtt::Inbox,
+    websocket: crate::websocket::Inbox,
     /// Whether an event goes next when both are waiting.
     events_turn: bool,
+    /// MQTT and WebSocket alternate when both transports are waiting.
+    websocket_turn: bool,
     restart: bool,
     stop: bool,
 }
@@ -1640,6 +1683,16 @@ impl Queue {
         });
     }
 
+    pub fn push_websocket(&self, delivery: crate::websocket::Delivery) {
+        self.change(|p| p.websocket.push(delivery));
+    }
+    pub fn register_websocket(&self, conn: u32) {
+        self.change(|p| p.websocket.register(conn));
+    }
+    pub fn remove_websocket(&self, conn: u32) {
+        self.change(|p| p.websocket.remove(conn));
+    }
+
     pub fn push_mqtt(&self, delivery: crate::mqtt::Delivery) {
         self.change(|p| p.mqtt.push(delivery));
     }
@@ -1665,6 +1718,7 @@ impl Queue {
         let mut pending = lock(&self.pending);
         pending.events.clear();
         pending.mqtt.clear();
+        pending.websocket.clear();
     }
 
     pub fn dropped(&self) -> u64 {
@@ -1692,16 +1746,35 @@ impl Queue {
             if start.is_some_and(|t| t <= now) {
                 return Next::Start;
             }
-            let mqtt_waiting = !pending.mqtt.is_empty();
+            let mqtt_waiting = !pending.mqtt.is_empty() || !pending.websocket.is_empty();
             if !pending.events.is_empty() && (pending.events_turn || !mqtt_waiting) {
                 pending.events_turn = false;
                 if let Some(event) = pending.events.pop_front() {
                     return Next::Event(event);
                 }
             }
+            let mqtt_waiting = !pending.mqtt.is_empty();
+            let websocket_waiting = !pending.websocket.is_empty();
+            if mqtt_waiting && websocket_waiting {
+                if pending.websocket_turn {
+                    if let Some(delivery) = pending.websocket.pop() {
+                        pending.websocket_turn = false;
+                        pending.events_turn = true;
+                        return Next::WebSocket(delivery);
+                    }
+                } else if let Some(delivery) = pending.mqtt.pop() {
+                    pending.websocket_turn = true;
+                    pending.events_turn = true;
+                    return Next::Mqtt(delivery);
+                }
+            }
             if let Some(delivery) = pending.mqtt.pop() {
                 pending.events_turn = true;
                 return Next::Mqtt(delivery);
+            }
+            if let Some(delivery) = pending.websocket.pop() {
+                pending.events_turn = true;
+                return Next::WebSocket(delivery);
             }
             pending = match [timers, start].into_iter().flatten().min() {
                 Some(at) => {
@@ -1783,6 +1856,39 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, ["mqtt", "event", "mqtt", "event"]);
+    }
+
+    #[test]
+    fn mqtt_flood_cannot_starve_websocket_and_events_keep_turns() {
+        let queue = Queue::default();
+        queue.register_websocket(7);
+        for n in 0..8 {
+            queue.push_mqtt(crate::mqtt::Delivery::Message {
+                conn: 1,
+                topic: "t".into(),
+                payload: vec![n],
+                latest_only: false,
+            });
+        }
+        queue.push_websocket(crate::websocket::Delivery::Status {
+            conn: 7,
+            generation: 1,
+            status:
+                crate::bindings::v0_4::niles::integration::websocket::ConnectionStatus::Connected,
+        });
+        let kinds: Vec<_> = (0..7)
+            .map(|_| {
+                queue.push_event(event());
+                match queue.next(None, None) {
+                    Next::Mqtt(_) => "mqtt",
+                    Next::WebSocket(_) => "websocket",
+                    Next::Event(_) => "event",
+                    _ => "other",
+                }
+            })
+            .collect();
+        assert!(kinds.iter().position(|kind| *kind == "websocket").unwrap() <= 3);
+        assert!(kinds.contains(&"event"));
     }
 
     #[test]
