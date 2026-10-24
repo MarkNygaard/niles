@@ -6,11 +6,13 @@ description: "A complete plugin in Rust that reads Danish spot prices, with the 
 > Interface 0.2, which Niles still runs: it connects no account and has no
 > webhook, so 0.3 would add only empty exports (see
 > [publishing](/docs/writing-add-ons/publishing#interface-versions) for moving it). The Rust
-> below was built with `cargo build --release --target wasm32-wasip2` against
-> the 0.2 WIT, now kept as
-> [`niles-integration-0.2.wit`](https://github.com/MarkNygaard/niles/blob/main/schemas/niles-integration-0.2.wit), and
-> `wit-bindgen` 0.63, passes `niles plugin check`, and runs under `niles plugin
-> dev` on Niles 0.2.0 against the live service. The JavaScript and Python
+> below is Niles's own add-on
+> [`addons/spotprice`](https://github.com/MarkNygaard/niles/tree/main/addons/spotprice),
+> which CI builds against the 0.2 WIT,
+> [`niles-integration-0.2.wit`](https://github.com/MarkNygaard/niles/blob/main/schemas/niles-integration-0.2.wit),
+> with `wit-bindgen` 0.63 and checks with `niles plugin check` on every change.
+> It runs under `niles plugin dev` on Niles 0.5.0 against the live service.
+> Install it as `MarkNygaard/niles/spotprice`. The JavaScript and Python
 > snippets were built with `jco componentize` and `componentize-py` against
 > interface 0.1, have had the two MQTT exports of 0.2 added by hand since,
 > and have not been run in Niles yet.
@@ -50,16 +52,33 @@ network tariffs, taxes and VAT come on top and are most of a Danish bill, which
 the tool's description tells the model so it does not quote a spot price as
 the cost of power.
 
-## The repo
+## The files
+
+In Niles's repository, beside its other first-party add-ons:
+
+```
+addons/
+├── Cargo.toml                 # the add-ons' workspace: release profile and lints
+├── build.sh, build.ps1        # build, and copy each component to <name>/integration.wasm
+└── spotprice/
+    ├── Cargo.toml
+    ├── niles-integration.toml
+    ├── logo.svg
+    ├── src/lib.rs             # generates its bindings from ../../schemas/niles-integration-0.2.wit
+    ├── README.md
+    └── CHANGELOG.md           # written by release-please
+```
+
+In a repo of your own, the same plugin is:
 
 ```
 niles-spotprice/
-├── Cargo.toml
+├── Cargo.toml                     # with the release profile, below
 ├── niles-integration.toml
 ├── logo.svg
 ├── wit/niles-integration.wit      # copied from Niles's niles-integration-0.2.wit
-├── src/lib.rs
-└── .github/workflows/release.yml  # as in publishing.md, with CRATE: niles_spotprice
+├── src/lib.rs                     # with path: "wit"
+└── .github/workflows/release.yml  # as in publishing, with CRATE: niles_spotprice
 ```
 
 ## The manifest
@@ -67,10 +86,10 @@ niles-spotprice/
 ```toml
 id = "spotprice"
 name = "Spot prices"
-version = "0.1.0"
+version = "0.1.0" # x-release-please-version
 description = "Hear what power costs hour by hour, and let rules run things when it is cheapest."
-authors = ["Jane Doe <jane@example.com>"]
-homepage = "https://github.com/jane/niles-spotprice"
+authors = ["Mark Nygaard Leth"]
+homepage = "https://github.com/MarkNygaard/niles/tree/main/addons/spotprice"
 min_niles = "0.2.0"
 interface = "0.2"
 # No group fits electricity, so it is left out and the plugin shows under Custom.
@@ -115,9 +134,12 @@ icon = "zap"
 refresh_every = 300
 ```
 
+The `x-release-please-version` comment marks where Niles's release tooling
+writes each new version; a repo of your own leaves it out.
+
 The household is shown:
 
-> **Spot prices** by Jane Doe, version 0.1.0, from github.com/jane/niles-spotprice
+> **Spot prices** by Mark Nygaard Leth, version 0.1.0, from github.com/MarkNygaard/niles
 >
 > Hear what power costs hour by hour, and let rules run things when it is cheapest.
 >
@@ -142,9 +164,11 @@ The household is shown:
 
 ```toml
 [package]
-name = "niles-spotprice"
-version = "0.1.0"
+name = "spotprice"
+version = "0.1.0" # x-release-please-version
 edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Danish electricity spot prices for Niles."
 publish = false
 
 [lib]
@@ -155,10 +179,22 @@ wit-bindgen = "0.63"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+[lints]
+workspace = true
+```
+
+`[lints] workspace = true` takes the add-ons' shared lints, which let clippy
+pass the many-argument functions wit-bindgen generates. A repo of your own
+leaves that out, names the crate `niles-spotprice` (so the build is
+`niles_spotprice.wasm`, the `CRATE` the release workflow copies), and carries
+the release profile itself, which in `addons/` is the workspace's:
+
+```toml
 [profile.release]
 opt-level = "s"
 lto = true
 strip = true
+codegen-units = 1
 ```
 
 ## `src/lib.rs`
@@ -173,7 +209,7 @@ strip = true
 
 wit_bindgen::generate!({
     world: "plugin",
-    path: "wit",
+    path: "../../schemas/niles-integration-0.2.wit",
 });
 
 // The types the world's exports use (DeviceState, Event, ToolDef,
@@ -182,8 +218,7 @@ wit_bindgen::generate!({
 // interfaces.
 use niles::integration::types::{Device, DeviceClass, LightCapabilities, Reading};
 use niles::integration::ui::{
-    Badge, Button, ButtonStyle, Chart, ChartKind, ChartSeries, Node, NodeKind, TextBlock,
-    Tone,
+    Badge, Button, ButtonStyle, Chart, ChartKind, ChartSeries, Node, NodeKind, TextBlock, Tone,
 };
 use niles::integration::{config, devices, http, log, storage, timers, ui};
 use serde::{Deserialize, Serialize};
@@ -236,7 +271,10 @@ impl Stored {
     }
 
     fn day(&self, date: &str) -> Vec<&Slot> {
-        self.slots.iter().filter(|s| s.local.starts_with(date)).collect()
+        self.slots
+            .iter()
+            .filter(|s| s.local.starts_with(date))
+            .collect()
     }
 
     fn today(&self, now: i64) -> Option<&str> {
@@ -249,7 +287,9 @@ impl Stored {
     fn hour_rank(&self, now: i64) -> Option<usize> {
         let current = self.current(now)?;
         let hours = hourly(&self.day(&current.local[..10]));
-        let (_, price) = hours.iter().find(|(hour, _)| *hour == current.local[11..13])?;
+        let (_, price) = hours
+            .iter()
+            .find(|(hour, _)| *hour == current.local[11..13])?;
         Some(1 + hours.iter().filter(|(_, p)| p < price).count())
     }
 }
@@ -371,7 +411,10 @@ impl Guest for SpotPrice {
         }
         let mut tree = Tree::new(NodeKind::Stack);
         let Some(stored) = load() else {
-            tree.add(0, muted("No prices yet. They are fetched every five minutes."));
+            tree.add(
+                0,
+                muted("No prices yet. They are fetched every five minutes."),
+            );
             tree.add(0, refresh_button());
             return Ok(tree.done());
         };
@@ -507,9 +550,8 @@ fn update_device(stored: Option<&Stored>, now: i64) {
 fn fetch() -> Result<Stored, String> {
     let area = area();
     let filter = format!("%7B%22PriceArea%22:%5B%22{area}%22%5D%7D");
-    let url = format!(
-        "{API}?start=StartOfDay&end=StartOfDay%2BP2D&sort=TimeUTC%20asc&filter={filter}"
-    );
+    let url =
+        format!("{API}?start=StartOfDay&end=StartOfDay%2BP2D&sort=TimeUTC%20asc&filter={filter}");
     let response = http::send(&http::Request {
         method: http::Method::Get,
         url,

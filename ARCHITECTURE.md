@@ -99,7 +99,7 @@ A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the res
 | `niles-tls` | TLS to devices that sign their own certificate (an LG TV). |
 | `niles-bin` | The `niles` binary: `serve`, the dev subcommands, and all the wiring. |
 
-**Outside `crates/`:** `web/` (the React app, served by `niles-api`), `firmware/xiao-wyoming/satellite-idf/` (the satellite firmware), `hardware/satellite-v2/` (the custom satellite board), `schemas/` (the plugin WIT), `site/` (getniles.app: the landing page, the add-on library, the user guide in `site/content/docs/` and the plugin author guide in `site/content/docs/writing-add-ons/`), `docs/capabilities/` (capability references), `deploy/kustomize/` and `deploy/README.md` (deployment), and `examples/niles.example.toml`.
+**Outside `crates/`:** `web/` (the React app, served by `niles-api`), `firmware/xiao-wyoming/satellite-idf/` (the satellite firmware), `hardware/satellite-v2/` (the custom satellite board), `schemas/` (the plugin WIT), `addons/` (the first-party add-ons: a Cargo workspace of their own, built to WebAssembly and released one by one), `site/` (getniles.app: the landing page, the add-on library, the user guide in `site/content/docs/` and the plugin author guide in `site/content/docs/writing-add-ons/`), `docs/capabilities/` (capability references), `deploy/kustomize/` and `deploy/README.md` (deployment), and `examples/niles.example.toml`.
 
 ## How a voice turn flows
 
@@ -219,6 +219,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 - Blinds open to a normal level, and a second Open goes all the way (#441).
 - Podcasts: the assistant researches and writes the script; the house's own Kokoro voices it, and the episode lives in a private R2 bucket the household set up, not on a hosted voice or storage service (#457).
 - Release flow: `development` is the default branch, release-please cuts releases, images are built from `main` (#456).
+- First-party add-ons live in `addons/`, one crate each, depending only on the WIT. Each is built and checked by CI and released on its own: its own release PR, tags like `spotprice-v0.1.0` while Niles keeps `vX.Y.Z`, and the files an install fetches attached to its release, so it installs as `MarkNygaard/niles/<name>` like any add-on (NIL-48, NIL-50).
 - The website, getniles.app, is one static Next.js and Fumadocs site in `site/`: the landing page, the docs and the add-on library, built and hosted by Vercel from `main` (with a preview for every pull request) and rebuilt daily. It replaced the mdBook, and it shares the app's theme file (NIL-41).
 - Self-hosted two ways, both supported: Docker Compose on one Linux machine (`deploy/compose`, which CI starts on every pull request) and Kubernetes with Kustomize (`deploy/kustomize`). The Compose stack runs Niles and Postgres only; the broker, Zigbee2MQTT and Piper stay the household's own (NIL-44).
 

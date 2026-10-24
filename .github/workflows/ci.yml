@@ -88,6 +88,50 @@ jobs:
           cargo test -p niles-api --features ui
           cargo check -p niles-bin --features ui
 
+  # The first-party add-ons in addons/, a workspace of their own: each is
+  # built to WebAssembly and checked by `niles plugin check` as an install
+  # would check it. Not a required check. It runs on every push and PR
+  # like the jobs above, with no path filter, because what it checks
+  # moves with the WIT and the plugin runtime as much as with addons/.
+  addons:
+    name: addons (build + check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            addons -> target
+
+      - name: cargo fmt --check (add-ons)
+        working-directory: addons
+        run: cargo fmt --all --check
+
+      - name: cargo clippy (add-ons)
+        working-directory: addons
+        run: cargo clippy --target wasm32-wasip2 --all-targets -- -D warnings
+
+      - name: Build the add-ons
+        run: addons/build.sh
+
+      - name: Build niles
+        run: cargo build -p niles-bin
+
+      - name: niles plugin check
+        run: |
+          for manifest in addons/*/niles-integration.toml; do
+            target/debug/niles plugin check "${manifest%/niles-integration.toml}"
+          done
+
   # deploy/compose as a household would run it, on the image this commit
   # builds: Niles comes up beside its Postgres and reaches it. Not a
   # required check. The image build is most of its time, about as long

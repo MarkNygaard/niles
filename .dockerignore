@@ -16,6 +16,10 @@ firmware
 # The website and its docs: not compiled into the binary.
 site
 
+# First-party add-ons: their own workspace, built to WebAssembly and
+# released on their own, never into the image.
+addons
+
 # Local-only working notes (also gitignored).
 ROADMAP.md
 CLAUDE.local.md

@@ -1,0 +1,23 @@
+# Niles's first-party add-ons, one crate per directory. Each is built to
+# wasm32-wasip2 and released on its own, like any third-party add-on, so
+# this is a workspace of its own: the main workspace never builds or
+# links it. An add-on depends on the WIT in ../schemas, never on a crate
+# in ../crates.
+[workspace]
+resolver = "3"
+members = ["*"]
+exclude = ["target"]
+
+# The bindings wit-bindgen generates take as many arguments as the WIT's
+# functions and records have fields. The function-length threshold is
+# the repo's, in ../clippy.toml.
+[workspace.lints.clippy]
+too_many_arguments = "allow"
+too_many_lines = "warn"
+
+# Profiles are read only here, at the workspace root.
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1

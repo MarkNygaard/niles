@@ -1,0 +1,103 @@
+name: add-on release
+
+# Builds one first-party add-on from addons/ and attaches to its GitHub
+# release what an install fetches: niles-integration.toml,
+# integration.wasm, the logo the manifest names, and niles-installed,
+# whose download count is the add-on's number of installs.
+#
+# release-please.yml calls this for each add-on release it makes (tags
+# like spotprice-v0.1.0). Run it by hand with a tag to attach the files
+# again.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "The add-on's release tag, like spotprice-v0.1.0"
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The add-on's release tag, like spotprice-v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  assets:
+    name: assets (${{ inputs.tag }})
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: The add-on, its version and its logo
+        id: addon
+        run: |
+          name="${TAG%-v*}"
+          version="${TAG##*-v}"
+          manifest="addons/$name/niles-integration.toml"
+          if [ ! -f "$manifest" ]; then
+            echo "$TAG names no add-on: there is no $manifest" >&2
+            exit 1
+          fi
+          read -r said logo < <(python3 -c '
+          import sys, tomllib
+          m = tomllib.load(open(sys.argv[1], "rb"))
+          print(m["version"], m.get("logo", ""))
+          ' "$manifest")
+          if [ "$said" != "$version" ]; then
+            echo "Tag $TAG but $manifest says $said" >&2
+            exit 1
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "logo=$logo" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: addons -> target
+
+      - name: Build
+        env:
+          NAME: ${{ steps.addon.outputs.name }}
+        run: addons/build.sh "$NAME"
+
+      # The asset names are the files' names, so a logo at assets/logo.svg
+      # is the asset logo.svg, which is where an install looks for it.
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ steps.addon.outputs.name }}
+          LOGO: ${{ steps.addon.outputs.logo }}
+        run: |
+          dir="addons/$NAME"
+          printf '1' > "$RUNNER_TEMP/niles-installed"
+          files=("$dir/niles-integration.toml" "$dir/integration.wasm" "$RUNNER_TEMP/niles-installed")
+          if [ -n "$LOGO" ]; then
+            files+=("$dir/$LOGO")
+          fi
+          gh release upload "$TAG" "${files[@]}" --clobber
+
+      # GitHub makes each new release the repo's Latest, and release-please
+      # cannot say otherwise. The Latest on the repo's page stays Niles's
+      # own newest release, the one people come there for.
+      - name: Keep Niles's release as Latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(gh release list --exclude-drafts --exclude-pre-releases --limit 100 \
+            --json tagName --jq '[.[].tagName | select(test("^v[0-9]"))][0] // empty')
+          if [ -n "$latest" ]; then
+            gh release edit "$latest" --latest
+          fi

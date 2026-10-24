@@ -16,7 +16,7 @@ Niles is an open-source, AI-first home automation system in Rust. It replaces Ho
 
 A new or ambiguous feature gets a Linear issue with the decision written down before any code. A change to a house rule, the crate map or a big decision updates `ARCHITECTURE.md` in the same PR.
 
-The repo is one Cargo workspace (`crates/`, with `niles-bin` the only binary) beside `web/` (the React app), `site/` (the website and the docs), `firmware/xiao-wyoming/satellite-idf/`, `hardware/satellite-v2/`, `schemas/` (the plugin WIT), `deploy/` (Docker Compose, Kustomize and the image's Dockerfile), `examples/` and `scripts/`.
+The repo is one Cargo workspace (`crates/`, with `niles-bin` the only binary) beside `addons/` (the first-party add-ons, a workspace of their own), `web/` (the React app), `site/` (the website and the docs), `firmware/xiao-wyoming/satellite-idf/`, `hardware/satellite-v2/`, `schemas/` (the plugin WIT), `deploy/` (Docker Compose, Kustomize and the image's Dockerfile), `examples/` and `scripts/`.
 
 ## Commands
 
@@ -31,7 +31,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-When `web/` changed, also run, in `web/`: `bun install` (only if dependencies changed), `npm run build` (tsc and vite) and `npm test` (vitest). When `site/` changed (a docs page included), run `cd site; bun install; bun run typecheck; bun run build`, and `bun run dev` to look at it on http://localhost:4000. When a skill changed, run `python scripts/check-skills.py`.
+When `addons/` changed, also run the checks in [Add-ons in addons/](#add-ons-in-addons). When `web/` changed, also run, in `web/`: `bun install` (only if dependencies changed), `npm run build` (tsc and vite) and `npm test` (vitest). When `site/` changed (a docs page included), run `cd site; bun install; bun run typecheck; bun run build`, and `bun run dev` to look at it on http://localhost:4000. When a skill changed, run `python scripts/check-skills.py`.
 
 One crate at a time: `cargo test -p niles-core`, `cargo run -p niles-bin -- --help`.
 
@@ -57,6 +57,31 @@ A function is at most 100 lines. Clippy's `too_many_lines` enforces it (the thre
 
 - **`npx shadcn@latest add <x>` rewrites an import and installs a package for it.** The generated file says `import { cn } from "cn"` and a `cn` dependency appears in `package.json`. Both are wrong here. Change the import to `@/lib/utils`, run `npm uninstall cn`, then `bun install`, because npm does not update `bun.lock`.
 - **Base UI's `Select` popup hangs jsdom.** The run never finishes. Anything worth asserting about what a `Select` offers belongs in a function the test calls directly, like `usableFor` in `RoleCard.tsx` and `roomChoices` in `SatellitesCard.tsx`. `Dialog`, `Popover` and `Switch` are fine, though `Switch` needs the `PointerEvent` shim in `src/test-setup.ts`.
+
+## Add-ons in addons/
+
+Niles's own add-ons live in `addons/<name>/`, one crate each: `Cargo.toml`, `niles-integration.toml`, the logo the manifest names, `src/lib.rs`, `README.md` and `CHANGELOG.md`. The directory, the crate and the manifest's `id` share the name. `addons/` is a Cargo workspace of its own (`addons/Cargo.toml`, with the release profile and the lints), which the main workspace excludes, so `cargo build --workspace` never builds an add-on.
+
+An add-on depends only on the WIT, never on a crate in `crates/`. Its `wit_bindgen::generate!` points at a file in `schemas/` by path: `niles-integration.wit` for a new add-on, or the frozen version it targets.
+
+Build and check, from `addons/`:
+
+```powershell
+rustup target add wasm32-wasip2   # once
+cargo fmt --all --check
+cargo clippy --target wasm32-wasip2 --all-targets -- -D warnings
+./build.ps1                       # or ./build.sh; name add-ons to build only those
+```
+
+`build.ps1` runs `cargo build --release --target wasm32-wasip2` and copies each component to `addons/<name>/integration.wasm`, which git ignores. Then, from the repo's root, `cargo run -p niles-bin -- plugin check addons/<name>` checks it as an install would. CI's `addons (build + check)` job does all of this on every PR.
+
+Releases are per add-on. A PR that changes one is titled with its scope, `feat(addon-spotprice): ...`, and release-please keeps a release PR for it apart from Niles's (`chore(addon-spotprice): release 0.2.0`). Merging that tags `spotprice-v0.2.0`, and `addon-release.yml` attaches `niles-integration.toml`, `integration.wasm`, the logo and `niles-installed` to the release, so it installs as `MarkNygaard/niles/spotprice`. Niles's own tags stay `vX.Y.Z`, and commits that touch only `addons/` don't count toward its release.
+
+A new add-on also needs:
+
+- a package in `release-please-config.json`, copied from `addons/spotprice`'s with the name changed (no entry in `.release-please-manifest.json`: `initial-version` sets its first release);
+- `# x-release-please-version` after the `version` line in its `Cargo.toml` and `niles-integration.toml`;
+- an entry in the add-on library (`MarkNygaard/niles-addons`' `addons.toml`) with `repo = "MarkNygaard/niles"` and `addon = "<name>"`.
 
 ## Skills
 

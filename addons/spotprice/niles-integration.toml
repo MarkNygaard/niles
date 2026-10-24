@@ -1,0 +1,48 @@
+id = "spotprice"
+name = "Spot prices"
+version = "0.1.0" # x-release-please-version
+description = "Hear what power costs hour by hour, and let rules run things when it is cheapest."
+authors = ["Mark Nygaard Leth"]
+homepage = "https://github.com/MarkNygaard/niles/tree/main/addons/spotprice"
+min_niles = "0.2.0"
+interface = "0.2"
+# No group fits electricity, so it is left out and the plugin shows under Custom.
+logo = "logo.svg"
+keywords = [
+    "electricity", "power", "price", "prices", "spot", "kwh", "cheap", "cheapest",
+    "expensive", "dishwasher", "washing machine", "tumble dryer", "charge the car",
+    "strøm", "strømmen", "elpris", "elprisen",
+]
+
+[permissions]
+http = ["api.energidataservice.dk"]
+devices = true
+tools = true
+ui = true
+
+[[settings]]
+key = "area"
+label = "Price area"
+type = "choice"
+required = true
+default = "DK1"
+help = "Jutland and Funen are DK1; Zealand, Lolland-Falster and Bornholm are DK2."
+options = [
+    { value = "DK1", label = "West Denmark (DK1)" },
+    { value = "DK2", label = "East Denmark (DK2)" },
+]
+
+[[settings]]
+key = "cheap_hours"
+label = "Cheap hours a day"
+type = "number"
+default = 4
+min = 1
+max = 12
+help = "How many of the day's cheapest hours the Electricity page marks as cheap."
+
+[[ui.menu]]
+id = "electricity"
+label = "Electricity"
+icon = "zap"
+refresh_every = 300

@@ -2,6 +2,15 @@
 /target
 **/*.rs.bk
 
+# The add-ons' own workspace, and the components addons/build.sh puts
+# beside each manifest. A release builds them again. `niles plugin dev`
+# keeps an add-on's storage in .niles-dev and reads its settings, which
+# may hold a key, from dev-settings.toml.
+/addons/target
+/addons/*/integration.wasm
+/addons/*/.niles-dev
+/addons/*/dev-settings.toml
+
 # IDE
 .idea/
 .vscode/*

@@ -5,27 +5,48 @@
   "include-v-in-tag": true,
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": false,
+  "separate-pull-requests": true,
   "pull-request-title-pattern": "chore: release ${version}",
+  "changelog-sections": [
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Fixes" },
+    { "type": "perf", "section": "Performance" },
+    { "type": "refactor", "section": "Refactoring" },
+    { "type": "docs", "section": "Documentation", "hidden": true },
+    { "type": "chore", "section": "Chores", "hidden": true },
+    { "type": "test", "section": "Tests", "hidden": true },
+    { "type": "ci", "section": "CI", "hidden": true }
+  ],
   "packages": {
     ".": {
       "release-type": "simple",
       "package-name": "niles",
       "changelog-path": "CHANGELOG.md",
+      "exclude-paths": ["addons"],
       "extra-files": [
         {
           "type": "generic",
           "path": "Cargo.toml"
         }
-      ],
-      "changelog-sections": [
-        { "type": "feat", "section": "Features" },
-        { "type": "fix", "section": "Fixes" },
-        { "type": "perf", "section": "Performance" },
-        { "type": "refactor", "section": "Refactoring" },
-        { "type": "docs", "section": "Documentation", "hidden": true },
-        { "type": "chore", "section": "Chores", "hidden": true },
-        { "type": "test", "section": "Tests", "hidden": true },
-        { "type": "ci", "section": "CI", "hidden": true }
+      ]
+    },
+    "addons/spotprice": {
+      "release-type": "simple",
+      "component": "spotprice",
+      "package-name": "spotprice",
+      "include-component-in-tag": true,
+      "initial-version": "0.1.0",
+      "pull-request-title-pattern": "chore(addon-spotprice): release ${version}",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "Cargo.toml"
+        },
+        {
+          "type": "generic",
+          "path": "niles-integration.toml"
+        }
       ]
     }
   }
