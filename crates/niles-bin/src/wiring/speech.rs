@@ -167,15 +167,63 @@ pub(crate) fn stt_base_url(cfg: &Config) -> String {
     .unwrap_or_default()
 }
 
-/// Build a `PiperClient` from the `[tts]` section of an already-
-/// validated config.
-pub(crate) fn build_piper_client(cfg: &Config) -> anyhow::Result<PiperClient> {
-    let piper_cfg = PiperConfig {
+fn piper_config(cfg: &Config) -> PiperConfig {
+    PiperConfig {
         base_url: cfg.tts.base_url.clone(),
         default_voice: cfg.tts.default_voice.clone(),
         request_timeout: Duration::from_secs(cfg.tts.timeout_seconds),
-    };
-    PiperClient::new(piper_cfg).context("building Piper HTTP client")
+    }
+}
+
+/// Build a `PiperClient` from the `[tts]` section of an already-
+/// validated config.
+pub(crate) fn build_piper_client(cfg: &Config) -> anyhow::Result<PiperClient> {
+    PiperClient::new(piper_config(cfg)).context("building Piper HTTP client")
+}
+
+/// The Piper client the config asks for *now*, as [`LiveStt`] is for
+/// speech-to-text.
+///
+/// Built once at startup, a new Piper address saved in the app was shown
+/// as the effective config while every reply still went to the old one.
+/// Now `[tts]` is read for every synthesis and the client rebuilt when it
+/// differs. Without a store (a CLI subcommand) the startup config stands.
+pub(crate) struct LivePiper {
+    store: Option<Arc<ConfigStore>>,
+    built: Mutex<Arc<PiperClient>>,
+}
+
+impl LivePiper {
+    pub(crate) fn new(store: Option<Arc<ConfigStore>>, cfg: &Config) -> anyhow::Result<Self> {
+        Ok(Self {
+            store,
+            built: Mutex::new(Arc::new(build_piper_client(cfg)?)),
+        })
+    }
+
+    pub(crate) fn current(&self) -> Arc<PiperClient> {
+        let mut built = self.built.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(store) = self.store.as_ref() else {
+            return built.clone();
+        };
+        let wanted = piper_config(&store.current());
+        if &wanted != built.config() {
+            match PiperClient::new(wanted.clone()) {
+                Ok(client) => {
+                    tracing::info!(
+                        "text-to-speech is now {} at {}",
+                        wanted.default_voice,
+                        wanted.base_url
+                    );
+                    *built = Arc::new(client);
+                }
+                Err(e) => {
+                    tracing::warn!("text-to-speech change not applied, keeping the last one: {e:#}")
+                }
+            }
+        }
+        built.clone()
+    }
 }
 
 pub(crate) fn build_enrollment_backend(
@@ -204,5 +252,66 @@ pub(crate) fn build_enrollment_backend(
                 .with_context(|| format!("opening enrollment store at {}", dir.display()))?,
         ))),
         None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use niles_config::ChangeSource;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    async fn piper_saying(word: &'static str) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/synthesize"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(word.as_bytes()))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn a_changed_piper_address_reaches_the_next_synthesis() {
+        let old = piper_saying("old").await;
+        let new = piper_saying("new").await;
+        let store = Arc::new(
+            ConfigStore::from_str_in_memory(&format!("[tts]\nbase_url = \"{}\"\n", old.uri()))
+                .unwrap(),
+        );
+        let piper = LivePiper::new(Some(store.clone()), &store.current()).unwrap();
+        let said = piper.current().synthesize("hello", None).await.unwrap();
+        assert_eq!(said.audio_wav, b"old");
+
+        let patch: toml::Table =
+            toml::from_str(&format!("[tts]\nbase_url = \"{}/synthesize\"\n", new.uri())).unwrap();
+        store.apply(&patch, ChangeSource::Api).await.unwrap();
+
+        let said = piper.current().synthesize("hello", None).await.unwrap();
+        assert_eq!(said.audio_wav, b"new");
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_config_keeps_the_same_client() {
+        let store = Arc::new(ConfigStore::from_str_in_memory("").unwrap());
+        let piper = LivePiper::new(Some(store.clone()), &store.current()).unwrap();
+        assert!(Arc::ptr_eq(&piper.current(), &piper.current()));
+    }
+
+    #[tokio::test]
+    async fn without_a_store_the_startup_config_stands() {
+        let old = piper_saying("old").await;
+        let store = Arc::new(
+            ConfigStore::from_str_in_memory(&format!("[tts]\nbase_url = \"{}\"\n", old.uri()))
+                .unwrap(),
+        );
+        let piper = LivePiper::new(None, &store.current()).unwrap();
+        let patch: toml::Table =
+            toml::from_str("[tts]\nbase_url = \"http://127.0.0.1:1\"\n").unwrap();
+        store.apply(&patch, ChangeSource::Api).await.unwrap();
+
+        let said = piper.current().synthesize("hello", None).await.unwrap();
+        assert_eq!(said.audio_wav, b"old");
     }
 }

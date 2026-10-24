@@ -34,7 +34,7 @@ use crate::wiring::memory::{
 use crate::wiring::mqtt::{command_router, connect_with_config, spawn_wled_source};
 use crate::wiring::notifications::{WyomingDelivery, build_notification_center};
 use crate::wiring::presence::{build_presence, build_tado, spawn_presence_poll_loop};
-use crate::wiring::speech::{LiveStt, build_enrollment_backend, build_piper_client, stt_base_url};
+use crate::wiring::speech::{LivePiper, LiveStt, build_enrollment_backend, stt_base_url};
 use crate::wiring::stores::{
     build_artifacts, build_capture_store, build_grocery_store, build_morning_claims,
     build_override_backend, build_room_music, build_scene_store, build_timer_store, wake_up_store,
@@ -168,7 +168,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     }
 
     let whisper = Arc::new(LiveStt::new(Some(store.clone()), &cfg)?);
-    let piper = Arc::new(build_piper_client(&cfg)?);
+    let piper = Arc::new(LivePiper::new(Some(store.clone()), &cfg)?);
 
     let registry = Arc::new(DeviceRegistry::new());
     let bus = EventBus::default();

@@ -12,6 +12,11 @@
 //! [`Runtime::install_package`]. Nothing is downloaded twice, so a release
 //! asset replaced on GitHub in between changes nothing.
 //!
+//! A repo can hold several add-ons: `owner/repo/<name>` installs the one
+//! whose id is `<name>`, from its own releases, tagged `<name>-vX.Y.Z`
+//! (see [`github::Address`]). The install record keeps the name, so
+//! updates follow the same tags.
+//!
 //! Updates take the same two steps from the plugin's panel, with the
 //! permission difference shown. A background check looks for newer
 //! releases every [`Options::check_every`] and records what it finds.
@@ -20,7 +25,8 @@
 //! the version before it is put back.
 //!
 //! A fresh install that succeeded downloads its release's
-//! `niles-installed` once per repo per house: GitHub's count of that
+//! `niles-installed` once per add-on per house (per repo, or per name in
+//! a repo of several): GitHub's count of that
 //! file is the add-on's install count in the [`library`]. A preview, an
 //! update and a reinstall don't. The download runs in the background:
 //! the install never fails over it, nor waits for it.
@@ -467,15 +473,23 @@ impl Installer {
                     .into(),
             ));
         }
-        let (repo, tag_in_url) = github::parse_repo(repo).map_err(Refusal::BadRequest)?;
+        let address = github::parse_address(repo).map_err(Refusal::BadRequest)?;
         let tag = match tag.map(str::trim).filter(|t| !t.is_empty()) {
             Some(tag) => {
                 github::check_tag(tag).map_err(Refusal::BadRequest)?;
                 Some(tag.to_string())
             }
-            None => tag_in_url,
+            None => address.tag,
         };
-        let fetched = self.fetch(&repo, tag.as_deref()).await?;
+        // `owner/repo` with an add-on's tag is that add-on, as the
+        // release's URL would be.
+        let addon = address.addon.or_else(|| {
+            tag.as_deref()
+                .and_then(github::addon_of_tag)
+                .map(str::to_string)
+        });
+        let repo = address.repo;
+        let fetched = self.fetch(&repo, addon.as_deref(), tag.as_deref()).await?;
         let records = self.records().await?;
         if let Some(installed) = records.iter().find(|r| r.id == fetched.manifest.id) {
             return Err(Refusal::Conflict(format!(
@@ -484,7 +498,7 @@ impl Installer {
             )));
         }
         self.clashes(&fetched, false)?;
-        Ok(self.stage(&repo, fetched, Purpose::Install))
+        Ok(self.stage(&repo, addon, fetched, Purpose::Install))
     }
 
     /// The add-on library, as Browse shows it: one request for the
@@ -511,29 +525,29 @@ impl Installer {
         let Staged {
             package, marker, ..
         } = staged;
-        let repo = package.source.as_ref().map(|s| s.repo.clone());
+        let counted = package.source.as_ref().and_then(|s| {
+            let address = github::parse_address(&s.repo).ok()?;
+            Some(github::slug_of(&address.repo, s.addon.as_deref()).to_lowercase())
+        });
         self.inner.runtime.install_package(package).await?;
         tracing::info!(plugin = %manifest.id, "[plugins] installed {} {}", manifest.name, manifest.version);
-        if let (Some(repo), Some(marker)) = (repo, marker) {
-            self.count(&manifest.id, &repo, marker);
+        if let (Some(key), Some(marker)) = (counted, marker) {
+            self.count(&manifest.id, key, marker);
         }
         self.listed(&manifest.id).await
     }
 
-    /// Count this house's first install from `repo`: one download of its
-    /// release's `niles-installed`, whose download count GitHub keeps.
-    /// At most once: the claim is made before the download, and a failed
-    /// download is not tried again. It runs in the background, so the
-    /// install's answer never waits on it.
-    fn count(&self, id: &str, repo: &str, marker: Asset) {
+    /// Count this house's first install of `key` (`owner/repo`, or
+    /// `owner/repo/<name>` for one add-on of several, in lowercase): one
+    /// download of its release's `niles-installed`, whose download count
+    /// GitHub keeps. At most once: the claim is made before the
+    /// download, and a failed download is not tried again. It runs in
+    /// the background, so the install's answer never waits on it.
+    fn count(&self, id: &str, key: String, marker: Asset) {
         if marker.size > MAX_MARKER as u64 {
             tracing::debug!(plugin = %id, "[plugins] not counted: its {MARKER} is {} bytes", marker.size);
             return;
         }
-        let Ok((repo, _)) = github::parse_repo(repo) else {
-            return;
-        };
-        let key = repo.slug().to_lowercase();
         let id = id.to_string();
         let installer = self.clone();
         tokio::spawn(async move {
@@ -560,7 +574,8 @@ impl Installer {
 
     /// Ask `id`'s repo for a newer release and record what it finds:
     /// the newest by semver, ignoring pre-releases unless the installed
-    /// version is one.
+    /// version is one. An add-on that shares its repo looks at its own
+    /// releases only, tagged `<addon>-vX.Y.Z`.
     pub async fn check_update(&self, id: &str) -> Outcome<Option<Update>> {
         let record = self.record(id).await?;
         let source = record.source.clone().ok_or_else(|| {
@@ -568,18 +583,21 @@ impl Installer {
                 "{id} was not installed from GitHub, so there is nowhere to look for updates."
             ))
         })?;
-        let (repo, _) = github::parse_repo(&source.repo).map_err(Refusal::Invalid)?;
+        let repo = github::parse_address(&source.repo)
+            .map_err(Refusal::Invalid)?
+            .repo;
+        let addon = source.addon.as_deref();
         let installed = semver::Version::parse(&record.version)
             .map_err(|e| Refusal::Invalid(format!("the installed version: {e}")))?;
         let pre = !installed.pre.is_empty();
         let newest = self
             .inner
             .github
-            .releases(&repo)
+            .releases(&repo, addon)
             .await?
             .into_iter()
             .filter(|r| !r.draft && (pre || !r.prerelease))
-            .filter_map(|r| r.version().map(|v| (v, r)))
+            .filter_map(|r| r.version(addon).map(|v| (v, r)))
             .filter(|(v, _)| (pre || v.pre.is_empty()) && *v > installed)
             .max_by(|(a, _), (b, _)| a.cmp(b));
         let store = self.inner.runtime.store();
@@ -666,14 +684,18 @@ impl Installer {
                 "{id} was not installed from GitHub, so it is not updated from there."
             ))
         })?;
-        let (repo, _) = github::parse_repo(&source.repo).map_err(Refusal::Invalid)?;
+        let repo = github::parse_address(&source.repo)
+            .map_err(Refusal::Invalid)?
+            .repo;
         let update = match record.update.clone() {
             Some(update) => update,
             None => self.check_update(id).await?.ok_or_else(|| {
                 Refusal::Conflict(format!("{id} {} is the newest release.", record.version))
             })?,
         };
-        let fetched = self.fetch(&repo, Some(&update.tag)).await?;
+        let fetched = self
+            .fetch(&repo, source.addon.as_deref(), Some(&update.tag))
+            .await?;
         if fetched.manifest.id != id {
             return Err(Refusal::Invalid(format!(
                 "Release {} is a plugin called {}, not {id}.",
@@ -700,6 +722,7 @@ impl Installer {
         );
         let mut preview = self.stage(
             &repo,
+            source.addon,
             fetched,
             Purpose::Update {
                 id: id.to_string(),
@@ -992,10 +1015,12 @@ impl Installer {
             .ok_or_else(|| Refusal::NotFound(format!("There is no plugin called {id}.")))
     }
 
-    /// Download and check a release, without keeping anything.
-    async fn fetch(&self, repo: &Repo, tag: Option<&str>) -> Outcome<Fetched> {
+    /// Download and check a release, without keeping anything. For
+    /// `addon`, one add-on of several in the repo, the manifest's id must
+    /// be that name.
+    async fn fetch(&self, repo: &Repo, addon: Option<&str>, tag: Option<&str>) -> Outcome<Fetched> {
         let github = &self.inner.github;
-        let release = github.release(repo, tag).await?;
+        let release = github.release(repo, addon, tag).await?;
         let missing = |name: &str| {
             Refusal::Invalid(format!(
                 "Release {} of {} has no {name} among its assets, so it is not a Niles plugin \
@@ -1014,17 +1039,7 @@ impl Installer {
         let text = String::from_utf8(text)
             .map_err(|_| Refusal::Invalid(format!("{MANIFEST_ASSET} is not UTF-8 text.")))?;
         let manifest = Manifest::parse(&text).map_err(|e| Refusal::Invalid(e.to_string()))?;
-        let tagged = release
-            .tag_name
-            .strip_prefix('v')
-            .unwrap_or(&release.tag_name);
-        if tagged != manifest.version {
-            return Err(Refusal::Invalid(format!(
-                "The release is tagged {}, and its manifest says version {}. They must be the \
-                 same, with or without a v.",
-                release.tag_name, manifest.version
-            )));
-        }
+        check_names(&release, addon, &manifest, repo)?;
         // Said before the component is downloaded: a plugin for a newer
         // Niles is refused without fetching 64 MiB to find out.
         let problems = manifest.problems();
@@ -1145,7 +1160,13 @@ impl Installer {
     }
 
     /// Keep `fetched` under a fresh token and describe it.
-    fn stage(&self, repo: &Repo, fetched: Fetched, purpose: Purpose) -> Preview {
+    fn stage(
+        &self,
+        repo: &Repo,
+        addon: Option<String>,
+        fetched: Fetched,
+        purpose: Purpose,
+    ) -> Preview {
         let Fetched {
             release,
             manifest,
@@ -1216,6 +1237,7 @@ impl Installer {
                 logo,
                 source: Some(Source {
                     repo: repo.url(),
+                    addon,
                     tag: release.tag_name,
                     release_url: release.html_url,
                 }),
@@ -1254,6 +1276,40 @@ impl Installer {
         }
         Ok(all.remove(at))
     }
+}
+
+/// The release's tag names the manifest's version, and for one add-on
+/// of several in a repo, the manifest is that add-on.
+fn check_names(
+    release: &Release,
+    addon: Option<&str>,
+    manifest: &Manifest,
+    repo: &Repo,
+) -> Outcome<()> {
+    if let Some(addon) = addon
+        && manifest.id != addon
+    {
+        return Err(Refusal::Invalid(format!(
+            "Release {} of {} is the add-on {}, not {addon}. The name at the end of {} must \
+             be the add-on's id.",
+            release.tag_name,
+            repo.slug(),
+            manifest.id,
+            github::slug_of(repo, Some(addon))
+        )));
+    }
+    if github::tag_version(&release.tag_name, addon) != Some(manifest.version.as_str()) {
+        let form = match addon {
+            Some(addon) => format!("{addon}-v and the version"),
+            None => "the version, with or without a v".to_string(),
+        };
+        return Err(Refusal::Invalid(format!(
+            "The release is tagged {}, and its manifest says version {}. The tag must be \
+             {form}.",
+            release.tag_name, manifest.version
+        )));
+    }
+    Ok(())
 }
 
 const MANIFEST_ASSET: &str = "niles-integration.toml";

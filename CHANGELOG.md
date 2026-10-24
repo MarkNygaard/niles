@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/MarkNygaard/niles/compare/v0.5.0...v0.6.0) (2026-10-24)
+
+
+### Features
+
+* **add-ons:** several add-ons in one repo, as owner/repo/name (NIL-49) ([#491](https://github.com/MarkNygaard/niles/issues/491)) ([394f4ef](https://github.com/MarkNygaard/niles/commit/394f4efa1f08dce49709b22855b68ef85c9f9189))
+
+
+### Fixes
+
+* **tts:** talk to the current Piper (/synthesize), and follow a changed Piper address without a restart (NIL-47) ([#487](https://github.com/MarkNygaard/niles/issues/487)) ([967ace6](https://github.com/MarkNygaard/niles/commit/967ace6fd9b7eeb941af46f49ac829fe695cafff))
+
 ## [0.5.0](https://github.com/MarkNygaard/niles/compare/v0.4.0...v0.5.0) (2026-10-22)
 
 

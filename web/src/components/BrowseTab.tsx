@@ -19,7 +19,14 @@ import {
 import { GroupList } from "@/components/GroupList";
 import { PermissionList, PluginLogo } from "@/components/PluginPreview";
 import { day } from "@/lib/plugins";
-import { countLine, installedFrom, shelvesOf, starsLine, useLibrary } from "@/lib/library";
+import {
+  countLine,
+  entryKey,
+  installedFrom,
+  shelvesOf,
+  starsLine,
+  useLibrary,
+} from "@/lib/library";
 import type { LibraryEntry, PluginLibrary, PluginSummary } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -68,7 +75,7 @@ export function BrowseTab({
     );
   }
   const data = library.data;
-  const openEntry = open === null ? null : (data.addons.find((e) => e.repo === open) ?? null);
+  const openEntry = open === null ? null : (data.addons.find((e) => entryKey(e) === open) ?? null);
   return (
     <>
       {data.addons.length === 0 && query.trim() === "" ? (
@@ -112,8 +119,8 @@ function Shelves({
   query: string;
   plugins: PluginSummary[];
   disabled?: boolean;
-  onInstall: (repo: string) => void;
-  onOpenDetails: (repo: string) => void;
+  onInstall: (address: string) => void;
+  onOpenDetails: (key: string) => void;
 }) {
   const [showUnreviewed, setShowUnreviewed] = useState(false);
   const { listed, unreviewed } = shelvesOf(library, query);
@@ -121,12 +128,12 @@ function Shelves({
   const bothEmpty = searching && listed.length === 0 && unreviewed.length === 0;
   const row = (entry: LibraryEntry) => (
     <LibraryRow
-      key={entry.repo}
+      key={entryKey(entry)}
       entry={entry}
       plugins={plugins}
       disabled={disabled}
       onInstall={onInstall}
-      onDetails={() => onOpenDetails(entry.repo)}
+      onDetails={() => onOpenDetails(entryKey(entry))}
     />
   );
   return (
@@ -222,7 +229,7 @@ function LibraryRow({
     ...(entry.version ? [<span key="v">v{entry.version}</span>] : []),
     ...(when ? [<span key="at">{when}</span>] : []),
     <span key="count">{countLine(entry)}</span>,
-    <span key="stars">{starsLine(entry.stars)}</span>,
+    <span key="stars">{starsLine(entry.stars, entry.shares_repo)}</span>,
   ];
   return (
     <div className="flex min-h-12 items-center gap-3 py-2 pr-1.5 pl-3">
@@ -257,7 +264,7 @@ function LibraryRow({
           size="sm"
           disabled={disabled}
           aria-label={`Install ${entry.name}`}
-          onClick={() => onInstall(entry.repo)}
+          onClick={() => onInstall(entry.address)}
         >
           Install
         </Button>
@@ -347,7 +354,15 @@ function LibraryDetails({
               )}
             </dd>
             <dt className="text-muted-foreground">Stars</dt>
-            <dd>{entry.stars.toLocaleString("en")}</dd>
+            <dd>
+              {entry.stars.toLocaleString("en")}
+              {entry.shares_repo && (
+                <span className="text-muted-foreground">
+                  {" "}
+                  (its repo's, shared with the other add-ons in it)
+                </span>
+              )}
+            </dd>
             <dt className="text-muted-foreground">On GitHub</dt>
             <dd className="flex gap-3">
               <a
@@ -359,7 +374,7 @@ function LibraryDetails({
                 Repository
               </a>
               <a
-                href={`${entry.repo}/releases`}
+                href={entry.releases}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="underline underline-offset-2"
@@ -400,7 +415,7 @@ function LibraryDetails({
                 disabled={disabled || entry.blocked !== null}
                 onClick={() => {
                   onClose();
-                  onInstall(entry.repo);
+                  onInstall(entry.address);
                 }}
               >
                 Install

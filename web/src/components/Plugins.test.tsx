@@ -23,6 +23,7 @@ const PLUGIN: PluginSummary = {
   dropped_events: 0,
   enabled: true,
   repo: "https://github.com/jane/niles-spotprice",
+  addon: null,
   release_tag: "v0.1.0",
   release_url: "https://github.com/jane/niles-spotprice/releases/tag/v0.1.0",
   installed_at: "2026-10-14T09:00:00Z",
@@ -606,6 +607,10 @@ describe("the library on the panel", () => {
       addons: [
         {
           repo: "https://github.com/jane/niles-spotprice",
+          addon: null,
+          address: "jane/niles-spotprice",
+          releases: "https://github.com/jane/niles-spotprice/releases",
+          shares_repo: false,
           owner: "jane",
           standing: "removed",
           removed_reason: "Its author archived it.",
