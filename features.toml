@@ -961,7 +961,7 @@ since_pr = 469
 id = "plugins-several-in-one-repo"
 category = "runtime.plugins"
 summary = "Several add-ons in one repo: owner/repo/<id> installs and updates from tags <id>-vX.Y.Z; Browse lists each"
-since_pr = 9999
+since_pr = 491
 
 [[feature]]
 id = "ui-artifact-share-menu"
