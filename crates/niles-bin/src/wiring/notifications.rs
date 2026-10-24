@@ -80,7 +80,7 @@ impl NotificationHistory for QueuedNotifications {
 
 /// Wyoming-backed delivery for the notification center.
 pub(crate) struct WyomingDelivery {
-    pub(crate) piper: Arc<niles_tts::PiperClient>,
+    pub(crate) piper: Arc<crate::wiring::speech::LivePiper>,
     pub(crate) sender: niles_wyoming::WyomingSender,
     pub(crate) speakers: Arc<speakers::SpeakerRegistry>,
     pub(crate) satellites: Arc<SatelliteRegistry>,
@@ -163,7 +163,7 @@ impl WyomingDelivery {
             let spoken = bounded(
                 DELIVERY_TIMEOUT,
                 crate::speak::speak_back(
-                    &self.piper,
+                    &self.piper.current(),
                     &self.sender,
                     peer,
                     text,
@@ -195,7 +195,12 @@ impl WyomingDelivery {
         }
         let _notification_lease = notification_lease;
         let ip = push_to.expect("checked above");
-        let synthesis = match bounded(DELIVERY_TIMEOUT, self.piper.synthesize(text, None)).await {
+        let synthesis = match bounded(
+            DELIVERY_TIMEOUT,
+            self.piper.current().synthesize(text, None),
+        )
+        .await
+        {
             Some(Ok(synthesis)) => synthesis,
             Some(Err(e)) => {
                 tracing::warn!("synthesizing a notification failed: {e:#}");

@@ -18,8 +18,10 @@ is simpler.
 - **An MQTT broker** that Zigbee2MQTT publishes to, with a login for Niles.
 - **An ElevenLabs API key** for hearing and **a Cerebras API key** for
   thinking.
-- **Piper's HTTP server**, to speak the replies. Its address is set in the
-  app, under Settings → Voice & AI. Niles starts without it.
+- **Piper's HTTP server**, to speak the replies. Its base address, such as
+  `http://piper:5000`, is set in the app, under Settings → Voice & AI. The
+  current server (`/synthesize`) and older ones (`/`) both work. Niles
+  starts without it.
 
 ## 1. The database
 

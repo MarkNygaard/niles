@@ -10,7 +10,8 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TtsConfig {
-    /// Piper HTTP endpoint. Defaults to the in-cluster service DNS.
+    /// Piper HTTP server's base address; the client finds `/synthesize`
+    /// or the older `/` under it. Defaults to the in-cluster service DNS.
     #[serde(default = "default_base_url")]
     pub base_url: String,
     /// Default voice model (e.g. `"en_GB-alan-medium"`).

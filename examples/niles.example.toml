@@ -53,7 +53,8 @@ bind_address = "0.0.0.0:10300"
 
 [tts]
 # Text-to-speech provider. Piper runs in-cluster, so no API key —
-# just the service URL. Voices ship with the Piper image; pick one
+# just its base address, with no path (the current Piper HTTP server's
+# /synthesize and older servers' / both work). Voices ship with the Piper image; pick one
 # that's pre-baked or mount more via a PVC.
 # Optional overrides (defaults shown):
 # base_url      = "http://piper.home-automation.svc.cluster.local:5000"
