@@ -52,6 +52,7 @@ const PLUGIN: PluginSummary = {
   dropped_events: 0,
   enabled: true,
   repo: null,
+  addon: null,
   release_tag: null,
   release_url: null,
   installed_at: null,

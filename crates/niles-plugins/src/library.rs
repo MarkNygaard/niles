@@ -7,7 +7,8 @@
 //! project's domain at [`INDEX_URL`]. The registry's builder needs no Niles logic: the file
 //! holds the repos in its `addons.toml` (Listed), every public repo with
 //! the GitHub topic `niles-addon` (Unreviewed), and repos taken off the
-//! list (removed, with the reason).
+//! list (removed, with the reason). A repo can hold several add-ons, each
+//! its own entry with its own `addon`, installed as `owner/repo/<addon>`.
 //!
 //! Browsing costs one request for that file, kept for six hours, and
 //! none of GitHub's 60 API requests an hour: every install by address
@@ -24,7 +25,7 @@
 //!
 //! A release's `niles-installed` file exists for this: GitHub's download
 //! count of it is the add-on's install count, and [`Installer::install`]
-//! downloads it once per repo per house after a fresh install (see
+//! downloads it once per add-on per house after a fresh install (see
 //! [`crate::install`]).
 //!
 //! ## The format
@@ -33,7 +34,7 @@
 //!
 //! ```json
 //! {
-//!   "version": 1,
+//!   "version": 2,
 //!   "generated_at": "2026-10-17T03:00:00Z",
 //!   "addons": [
 //!     {
@@ -51,6 +52,7 @@
 //!       },
 //!       "readme": "Weight, body fat and sleep from Withings devices…"
 //!     },
+//!     { "repo": "MarkNygaard/niles", "addon": "spotprice", "standing": "listed", … },
 //!     { "repo": "jane/niles-old", "standing": "removed", "removed_reason": "Its author archived it." }
 //!   ]
 //! }
@@ -58,16 +60,17 @@
 //!
 //! | Field | What it is |
 //! |---|---|
-//! | `version` | The format: 1. A change an older Niles would misread bumps it; adding a field doesn't. |
+//! | `version` | The format: 1 or 2. A change an older Niles would misread bumps it; adding a field doesn't. Version 2 added `addon`: a Niles that reads only 1 would show one entry per repo and install the wrong thing, so it refuses the file, and Browse says to update Niles. |
 //! | `generated_at` | When the registry built the file, RFC 3339. |
-//! | `repo` | `owner/name`. One entry per repo. |
+//! | `repo` | `owner/name`. |
+//! | `addon` | Version 2: for one add-on of several in the repo, its id, whose releases are tagged `<addon>-vX.Y.Z`. Absent or `null` for a repo of one add-on. One entry per repo and add-on. A removal without `addon` covers every add-on in the repo. |
 //! | `standing` | `listed` (in `addons.toml`), `unreviewed` (the topic only) or `removed` (taken off the list: Browse hides it, and an installed copy's panel says so). Anything else reads as `unreviewed`. |
 //! | `removed_reason` | For `removed`: one sentence, why. |
 //! | `description` | The repo's own GitHub description, used when the manifest can't be read. |
-//! | `stars` | Stargazers. |
-//! | `installs` | Downloads of `niles-installed` summed over every release; `null` when no release has one. |
-//! | `downloads` | Downloads of `integration.wasm` summed over every release, previews and updates included. |
-//! | `release` | The latest release that is not a draft or a pre-release, or `null`. It has `tag`, `published_at`, `manifest` (its `niles-integration.toml`, as text) and `logo` (the SVG the manifest names, as text, or `null`). |
+//! | `stars` | Stargazers: the repo's, so add-ons sharing a repo share them. |
+//! | `installs` | Downloads of `niles-installed` summed over every release (the add-on's own, in a repo of several); `null` when no release has one. |
+//! | `downloads` | Downloads of `integration.wasm` summed the same way, previews and updates included. |
+//! | `release` | The latest release (the add-on's own, in a repo of several) that is not a draft or a pre-release, or `null`. It has `tag`, `published_at`, `manifest` (its `niles-integration.toml`, as text) and `logo` (the SVG the manifest names, as text, or `null`). |
 //! | `readme` | Plain text: the README's opening paragraphs without Markdown, at most 1,000 characters. |
 //!
 //! Niles's caps: the file is at most [`MAX_INDEX`] (8 MiB), and only its
@@ -79,7 +82,9 @@
 //! [`check::MAX_LOGO`] (32 KiB) is ignored. Text is cut to 100 characters
 //! (name), 300 (description, reason) and 1,000 (readme). An entry whose
 //! `repo` doesn't read costs that entry only; any other field that is
-//! `null` or of the wrong type costs that field only.
+//! `null` or of the wrong type costs that field only, except `addon`: one
+//! that isn't an add-on's id costs the entry, which would otherwise read
+//! as the whole repo.
 
 use crate::check;
 use crate::github::{self, Repo, human_size};
@@ -104,8 +109,8 @@ pub const MAX_MARKER: usize = 1024;
 /// The index file, at most.
 pub const MAX_INDEX: usize = 8 * 1024 * 1024;
 
-/// The format this Niles reads; a higher one says "update Niles".
-const FORMAT: u32 = 1;
+/// The formats this Niles reads; a higher one says "update Niles".
+const FORMATS: std::ops::RangeInclusive<u32> = 1..=2;
 /// How long a fetched shelf is served before a refresh is tried.
 const TTL: Duration = Duration::from_secs(6 * 60 * 60);
 /// After a failed refresh, how long the failure is served as-is.
@@ -154,6 +159,9 @@ where
 #[derive(Debug, Deserialize)]
 struct IndexEntry {
     repo: String,
+    /// Not lenient: a wrong one costs the entry (see [`sift`]).
+    #[serde(default)]
+    addon: Option<String>,
     #[serde(default, deserialize_with = "lenient")]
     standing: Option<String>,
     #[serde(default, deserialize_with = "lenient")]
@@ -218,6 +226,16 @@ pub struct Shelf {
 pub struct ShelfEntry {
     /// `https://github.com/owner/name`, built from the checked repo.
     pub repo: String,
+    /// Its name in a repo of several add-ons; `None` for a repo of one.
+    pub addon: Option<String>,
+    /// What Install previews: `owner/repo`, or `owner/repo/<addon>`.
+    pub address: String,
+    /// Its releases on GitHub: the repo's, or for one add-on of several,
+    /// a search for its own tags.
+    pub releases: String,
+    /// Other add-ons Browse shows come from the same repo, so `stars`
+    /// are the repo's, shared with them.
+    pub shares_repo: bool,
     pub owner: String,
     pub standing: Standing,
     /// For `Removed`: why it was taken off the list.
@@ -384,19 +402,38 @@ fn rank(standing: Standing) -> u8 {
 /// the costlier judging.
 struct Sorted {
     repo: Repo,
+    addon: Option<String>,
     standing: Standing,
     raw: IndexEntry,
 }
 
-/// Check one raw entry's repo and read its standing. `None` when it
-/// doesn't read, or its repo named a tag: the library lists repos, not
-/// releases.
+impl Sorted {
+    /// What it is kept once by: `owner/repo` or `owner/repo/<addon>`,
+    /// in lowercase.
+    fn key(&self) -> String {
+        github::slug_of(&self.repo, self.addon.as_deref()).to_lowercase()
+    }
+}
+
+/// Check one raw entry's repo and add-on and read its standing. `None`
+/// when it doesn't read, its `addon` isn't an add-on's id, or its repo
+/// named an add-on or a tag: the library lists repos and add-ons, not
+/// releases, and the add-on has its own field.
 fn sift(raw: serde_json::Value) -> Option<Sorted> {
     let raw = serde_json::from_value::<IndexEntry>(raw).ok()?;
-    let (repo, tag) = github::parse_repo(&raw.repo).ok()?;
-    if tag.is_some() {
+    let address = github::parse_address(&raw.repo).ok()?;
+    if address.tag.is_some() || address.addon.is_some() {
         return None;
     }
+    if raw
+        .addon
+        .as_deref()
+        .is_some_and(|a| !github::is_addon_name(a))
+    {
+        return None;
+    }
+    let repo = address.repo;
+    let addon = raw.addon.clone();
     let standing = match raw.standing.as_deref() {
         Some("listed") => Standing::Listed,
         Some("removed") => Standing::Removed,
@@ -404,17 +441,33 @@ fn sift(raw: serde_json::Value) -> Option<Sorted> {
     };
     Some(Sorted {
         repo,
+        addon,
         standing,
         raw,
     })
 }
 
+/// The links and keys every entry carries, built from the checked repo
+/// and add-on.
+fn place(repo: &Repo, addon: Option<&str>) -> (String, String) {
+    let releases = match addon {
+        Some(addon) => format!("{}/releases?q={addon}-v&expanded=true", repo.url()),
+        None => format!("{}/releases", repo.url()),
+    };
+    (github::slug_of(repo, addon), releases)
+}
+
 /// A removed entry, as an installed copy's panel needs it: its repo and
 /// why. Its manifest and logo are never read, since Browse hides it.
-fn removed(repo: Repo, raw: &IndexEntry) -> ShelfEntry {
+fn removed(repo: Repo, addon: Option<String>, raw: &IndexEntry) -> ShelfEntry {
+    let (address, releases) = place(&repo, addon.as_deref());
     ShelfEntry {
         repo: repo.url(),
-        name: capped(&repo.name, MAX_NAME),
+        name: capped(addon.as_deref().unwrap_or(&repo.name), MAX_NAME),
+        address,
+        releases,
+        addon,
+        shares_repo: false,
         owner: repo.owner,
         standing: Standing::Removed,
         removed_reason: raw
@@ -440,12 +493,13 @@ fn removed(repo: Repo, raw: &IndexEntry) -> ShelfEntry {
 fn entry(
     Sorted {
         repo,
+        addon,
         standing,
         raw,
     }: Sorted,
 ) -> ShelfEntry {
     if standing == Standing::Removed {
-        return removed(repo, &raw);
+        return removed(repo, addon, &raw);
     }
     let judged = judge(raw.release.as_ref());
     let description = judged
@@ -472,12 +526,18 @@ fn entry(
         .and_then(|r| r.published_at.as_deref())
         .and_then(|d| DateTime::parse_from_rfc3339(d).ok())
         .map(|d| d.with_timezone(&Utc));
+    let (address, releases) = place(&repo, addon.as_deref());
+    let fallback = addon.as_deref().unwrap_or(&repo.name);
     ShelfEntry {
         repo: repo.url(),
+        name: capped(judged.name.as_deref().unwrap_or(fallback), MAX_NAME),
+        address,
+        releases,
+        addon,
+        shares_repo: false,
         owner: repo.owner,
         standing,
         removed_reason: None,
-        name: capped(judged.name.as_deref().unwrap_or(&repo.name), MAX_NAME),
         description: capped(description, MAX_TEXT),
         version: judged.version,
         published_at,
@@ -498,8 +558,8 @@ fn entry(
 fn read(bytes: &[u8]) -> Result<Shelf, Refusal> {
     let index: Index = serde_json::from_slice(bytes)
         .map_err(|e| Refusal::Upstream(format!("The add-on library did not read: {e}")))?;
-    if index.version != FORMAT {
-        if index.version > FORMAT {
+    if !FORMATS.contains(&index.version) {
+        if index.version > *FORMATS.end() {
             return Err(Refusal::Upstream(format!(
                 "The add-on library is in a newer format (version {}) than this Niles reads. \
                  Update Niles to browse it; installing by address still works.",
@@ -530,10 +590,10 @@ fn read(bytes: &[u8]) -> Result<Shelf, Refusal> {
             skipped += 1;
             continue;
         };
-        // One entry per repo, by lowercase owner/name. A removal is the
-        // safety signal: it wins over anything else, in the first
-        // position it appeared at.
-        let key = read.repo.slug().to_lowercase();
+        // One entry per repo and add-on, by lowercase owner/name(/addon).
+        // A removal is the safety signal: it wins over anything else, in
+        // the first position it appeared at.
+        let key = read.key();
         match at.get(&key) {
             Some(&i) => {
                 if rank(read.standing) > rank(sorted[i].standing) {
@@ -549,10 +609,11 @@ fn read(bytes: &[u8]) -> Result<Shelf, Refusal> {
     if skipped > 0 {
         tracing::debug!("[plugins] the add-on library: {skipped} entries did not read");
     }
+    remove_whole_repos(&mut sorted);
     // The cap counts what Browse shows, after duplicates and unreadable
     // entries are gone; a removal is never cut, and costs no judging.
     let mut shown = 0usize;
-    let addons = sorted
+    let mut addons: Vec<ShelfEntry> = sorted
         .into_iter()
         .filter(|s| {
             if s.standing == Standing::Removed {
@@ -563,11 +624,43 @@ fn read(bytes: &[u8]) -> Result<Shelf, Refusal> {
         })
         .map(entry)
         .collect();
+    mark_shared_repos(&mut addons);
     Ok(Shelf {
         generated_at,
         cannot: CANNOT,
         addons,
     })
+}
+
+/// A removal without an add-on takes the whole repo off the list: every
+/// add-on entry from it reads as removed, for the same reason.
+fn remove_whole_repos(sorted: &mut [Sorted]) {
+    let gone: HashMap<String, Option<String>> = sorted
+        .iter()
+        .filter(|s| s.standing == Standing::Removed && s.addon.is_none())
+        .map(|s| (s.repo.slug().to_lowercase(), s.raw.removed_reason.clone()))
+        .collect();
+    for s in sorted.iter_mut().filter(|s| s.addon.is_some()) {
+        if let Some(reason) = gone.get(&s.repo.slug().to_lowercase()) {
+            s.standing = Standing::Removed;
+            s.raw.removed_reason = reason.clone();
+        }
+    }
+}
+
+/// Mark the shown entries whose repo holds another shown one: their
+/// stars are the repo's, and the card says so.
+fn mark_shared_repos(addons: &mut [ShelfEntry]) {
+    let mut per_repo: HashMap<String, usize> = HashMap::new();
+    for e in addons.iter().filter(|e| e.standing != Standing::Removed) {
+        *per_repo.entry(e.repo.to_lowercase()).or_default() += 1;
+    }
+    for e in addons
+        .iter_mut()
+        .filter(|e| e.standing != Standing::Removed)
+    {
+        e.shares_repo = per_repo.get(&e.repo.to_lowercase()).is_some_and(|n| *n > 1);
+    }
 }
 
 /// The add-on library: fetches the registry's `index.json`, keeps it,
@@ -1074,11 +1167,139 @@ mod tests {
 
     #[test]
     fn a_newer_format_is_refused_with_a_way_forward() {
-        let answer = read(&json!({"version": 2, "addons": []}).to_string().into_bytes());
+        let answer = read(&json!({"version": 3, "addons": []}).to_string().into_bytes());
         match answer.unwrap_err() {
             Refusal::Upstream(why) => assert!(why.contains("Update Niles"), "{why}"),
             other => panic!("{other:?}"),
         }
+    }
+
+    fn two_add_ons_in_one_repo() -> serde_json::Value {
+        let alpha = HELLO.replacen("id = \"hello\"", "id = \"alpha\"", 1);
+        let bravo = HELLO.replacen("id = \"hello\"", "id = \"bravo\"", 1);
+        json!({
+            "version": 2,
+            "addons": [
+                {
+                    "repo": "jane/niles-addons",
+                    "addon": "alpha",
+                    "standing": "listed",
+                    "stars": 7,
+                    "installs": 3,
+                    "release": {"tag": "alpha-v0.1.0", "manifest": alpha},
+                },
+                {
+                    "repo": "jane/niles-addons",
+                    "addon": "bravo",
+                    "standing": "unreviewed",
+                    "stars": 7,
+                    "installs": 11,
+                    "release": {"tag": "bravo-v0.1.0", "manifest": bravo},
+                },
+                {"repo": "jane/hello", "stars": 2, "release": {"tag": "v0.1.0", "manifest": HELLO}},
+            ],
+        })
+    }
+
+    #[test]
+    fn version_2_lists_each_add_on_of_a_repo_on_its_own() {
+        let shelf = shelf_of(two_add_ons_in_one_repo());
+        assert_eq!(shelf.addons.len(), 3);
+        let alpha = &shelf.addons[0];
+        assert_eq!(alpha.addon.as_deref(), Some("alpha"));
+        assert_eq!(alpha.address, "jane/niles-addons/alpha");
+        assert_eq!(alpha.repo, "https://github.com/jane/niles-addons");
+        assert_eq!(
+            alpha.releases,
+            "https://github.com/jane/niles-addons/releases?q=alpha-v&expanded=true"
+        );
+        assert_eq!(
+            (alpha.standing, alpha.installs),
+            (Standing::Listed, Some(3))
+        );
+        assert!(alpha.shares_repo, "its stars are the repo's");
+        let bravo = &shelf.addons[1];
+        assert_eq!(bravo.address, "jane/niles-addons/bravo");
+        assert_eq!(
+            (bravo.standing, bravo.installs),
+            (Standing::Unreviewed, Some(11))
+        );
+        assert!(bravo.shares_repo);
+        let hello = &shelf.addons[2];
+        assert_eq!(
+            (hello.addon.as_deref(), hello.address.as_str()),
+            (None, "jane/hello")
+        );
+        assert_eq!(hello.releases, "https://github.com/jane/hello/releases");
+        assert!(!hello.shares_repo);
+    }
+
+    #[test]
+    fn version_1_still_reads() {
+        let shelf = shelf_of(listed(HELLO));
+        assert_eq!(shelf.addons[0].address, "jane/hello");
+        assert_eq!(shelf.addons[0].addon, None);
+    }
+
+    #[test]
+    fn an_add_on_is_kept_once_by_its_repo_and_name() {
+        let shelf = shelf_of(json!({
+            "version": 2,
+            "addons": [
+                {"repo": "jane/niles-addons", "addon": "alpha", "standing": "listed"},
+                {"repo": "Jane/Niles-Addons", "addon": "alpha", "standing": "removed", "removed_reason": "Broken."},
+                {"repo": "jane/niles-addons", "addon": "bravo"},
+                {"repo": "jane/niles-addons"},
+            ],
+        }));
+        let keys: Vec<_> = shelf
+            .addons
+            .iter()
+            .map(|e| (e.address.as_str(), e.standing))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("Jane/Niles-Addons/alpha", Standing::Removed),
+                ("jane/niles-addons/bravo", Standing::Unreviewed),
+                ("jane/niles-addons", Standing::Unreviewed),
+            ]
+        );
+        assert!(
+            shelf.addons[1].shares_repo,
+            "bravo and the repo's own entry"
+        );
+    }
+
+    #[test]
+    fn removing_a_whole_repo_removes_its_add_ons() {
+        let shelf = shelf_of(json!({
+            "version": 2,
+            "addons": [
+                {"repo": "jane/niles-addons", "addon": "alpha", "standing": "listed"},
+                {"repo": "jane/niles-addons", "standing": "removed", "removed_reason": "Archived."},
+            ],
+        }));
+        let alpha = &shelf.addons[0];
+        assert_eq!(alpha.address, "jane/niles-addons/alpha");
+        assert_eq!(alpha.standing, Standing::Removed);
+        assert_eq!(alpha.removed_reason.as_deref(), Some("Archived."));
+        assert_eq!(alpha.name, "alpha");
+    }
+
+    #[test]
+    fn an_addon_that_is_not_an_id_costs_its_entry() {
+        let shelf = shelf_of(json!({
+            "version": 2,
+            "addons": [
+                {"repo": "jane/niles-addons", "addon": "Not An Id"},
+                {"repo": "jane/niles-addons", "addon": 7},
+                {"repo": "jane/niles-addons/alpha"},
+                {"repo": "jane/ok", "addon": null},
+            ],
+        }));
+        assert_eq!(shelf.addons.len(), 1);
+        assert_eq!(shelf.addons[0].address, "jane/ok");
     }
 
     #[test]

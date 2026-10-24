@@ -126,7 +126,9 @@ Niles's config file by whoever runs it.
 Somebody else's add-on, for what Niles does not cover, installs from a
 GitHub release. On the **Available** tab, under **From GitHub**, press
 **Add** next to **Add-on from GitHub**. Paste the repository's address,
-such as `jane/niles-spotprice`, and press **Preview**.
+such as `jane/niles-spotprice`, and press **Preview**. A repository can hold
+several add-ons. Then the address ends with the add-on's name, such as
+`jane/niles-addons/spotprice`.
 
 Nothing is installed yet. The preview shows the add-on's name, version,
 author and description, and a list under **It will be able to**: the
@@ -137,14 +139,17 @@ house, other add-ons' passwords or Niles's database." **What its tools do**
 lists each tool. Press **Install** if you agree.
 
 **Browse** lists add-ons other people published on GitHub, with each one's
-author, latest version, installs and stars. **Listed** ones come first: they
+author, latest version, installs and stars. Add-ons from one repository
+are listed one by one, each with its own installs, and share the
+repository's stars, which the line says. **Listed** ones come first: they
 passed Niles's checks when they were added to the library, and someone read
 what they ask for. That is not a review of their code. **Unreviewed** ones
 are folded away below: their authors only tagged them for Niles. **Install**
 opens the same preview as pasting the address, so you still see and agree to
 what it may do. One that needs a newer Niles says so and can't be installed.
 If the library can't be loaded, Browse says so, and pasting an address still
-works.
+works. That includes a library written for a newer Niles: Browse asks you to
+update Niles first.
 
 An add-on runs walled off from the rest of Niles. It has no files and no
 network beyond the addresses it declared, and it can reach your home

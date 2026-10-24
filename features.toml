@@ -958,6 +958,12 @@ summary = "`niles plugin check` lists a plugin's permissions; `--listing` also c
 since_pr = 469
 
 [[feature]]
+id = "plugins-several-in-one-repo"
+category = "runtime.plugins"
+summary = "Several add-ons in one repo: owner/repo/<id> installs and updates from tags <id>-vX.Y.Z; Browse lists each"
+since_pr = 9999
+
+[[feature]]
 id = "ui-artifact-share-menu"
 category = "ui.chat"
 summary = "A share menu on an open artifact: Share, Copy, Word for documents, plans and trips, Markdown, a podcast's MP3"

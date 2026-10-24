@@ -15,8 +15,10 @@
 //! - `plugin_devices`: the devices it registered, so they stay in their
 //!   rooms, unavailable, while the plugin is stopped, and the rules that
 //!   name them stay valid.
-//! - `plugin_installs_counted`: the repos whose install this house has
-//!   counted, by downloading their release's `niles-installed` once.
+//! - `plugin_installs_counted`: the repos (`owner/repo`, or
+//!   `owner/repo/<name>` for one add-on of several) whose install this
+//!   house has counted, by downloading their release's `niles-installed`
+//!   once.
 //!   Not tied to `plugins`, so removing a plugin keeps it and
 //!   installing it again is not counted again.
 //!
@@ -55,6 +57,9 @@ alter table plugins add column if not exists update_available text;
 -- Added with the plugin's panel in the app: an update that failed and
 -- was rolled back, said until the next update or rollback by hand.
 alter table plugins add column if not exists notice text;
+-- Added with several add-ons in one repo: the add-on's name there, so
+-- updates look at its own releases. Null for a repo of one add-on.
+alter table plugins add column if not exists addon text;
 create table if not exists plugin_storage (
     plugin_id text not null references plugins (id) on delete cascade,
     key       text not null,
@@ -104,6 +109,8 @@ pub struct PluginInstall<'a> {
     /// `https://github.com/<owner>/<repo>`; none for a plugin installed
     /// from a file.
     pub repo: Option<&'a str>,
+    /// Its name in a repo of several add-ons (`owner/repo/<addon>`).
+    pub addon: Option<&'a str>,
     pub release_tag: Option<&'a str>,
     pub release_url: Option<&'a str>,
 }
@@ -115,6 +122,7 @@ pub struct PluginMeta {
     pub manifest: String,
     pub version: String,
     pub repo: Option<String>,
+    pub addon: Option<String>,
     pub release_tag: Option<String>,
     pub release_url: Option<String>,
     pub sha256: String,
@@ -209,6 +217,7 @@ impl PostgresPlugins {
                 manifest: r.get("manifest"),
                 version: r.get("version"),
                 repo: r.get("repo"),
+                addon: r.get("addon"),
                 release_tag: r.get("release_tag"),
                 release_url: r.get("release_url"),
                 sha256: r.get("sha256"),
@@ -256,6 +265,7 @@ impl PostgresPlugins {
             .bind(plugin.logo)
             .bind(plugin.release_tag)
             .bind(plugin.release_url)
+            .bind(plugin.addon)
             .execute(&self.pool)
             .await
             .map(|_| ())
@@ -475,8 +485,8 @@ impl PostgresPlugins {
 }
 
 const INSTALL: &str = "insert into plugins (id, manifest, repo, version, component, sha256,
-                                  manifest_sha256, logo, release_tag, release_url)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                                  manifest_sha256, logo, release_tag, release_url, addon)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              on conflict (id) do update set
                  previous_version = plugins.version,
                  previous_manifest = plugins.manifest,
@@ -488,6 +498,7 @@ const INSTALL: &str = "insert into plugins (id, manifest, repo, version, compone
                  previous_release_url = plugins.release_url,
                  manifest = excluded.manifest,
                  repo = excluded.repo,
+                 addon = excluded.addon,
                  version = excluded.version,
                  component = excluded.component,
                  sha256 = excluded.sha256,
@@ -523,7 +534,7 @@ const ROLL_BACK: &str = "update plugins set
              where id = $1 and previous_component is not null
              returning id, manifest, version, component, sha256";
 
-const ALL: &str = "select id, manifest, version, repo, release_tag, release_url, sha256,
+const ALL: &str = "select id, manifest, version, repo, addon, release_tag, release_url, sha256,
                     manifest_sha256, logo is not null as has_logo, enabled,
                     installed_at, updated_at, previous_version, update_available, notice
              from plugins order by installed_at, id";
@@ -573,6 +584,13 @@ mod tests {
             "no reference to plugins, so a removal keeps the count"
         );
         assert!(COUNT_INSTALL.contains("on conflict (repo) do nothing"));
+    }
+
+    #[test]
+    fn the_add_on_name_is_kept_and_listed() {
+        assert!(SCHEMA.contains("add column if not exists addon text"));
+        assert!(INSTALL.contains("addon = excluded.addon"), "{INSTALL}");
+        assert!(ALL.contains("addon"), "{ALL}");
     }
 
     #[test]
