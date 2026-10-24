@@ -87,9 +87,10 @@ Rulesets protect both branches: no direct pushes, no force-pushes, no deletion, 
 
 ## Linear
 
-Issues go in the `niles` team, in one of three projects:
+Issues go in the `niles` team, in one of four projects. The ai-harness picks the repo from the project.
 
-- ***Niles software*:** everything outside `firmware/` and `hardware/`. Open to anyone working on Niles.
+- ***Niles software*:** everything in this repo outside `firmware/` and `hardware/`. That includes the add-on side of core: the installer, the WIT and the host, Browse, and taking an integration out of core. Open to anyone working on Niles.
+- ***Add-ons*:** everything in `MarkNygaard/niles-addons`: the first-party add-ons in `addons/` and the add-on library's registry. Open to anyone working on Niles. An add-on that needs something new from Niles is two issues: a *Niles software* one for the interface, which ships in a Niles release first, and an *Add-ons* one for the add-on, linked as related.
 - ***Satellite firmware*:** `firmware/`. The current XIAO firmware (`firmware/xiao-wyoming/satellite-idf/`) is open to anyone working on Niles. The port to the satellite v2 mainboard is Mark's until his boards work. A firmware change is tested by flashing a real satellite before it merges, because CI doesn't build the firmware; say in the PR what was tried on which satellite.
 - ***Satellite v2 PCB*:** `hardware/`, the case and the ordering. Mark's alone; leave it alone.
 
