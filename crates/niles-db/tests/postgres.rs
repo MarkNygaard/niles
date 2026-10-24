@@ -225,6 +225,7 @@ async fn a_plugin_is_installed_its_storage_holds_its_quota_and_removal_takes_its
         component,
         logo: Some("<svg/>"),
         repo: Some("https://github.com/jane/x"),
+        addon: Some("x"),
         release_tag: Some(version),
         release_url: None,
     };
@@ -248,6 +249,7 @@ async fn a_plugin_is_installed_its_storage_holds_its_quota_and_removal_takes_its
     let meta = plugins.all().await.expect("all");
     let meta = meta.iter().find(|p| p.id == id).expect("listed");
     assert_eq!(meta.previous_version.as_deref(), Some("0.1.0"));
+    assert_eq!(meta.addon.as_deref(), Some("x"));
     assert!(meta.has_logo);
 
     plugins.set_update(&id, Some("{}")).await.expect("update");

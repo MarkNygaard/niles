@@ -29,7 +29,9 @@ pub(crate) enum PluginAction {
 pub(crate) struct CheckArgs {
     /// The plugin's directory (with niles-integration.toml), its .wasm,
     /// or its GitHub repo (`jane/niles-spotprice`, or the repo's or a
-    /// release's address), whose latest release is checked.
+    /// release's address), whose latest release is checked. For one
+    /// add-on of several in a repo, `jane/niles-addons/spotprice`: its
+    /// newest release tagged `spotprice-v`.
     path: PathBuf,
     /// Also check what the add-on library needs to list it: a
     /// niles-installed asset of at most 1 KiB. For a GitHub release only;
@@ -215,9 +217,9 @@ fn newest_wasm(dir: &Path) -> Option<PathBuf> {
 async fn check(args: CheckArgs) -> anyhow::Result<()> {
     if !args.path.exists()
         && let Some(text) = args.path.to_str()
-        && let Ok((repo, tag)) = niles_plugins::github::parse_repo(text)
+        && let Ok(address) = niles_plugins::github::parse_address(text)
     {
-        return check_release(repo, tag, args.listing).await;
+        return check_release(address, args.listing).await;
     }
     if args.listing {
         bail!("--listing checks a release on GitHub: give the repo, like jane/niles-spotprice");
@@ -242,17 +244,17 @@ async fn check(args: CheckArgs) -> anyhow::Result<()> {
 
 /// Check a release on GitHub, downloading what an install would.
 async fn check_release(
-    repo: niles_plugins::github::Repo,
-    tag: Option<String>,
+    address: niles_plugins::github::Address,
     listing: bool,
 ) -> anyhow::Result<()> {
-    use niles_plugins::github::{GitHub, MAX_MANIFEST};
+    use niles_plugins::github::{GitHub, MAX_MANIFEST, tag_version};
     let github = GitHub::default();
+    let addon = address.addon.as_deref();
     let release = github
-        .release(&repo, tag.as_deref())
+        .release(&address.repo, addon, address.tag.as_deref())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    println!("Checking {} {}", repo.slug(), release.tag_name);
+    println!("Checking {} {}", address.slug(), release.tag_name);
     let fetch = |name: String, cap: usize| {
         let asset = release.asset(&name).cloned();
         let github = github.clone();
@@ -285,17 +287,22 @@ async fn check_release(
     )
     .await?;
     let mut report = niles_plugins::check::check(&manifest, component, logo).await;
-    if let Some(m) = &report.manifest
-        && release
-            .tag_name
-            .strip_prefix('v')
-            .unwrap_or(&release.tag_name)
-            != m.version
-    {
-        report.problems.push(format!(
-            "release: tagged {}, and the manifest says {}",
-            release.tag_name, m.version
-        ));
+    if let Some(m) = &report.manifest {
+        if tag_version(&release.tag_name, addon) != Some(m.version.as_str()) {
+            report.problems.push(format!(
+                "release: tagged {}, and the manifest says {}",
+                release.tag_name, m.version
+            ));
+        }
+        if let Some(addon) = addon
+            && m.id != addon
+        {
+            report.problems.push(format!(
+                "release: the manifest's id is {}, and the address names {addon}; they must \
+                 be the same",
+                m.id
+            ));
+        }
     }
     if listing {
         let problems = niles_plugins::library::listing_problems(&release);
@@ -939,6 +946,7 @@ fn summary(listed: niles_plugins::Listed) -> niles_api::plugins::PluginSummary {
         dropped_events: listed.dropped_events,
         enabled: listed.enabled,
         repo: listed.source.as_ref().map(|s| s.repo.clone()),
+        addon: listed.source.as_ref().and_then(|s| s.addon.clone()),
         release_tag: listed.source.as_ref().map(|s| s.tag.clone()),
         release_url: listed.source.map(|s| s.release_url),
         installed_at: listed.installed_at,

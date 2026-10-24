@@ -24,13 +24,22 @@ function artifact(id: number, title: string, rest: Partial<Artifact> = {}): Arti
   };
 }
 
-const PACKING = artifact(1, "Packing list", { summary: "For the cabin" });
+// The list orders by last change, so the order is spelled out rather
+// than left to two `new Date()` calls landing in the same millisecond.
+const NOW = Date.now();
+const changed = (msAgo: number) => new Date(NOW - msAgo).toISOString();
+
+const PACKING = artifact(1, "Packing list", { summary: "For the cabin", updated_at: changed(0) });
 const THAILAND = artifact(2, "Thailand travel plan", {
   pinned: true,
   status: "working",
   status_text: "Writing your Thailand travel plan…",
 });
-const FAILED = artifact(3, "Wine list", { status: "failed", error: "it timed out" });
+const FAILED = artifact(3, "Wine list", {
+  status: "failed",
+  error: "it timed out",
+  updated_at: changed(60_000),
+});
 const OLD = artifact(4, "Old notes", { archived: true });
 
 function show(props: Partial<SavedListProps> = {}) {

@@ -41,6 +41,10 @@ pub struct Package {
 pub struct Source {
     /// `https://github.com/<owner>/<repo>`.
     pub repo: String,
+    /// Its name in a repo of several add-ons, whose releases are tagged
+    /// `<addon>-vX.Y.Z`; `None` for a repo of one.
+    #[serde(default)]
+    pub addon: Option<String>,
     pub tag: String,
     /// The release's page.
     pub release_url: String,
@@ -454,6 +458,7 @@ impl PluginStore for niles_db::PostgresPlugins {
                 source: match (row.repo, row.release_tag) {
                     (Some(repo), Some(tag)) => Some(Source {
                         repo,
+                        addon: row.addon,
                         tag,
                         release_url: row.release_url.unwrap_or_default(),
                     }),
@@ -495,6 +500,7 @@ impl PluginStore for niles_db::PostgresPlugins {
                 component: &package.component,
                 logo: package.logo.as_deref(),
                 repo: source.map(|s| s.repo.as_str()),
+                addon: source.and_then(|s| s.addon.as_deref()),
                 release_tag: source.map(|s| s.tag.as_str()),
                 release_url: source.map(|s| s.release_url.as_str()),
             },

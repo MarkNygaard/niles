@@ -201,7 +201,8 @@ const LAMP_PLUG_ROWS: Row[] = [
 const TTS_ROWS: Row[] = [
   {
     label: "Piper",
-    description: "The Piper server Niles sends a reply to, to have it spoken.",
+    description:
+      "Piper's base address, such as http://piper:5000. Current and older Piper HTTP servers both work.",
     settings: [
       { path: "tts.base_url", kind: "text", caption: "address", width: "min-w-72 flex-1" },
     ],

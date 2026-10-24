@@ -58,6 +58,12 @@ A function is at most 100 lines. Clippy's `too_many_lines` enforces it (the thre
 - **`npx shadcn@latest add <x>` rewrites an import and installs a package for it.** The generated file says `import { cn } from "cn"` and a `cn` dependency appears in `package.json`. Both are wrong here. Change the import to `@/lib/utils`, run `npm uninstall cn`, then `bun install`, because npm does not update `bun.lock`.
 - **Base UI's `Select` popup hangs jsdom.** The run never finishes. Anything worth asserting about what a `Select` offers belongs in a function the test calls directly, like `usableFor` in `RoleCard.tsx` and `roomChoices` in `SatellitesCard.tsx`. `Dialog`, `Popover` and `Switch` are fine, though `Switch` needs the `PointerEvent` shim in `src/test-setup.ts`.
 
+## First-party add-ons
+
+Niles's own add-ons don't live in this repo. They are in the add-on library's repository, [`MarkNygaard/niles-addons`](https://github.com/MarkNygaard/niles-addons), under `addons/<name>/`, released one by one with tags like `spotprice-v0.1.0`, and installed as `MarkNygaard/niles-addons/<name>`. Its README says how to build, check and release one.
+
+They are built like anybody's: against the published interface, a copy of a `schemas/` WIT file kept in that repo's `addons/wit/`, never against a crate in `crates/`. A change to the interface lands here first and ships in a Niles release. Only then does an add-on that uses it move to the new WIT, with a `min_niles` of that release, since its CI checks it with the published Niles image.
+
 ## Skills
 
 Skills live in `.agents/skills/`, where Codex, Hermes and the skills CLI look. `.claude/skills/` is a copy for Claude Code, because the repo has no symlinks (Windows checkouts run with `core.symlinks` off). Edit `.agents/skills/`, then copy the change over `.claude/skills/`. `scripts/check-skills.py` fails CI when the two differ.
@@ -81,9 +87,10 @@ Rulesets protect both branches: no direct pushes, no force-pushes, no deletion, 
 
 ## Linear
 
-Issues go in the `niles` team, in one of three projects:
+Issues go in the `niles` team, in one of four projects. The ai-harness picks the repo from the project.
 
-- ***Niles software*:** everything outside `firmware/` and `hardware/`. Open to anyone working on Niles.
+- ***Niles software*:** everything in this repo outside `firmware/` and `hardware/`. That includes the add-on side of core: the installer, the WIT and the host, Browse, and taking an integration out of core. Open to anyone working on Niles.
+- ***Add-ons*:** everything in `MarkNygaard/niles-addons`: the first-party add-ons in `addons/` and the add-on library's registry. Open to anyone working on Niles. An add-on that needs something new from Niles is two issues: a *Niles software* one for the interface, which ships in a Niles release first, and an *Add-ons* one for the add-on, linked as related.
 - ***Satellite firmware*:** `firmware/`. The current XIAO firmware (`firmware/xiao-wyoming/satellite-idf/`) is open to anyone working on Niles. The port to the satellite v2 mainboard is Mark's until his boards work. A firmware change is tested by flashing a real satellite before it merges, because CI doesn't build the firmware; say in the PR what was tried on which satellite.
 - ***Satellite v2 PCB*:** `hardware/`, the case and the ordering. Mark's alone; leave it alone.
 

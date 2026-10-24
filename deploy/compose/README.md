@@ -105,8 +105,10 @@ each of them typed in again.
 Niles speaks through Piper's HTTP server (`python3 -m piper.http_server`
 from the [Piper](https://github.com/OHF-Voice/piper1-gpl) project, on port
 5000). It is not `wyoming-piper`, which speaks a different protocol. Run it
-on a machine Niles can reach, then enter its address, such as
+on a machine Niles can reach, then enter its base address, such as
 `http://192.168.1.11:5000`, under **Settings → Voice & AI → Speaking**.
+Leave the path off: Niles finds the current server's `/synthesize` and the
+older servers' `/` by itself.
 
 ## Satellites
 
