@@ -322,12 +322,27 @@ const PRESENCE: PluginSummary = {
 };
 
 describe("catalogue placement", () => {
-  it("marks every plugin's row Custom, whatever its group", () => {
+  it("marks somebody else's plugin Custom, whatever its group", () => {
     setup([PLUGIN, PRESENCE]);
     for (const name of ["Spot prices", "Presence thing"]) {
       const row = screen.getByRole("button", { name: `Configure ${name}` });
       expect(within(row).getByText("Custom")).toBeInTheDocument();
     }
+  });
+
+  it("gives Niles's own add-ons no Custom badge", () => {
+    setup([
+      {
+        ...PLUGIN,
+        id: "bambulab",
+        name: "Bambu Lab",
+        group: { id: "devices", label: "Devices & appliances" },
+        repo: "https://github.com/MarkNygaard/niles-addons",
+        addon: "bambulab",
+      },
+    ]);
+    const row = screen.getByRole("button", { name: "Configure Bambu Lab" });
+    expect(within(row).queryByText("Custom")).not.toBeInTheDocument();
   });
 
   it("puts a plugin in its manifest's group, and the Custom group last", () => {

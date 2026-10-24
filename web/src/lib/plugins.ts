@@ -5,6 +5,15 @@ import { humanize } from "@/lib/rooms";
 /** The group a plugin naming none, or one this Niles does not know, is in. */
 export const CUSTOM = "custom";
 
+/** Where Niles's own add-ons are released. */
+const FIRST_PARTY_REPO = "https://github.com/marknygaard/niles-addons";
+
+/** One of Niles's own add-ons, which carries no Custom badge. GitHub
+    names are case-insensitive, so the repo is compared the same way. */
+export function isFirstParty(plugin: Pick<PluginSummary, "repo">): boolean {
+  return plugin.repo?.toLowerCase().replace(/\/$/, "") === FIRST_PARTY_REPO;
+}
+
 /**
  * Plugins under their groups, in the order they first appear, with
  * Custom last: it follows the built-in groups on the page.

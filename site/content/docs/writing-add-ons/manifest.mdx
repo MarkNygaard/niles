@@ -76,6 +76,12 @@ one of the built-in group ids:
 | `calendars` | Calendars | Calendars |
 | `shopping` | Shopping | Groceries and deliveries |
 | `assistants` | Assistants & tools | AI assistants and work tools |
+| `devices` | Devices & appliances | Printers, appliances and other machines that aren't lights |
+| `energy` | Energy | What power costs and what the house uses |
+
+Niles has no built-in integrations in `devices` or `energy`, so those headings
+show only when an add-on is in them. A Niles older than 0.7.0 doesn't know
+them and lists the add-on under **Custom**.
 
 A missing or unknown `group` puts the plugin in **Custom**, shown after the
 built-in groups. These ids are part of the interface: Niles may add groups
@@ -88,7 +94,8 @@ Settings → System rather than listed with the add-ons, and a plugin cannot put
 itself there: `essentials`, the group that used to hold them, now lands in
 Custom like any other id Niles does not offer.
 
-Wherever it sits, a plugin's row carries a **Custom** badge, and its setup panel
+Wherever it sits, a plugin's row carries a **Custom** badge (only Niles's own
+add-ons, from `MarkNygaard/niles-addons`, go without), and its setup panel
 shows where it came from: your repo (linked), authors, version and install date.
 **Add-on from GitHub** is at the end of the Available tab under its own heading.
 

@@ -6,6 +6,7 @@ import {
   connectOutcome,
   draftOf,
   imageUrl,
+  isFirstParty,
   lastHookLine,
   publicUrlProblem,
   missingRequired,
@@ -81,6 +82,28 @@ describe("pluginGroupsOf", () => {
     ]);
     expect(groups.map((g) => g.group.id)).toEqual(["music", "custom"]);
     expect(groups[1].items.map((p) => p.id)).toEqual(["a", "c"]);
+  });
+});
+
+describe("isFirstParty", () => {
+  it("knows Niles's own add-on repo, however it is spelled", () => {
+    for (const repo of [
+      "https://github.com/MarkNygaard/niles-addons",
+      "https://github.com/marknygaard/niles-addons/",
+    ]) {
+      expect(isFirstParty({ repo })).toBe(true);
+    }
+  });
+
+  it("does not count anybody else's repo, a fork or none", () => {
+    for (const repo of [
+      "https://github.com/jane/niles-addons",
+      "https://github.com/MarkNygaard/niles-addons-fork",
+      "https://github.com/MarkNygaard/niles-bambulab",
+      null,
+    ]) {
+      expect(isFirstParty({ repo })).toBe(false);
+    }
   });
 });
 
