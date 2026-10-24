@@ -35,6 +35,12 @@ Its built-in add-ons live in its own repository. This guide is for
 everything else: the thing in your house, or the service you use, that Niles
 does not know about.
 
+Niles's first-party add-ons are built the way this guide describes, in
+[`addons/`](https://github.com/MarkNygaard/niles-addons/tree/main/addons) of
+the add-on library's repository, `MarkNygaard/niles-addons`, and released one
+by one like anybody's. Each is a complete example to read. The first is the
+[worked example](/docs/writing-add-ons/example-spotprice)'s spot prices.
+
 You write the add-on in Rust, JavaScript, Go or Python, compile it to a
 WebAssembly component, publish it as a GitHub release, and anyone running Niles
 installs it by pasting your repo's URL into the app.
