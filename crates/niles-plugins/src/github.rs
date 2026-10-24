@@ -2,7 +2,10 @@
 //!
 //! The REST API without a token, so only public repos, and GitHub's
 //! limit of 60 requests an hour per address applies: a preview costs
-//! one or two, an update check one per plugin. Assets are downloaded
+//! one or two, an update check one per plugin. An add-on that shares
+//! its repo with others (`owner/repo/<name>`, its releases tagged
+//! `<name>-vX.Y.Z`) costs the same: one page of the repo's releases
+//! instead of GitHub's "latest", which could be another add-on's. Assets are downloaded
 //! from the URLs the API gives, with a cap on each that is checked
 //! against the size GitHub reports, the `Content-Length`, and the bytes
 //! as they arrive, so an oversized asset is refused without being held.
@@ -44,11 +47,66 @@ impl Repo {
     }
 }
 
-/// What somebody pasted, as a repo and the release tag the URL named,
-/// if it named one: `https://github.com/jane/niles-spotprice`, with
-/// `.git`, a trailing slash or `/releases/tag/v0.1.0`, or
-/// `jane/niles-spotprice`.
-pub fn parse_repo(input: &str) -> Result<(Repo, Option<String>), String> {
+/// What somebody pasted: a repo, the add-on in it when the repo holds
+/// several, and the release tag the address named, if it named one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Address {
+    pub repo: Repo,
+    /// `<name>` in `owner/repo/<name>`: the add-on's id, in a repo that
+    /// holds several add-ons and tags each one's releases
+    /// `<name>-vX.Y.Z`. `None` for a repo of one add-on.
+    pub addon: Option<String>,
+    pub tag: Option<String>,
+}
+
+impl Address {
+    /// `owner/repo`, or `owner/repo/<name>`.
+    pub fn slug(&self) -> String {
+        slug_of(&self.repo, self.addon.as_deref())
+    }
+}
+
+/// `owner/repo`, or `owner/repo/<name>` for one add-on of several.
+pub fn slug_of(repo: &Repo, addon: Option<&str>) -> String {
+    match addon {
+        Some(addon) => format!("{}/{addon}", repo.slug()),
+        None => repo.slug(),
+    }
+}
+
+/// Whether `name` could be an add-on's id, and so the last part of
+/// `owner/repo/<name>`: 2 to 32 lowercase letters, digits and `_`,
+/// starting with a letter. The manifest's own check says the rest.
+pub fn is_addon_name(name: &str) -> bool {
+    (2..=32).contains(&name.len())
+        && name.starts_with(|c: char| c.is_ascii_lowercase())
+        && crate::manifest::is_identifier(name)
+}
+
+/// The add-on a tag like `alpha-v1.2.0` belongs to, in a repo of
+/// several. `None` for `v1.2.0` and anything else.
+pub fn addon_of_tag(tag: &str) -> Option<&str> {
+    let (name, rest) = tag.split_once('-')?;
+    let version = rest.strip_prefix('v')?;
+    (is_addon_name(name) && semver::Version::parse(version).is_ok()).then_some(name)
+}
+
+/// The version `tag` names: `v1.2.0` or `1.2.0` in a repo of one
+/// add-on, `<addon>-v1.2.0` for `addon` in a repo of several. `None`
+/// when the tag is another add-on's.
+pub fn tag_version<'a>(tag: &'a str, addon: Option<&str>) -> Option<&'a str> {
+    match addon {
+        None => Some(tag.strip_prefix('v').unwrap_or(tag)),
+        Some(addon) => tag.strip_prefix(addon)?.strip_prefix("-v"),
+    }
+}
+
+/// What somebody pasted, read as an [`Address`]:
+/// `https://github.com/jane/niles-spotprice`, with `.git`, a trailing
+/// slash or `/releases/tag/v0.1.0`, or `jane/niles-spotprice`; and for
+/// one add-on of several in a repo, `jane/niles-addons/spotprice` or a
+/// release URL whose tag is `spotprice-v0.1.0`.
+pub fn parse_address(input: &str) -> Result<Address, String> {
     let input = input.trim();
     let not_a_repo = || {
         format!(
@@ -79,10 +137,17 @@ pub fn parse_repo(input: &str) -> Result<(Repo, Option<String>), String> {
         _ => return Err(not_a_repo()),
     };
     let name = name.strip_suffix(".git").unwrap_or(name);
-    let tag = match rest {
-        [] => None,
-        ["releases"] | ["releases", "latest"] => None,
-        ["releases", "tag", tag] => Some(tag.to_string()),
+    let (addon, tag) = match rest {
+        [] | ["releases"] | ["releases", "latest"] => (None, None),
+        ["releases", "tag", tag] => (addon_of_tag(tag).map(str::to_string), Some(tag.to_string())),
+        [addon] if is_addon_name(addon) => (Some(addon.to_string()), None),
+        [addon] => {
+            return Err(format!(
+                "{addon:?} in {input:?} is not an add-on's name. The address of one add-on of \
+                 several in a repo is owner/repo/name, where name is its id: lowercase \
+                 letters, digits and _."
+            ));
+        }
         _ => return Err(not_a_repo()),
     };
     let owner_ok = (1..=39).contains(&owner.len())
@@ -99,13 +164,14 @@ pub fn parse_repo(input: &str) -> Result<(Repo, Option<String>), String> {
     if let Some(tag) = &tag {
         check_tag(tag)?;
     }
-    Ok((
-        Repo {
+    Ok(Address {
+        repo: Repo {
             owner: owner.to_string(),
             name: name.to_string(),
         },
+        addon,
         tag,
-    ))
+    })
 }
 
 /// A tag as a request may name one.
@@ -150,10 +216,19 @@ impl Release {
         self.assets.iter().find(|a| a.name == name)
     }
 
-    /// The tag as a version, with or without its `v`.
-    pub fn version(&self) -> Option<semver::Version> {
-        semver::Version::parse(self.tag_name.strip_prefix('v').unwrap_or(&self.tag_name)).ok()
+    /// The tag as a version of `addon` (see [`tag_version`]). `None`
+    /// for another add-on's release, or a tag that is no version.
+    pub fn version(&self, addon: Option<&str>) -> Option<semver::Version> {
+        tag_version(&self.tag_name, addon).and_then(|v| semver::Version::parse(v).ok())
     }
+}
+
+fn no_repo(repo: &Repo) -> Refusal {
+    Refusal::NotFound(format!(
+        "There is no public repository at github.com/{}. Private repositories cannot be \
+         installed from yet.",
+        repo.slug()
+    ))
 }
 
 /// The GitHub REST API, without a token.
@@ -191,8 +266,27 @@ impl GitHub {
     }
 
     /// The release tagged `tag`, or the latest: not a draft, not a
-    /// pre-release.
-    pub async fn release(&self, repo: &Repo, tag: Option<&str>) -> Result<Release, Refusal> {
+    /// pre-release. For `addon`, one add-on of several in the repo, the
+    /// tag must be one of its own (`<addon>-vX.Y.Z`), and the latest is
+    /// the newest of those.
+    pub async fn release(
+        &self,
+        repo: &Repo,
+        addon: Option<&str>,
+        tag: Option<&str>,
+    ) -> Result<Release, Refusal> {
+        if let Some(addon) = addon {
+            match tag {
+                None => return self.newest_of(repo, addon).await,
+                Some(tag) if tag_version(tag, Some(addon)).is_none() => {
+                    return Err(Refusal::BadRequest(format!(
+                        "{tag} is not a release of {addon}: its releases are tagged {addon}-v \
+                         and a version, like {addon}-v1.0.0."
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
         let url = match tag {
             Some(tag) => self.endpoint(repo, &["releases", "tags", tag]),
             None => self.endpoint(repo, &["releases", "latest"]),
@@ -206,29 +300,69 @@ impl GitHub {
             .get_json::<serde_json::Value>(self.endpoint(repo, &[]))
             .await?;
         let slug = repo.slug();
-        Err(Refusal::NotFound(match (found, tag) {
-            (None, _) => format!(
-                "There is no public repository at github.com/{slug}. Private repositories \
-                 cannot be installed from yet."
-            ),
-            (Some(_), Some(tag)) => format!("{slug} has no release tagged {tag}."),
-            (Some(_), None) => format!(
+        Err(match (found, tag) {
+            (None, _) => no_repo(repo),
+            (Some(_), Some(tag)) => {
+                Refusal::NotFound(format!("{slug} has no release tagged {tag}."))
+            }
+            (Some(_), None) => Refusal::NotFound(format!(
                 "{slug} has no releases yet. Niles installs the latest published release; \
                  drafts and pre-releases do not count."
-            ),
-        }))
+            )),
+        })
     }
 
-    /// The newest releases, newest first: the first page of 30.
-    pub async fn releases(&self, repo: &Repo) -> Result<Vec<Release>, Refusal> {
-        let mut url = self.endpoint(repo, &["releases"]);
-        url.query_pairs_mut().append_pair("per_page", "30");
-        self.get_json(url).await?.ok_or_else(|| {
+    /// `addon`'s newest release by its version, among the repo's newest
+    /// 100: one request, where GitHub's "latest" could be another
+    /// add-on's.
+    async fn newest_of(&self, repo: &Repo, addon: &str) -> Result<Release, Refusal> {
+        let Some(releases) = self.page_of_releases(repo, 100).await? else {
+            return Err(no_repo(repo));
+        };
+        releases
+            .into_iter()
+            .filter(|r| !r.draft && !r.prerelease)
+            .filter_map(|r| r.version(Some(addon)).map(|v| (v, r)))
+            .filter(|(v, _)| v.pre.is_empty())
+            .max_by(|(a, _), (b, _)| a.cmp(b))
+            .map(|(_, r)| r)
+            .ok_or_else(|| {
+                Refusal::NotFound(format!(
+                    "{} has no releases of {addon} yet. Niles installs its newest published \
+                     release tagged {addon}-v and a version, like {addon}-v1.0.0; drafts and \
+                     pre-releases do not count.",
+                    repo.slug()
+                ))
+            })
+    }
+
+    /// The newest releases, newest first: the first page of 30, or of
+    /// 100 when `addon` is one of several add-ons sharing the repo's
+    /// releases.
+    pub async fn releases(
+        &self,
+        repo: &Repo,
+        addon: Option<&str>,
+    ) -> Result<Vec<Release>, Refusal> {
+        let per_page = if addon.is_some() { 100 } else { 30 };
+        self.page_of_releases(repo, per_page).await?.ok_or_else(|| {
             Refusal::NotFound(format!(
                 "There is no public repository at github.com/{} any more.",
                 repo.slug()
             ))
         })
+    }
+
+    /// `None` for a 404.
+    async fn page_of_releases(
+        &self,
+        repo: &Repo,
+        per_page: u8,
+    ) -> Result<Option<Vec<Release>>, Refusal> {
+        let mut url = self.endpoint(repo, &["releases"]);
+        url.query_pairs_mut()
+            .append_pair("per_page", &per_page.to_string());
+        self.get_json(url).await
     }
 
     /// `None` for a 404.
@@ -381,8 +515,59 @@ mod tests {
     use super::*;
 
     fn parsed(input: &str) -> (String, Option<String>) {
-        let (repo, tag) = parse_repo(input).unwrap_or_else(|e| panic!("{input}: {e}"));
-        (repo.slug(), tag)
+        let address = parse_address(input).unwrap_or_else(|e| panic!("{input}: {e}"));
+        assert_eq!(address.addon, None, "{input}");
+        (address.repo.slug(), address.tag)
+    }
+
+    fn addressed(input: &str) -> (String, Option<String>) {
+        let address = parse_address(input).unwrap_or_else(|e| panic!("{input}: {e}"));
+        (address.slug(), address.tag)
+    }
+
+    #[test]
+    fn one_add_on_of_several_is_owner_repo_name() {
+        for input in [
+            "jane/niles-addons/spotprice",
+            "github.com/jane/niles-addons/spotprice/",
+            "https://github.com/jane/niles-addons/spotprice",
+        ] {
+            assert_eq!(
+                addressed(input),
+                ("jane/niles-addons/spotprice".into(), None),
+                "{input}"
+            );
+        }
+        assert_eq!(
+            addressed("https://github.com/jane/niles-addons/releases/tag/spotprice-v0.2.0"),
+            (
+                "jane/niles-addons/spotprice".into(),
+                Some("spotprice-v0.2.0".into())
+            ),
+            "a release URL with an add-on's tag names the add-on"
+        );
+        assert_eq!(
+            addressed("jane/niles-addons/releases"),
+            ("jane/niles-addons".into(), None),
+            "the releases page, as before"
+        );
+        for input in ["jane/niles-addons/Spot-Price", "jane/niles-addons/x"] {
+            let why = parse_address(input).unwrap_err();
+            assert!(why.contains("owner/repo/name"), "{input}: {why}");
+        }
+    }
+
+    #[test]
+    fn a_tag_is_a_version_of_one_add_on_only() {
+        assert_eq!(tag_version("v1.2.0", None), Some("1.2.0"));
+        assert_eq!(tag_version("alpha-v1.2.0", Some("alpha")), Some("1.2.0"));
+        assert_eq!(tag_version("alpha-v1.2.0", Some("alp")), None);
+        assert_eq!(tag_version("bravo-v1.2.0", Some("alpha")), None);
+        assert_eq!(tag_version("v1.2.0", Some("alpha")), None);
+        assert_eq!(addon_of_tag("alpha-v1.2.0"), Some("alpha"));
+        assert_eq!(addon_of_tag("v1.2.0"), None);
+        assert_eq!(addon_of_tag("alpha-vnext"), None);
+        assert_eq!(addon_of_tag("Alpha-v1.0.0"), None);
     }
 
     #[test]
@@ -409,7 +594,7 @@ mod tests {
             ("jane/niles-spotprice".into(), Some("v0.2.0".into()))
         );
         assert_eq!(
-            parse_repo("jane/niles.spot_price").unwrap().0.url(),
+            parse_address("jane/niles.spot_price").unwrap().repo.url(),
             "https://github.com/jane/niles.spot_price"
         );
     }
@@ -427,7 +612,7 @@ mod tests {
             "ja ne/x",
             "jane/x/releases/tag/two words",
         ] {
-            assert!(parse_repo(input).is_err(), "{input:?}");
+            assert!(parse_address(input).is_err(), "{input:?}");
         }
     }
 
@@ -449,8 +634,19 @@ mod tests {
             prerelease: false,
             assets: Vec::new(),
         };
-        assert_eq!(release("v1.2.3").version().unwrap().to_string(), "1.2.3");
-        assert_eq!(release("1.2.3").version().unwrap().to_string(), "1.2.3");
-        assert!(release("latest").version().is_none());
+        assert_eq!(
+            release("v1.2.3").version(None).unwrap().to_string(),
+            "1.2.3"
+        );
+        assert_eq!(release("1.2.3").version(None).unwrap().to_string(), "1.2.3");
+        assert!(release("latest").version(None).is_none());
+        assert!(release("alpha-v1.2.3").version(None).is_none());
+        assert_eq!(
+            release("alpha-v1.2.3")
+                .version(Some("alpha"))
+                .unwrap()
+                .to_string(),
+            "1.2.3"
+        );
     }
 }

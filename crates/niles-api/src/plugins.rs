@@ -92,6 +92,9 @@ pub struct PluginSummary {
     /// `https://github.com/<owner>/<repo>`; none for one installed from
     /// a file.
     pub repo: Option<String>,
+    /// Its name in a repo of several add-ons (`owner/repo/<addon>`);
+    /// none for a repo of one.
+    pub addon: Option<String>,
     pub release_tag: Option<String>,
     pub release_url: Option<String>,
     pub installed_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -883,6 +886,7 @@ pub(crate) mod tests {
             dropped_events: 0,
             enabled: true,
             repo: Some("https://github.com/jane/niles-spotprice".into()),
+            addon: None,
             release_tag: Some("v0.1.0".into()),
             release_url: None,
             installed_at: None,

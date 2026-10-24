@@ -1186,3 +1186,222 @@ async fn browsing_the_library_asks_github_nothing() {
     );
     assert_eq!(requests[0].url.path(), "/addons/index.json");
 }
+
+/// The fixture's manifest as the add-on `id` at `version`.
+fn named(id: &str, version: &str) -> String {
+    manifest(version).replacen("id = \"hello\"", &format!("id = \"{id}\""), 1)
+}
+
+/// `jane/niles-addons`, a repo of two add-ons: alpha at 1.0.0 and
+/// 1.1.0 with a 1.2.0 pre-release, bravo at 2.0.0, and a release
+/// tagged as charlie that holds alpha. GitHub's "latest" is bravo's,
+/// so an add-on that followed it would get the wrong one.
+async fn two_in_one_repo(hub: &Hub) {
+    hub.answer(
+        "/repos/jane/niles-addons",
+        200,
+        json!({"full_name": "jane/niles-addons"}),
+    )
+    .await;
+    let release = |tag: &'static str, id: &'static str, version: &'static str, pre: bool| {
+        let assets = with_marker(plugin_assets(&named(id, version)));
+        hub.release(tag, pre, assets)
+    };
+    let releases = vec![
+        release("charlie-v1.0.0", "alpha", "1.0.0", false).await,
+        release("alpha-v1.2.0-beta.1", "alpha", "1.2.0-beta.1", true).await,
+        release("bravo-v2.0.0", "bravo", "2.0.0", false).await,
+        release("alpha-v1.1.0", "alpha", "1.1.0", false).await,
+        release("alpha-v1.0.0", "alpha", "1.0.0", false).await,
+    ];
+    for release in &releases {
+        let tag = release["tag_name"].as_str().unwrap();
+        hub.answer(
+            &format!("/repos/jane/niles-addons/releases/tags/{tag}"),
+            200,
+            release.clone(),
+        )
+        .await;
+    }
+    hub.answer(
+        "/repos/jane/niles-addons/releases/latest",
+        200,
+        releases[2].clone(),
+    )
+    .await;
+    hub.answer("/repos/jane/niles-addons/releases", 200, json!(releases))
+        .await;
+}
+
+async fn install(home: &Home, address: &str, tag: Option<&str>) -> niles_plugins::Listed {
+    let preview = home.installer.preview(address, tag).await.unwrap();
+    home.installer
+        .install(&preview.token, Some(&preview.sha256))
+        .await
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn several_add_ons_in_one_repo_install_each_from_its_own_releases() {
+    let hub = Hub::new().await;
+    two_in_one_repo(&hub).await;
+    let home = Home::new(&hub, options()).await;
+
+    let alpha = home
+        .installer
+        .preview("jane/niles-addons/alpha", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            alpha.id.as_str(),
+            alpha.version.as_str(),
+            alpha.tag.as_str()
+        ),
+        ("alpha", "1.1.0", "alpha-v1.1.0"),
+        "its newest release, not GitHub's latest and not the pre-release"
+    );
+    assert_eq!(alpha.repo, "https://github.com/jane/niles-addons");
+    let alpha = home
+        .installer
+        .install(&alpha.token, Some(&alpha.sha256))
+        .await
+        .unwrap();
+    let source = alpha.source.unwrap();
+    assert_eq!(source.addon.as_deref(), Some("alpha"));
+    assert_eq!(source.repo, "https://github.com/jane/niles-addons");
+
+    let bravo = install(&home, "https://github.com/jane/niles-addons/bravo", None).await;
+    assert_eq!(
+        (bravo.id.as_str(), bravo.version.as_str()),
+        ("bravo", "2.0.0")
+    );
+
+    hub.downloads_reach("niles-installed", 2).await;
+    for key in ["jane/niles-addons/alpha", "jane/niles-addons/bravo"] {
+        assert!(
+            !home.store.count_install(key).await.unwrap(),
+            "{key} was counted on its own"
+        );
+    }
+    assert!(
+        home.store.count_install("jane/niles-addons").await.unwrap(),
+        "not the repo as a whole"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_add_on_of_a_repo_updates_on_its_own() {
+    let hub = Hub::new().await;
+    two_in_one_repo(&hub).await;
+    let home = Home::new(&hub, options()).await;
+    install(&home, "jane/niles-addons/alpha", Some("alpha-v1.0.0")).await;
+    install(&home, "jane/niles-addons/bravo", None).await;
+
+    let update = home.installer.check_update("alpha").await.unwrap().unwrap();
+    assert_eq!(
+        (update.version.as_str(), update.tag.as_str()),
+        ("1.1.0", "alpha-v1.1.0"),
+        "not bravo's 2.0.0, not the pre-release"
+    );
+    assert_eq!(home.installer.check_update("bravo").await.unwrap(), None);
+
+    let preview = home.installer.update_preview("alpha").await.unwrap();
+    assert_eq!(preview.version, "1.1.0");
+    let listed = home
+        .installer
+        .update("alpha", &preview.token, Some(&preview.sha256))
+        .await
+        .unwrap();
+    assert_eq!(listed.version, "1.1.0");
+    assert_eq!(
+        listed.source.and_then(|s| s.addon).as_deref(),
+        Some("alpha"),
+        "the update keeps the add-on's name"
+    );
+    let versions: Vec<_> = home
+        .installer
+        .list()
+        .await
+        .into_iter()
+        .map(|l| (l.id, l.version))
+        .collect();
+    assert!(
+        versions.contains(&("bravo".into(), "2.0.0".into())),
+        "{versions:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_name_in_the_address_must_be_the_add_on() {
+    let hub = Hub::new().await;
+    two_in_one_repo(&hub).await;
+    let home = Home::new(&hub, options()).await;
+
+    match home
+        .installer
+        .preview("jane/niles-addons/charlie", None)
+        .await
+        .unwrap_err()
+    {
+        Refusal::Invalid(why) => {
+            assert!(why.contains("is the add-on alpha, not charlie"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+    match home
+        .installer
+        .preview("jane/niles-addons/alpha", Some("bravo-v2.0.0"))
+        .await
+        .unwrap_err()
+    {
+        Refusal::BadRequest(why) => assert!(why.contains("alpha-v1.0.0"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    match home
+        .installer
+        .preview("jane/niles-addons/delta", None)
+        .await
+        .unwrap_err()
+    {
+        Refusal::NotFound(why) => assert!(why.contains("no releases of delta"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    let by_url = home
+        .installer
+        .preview(
+            "https://github.com/jane/niles-addons/releases/tag/bravo-v2.0.0",
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (by_url.id.as_str(), by_url.version.as_str()),
+        ("bravo", "2.0.0")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repo_of_one_add_on_ignores_tags_with_a_name() {
+    let hub = Hub::new().await;
+    hub.latest("v0.1.0", plugin_assets(MANIFEST)).await;
+    let named_release = hub
+        .release("hello-v0.2.0", false, plugin_assets(&manifest("0.2.0")))
+        .await;
+    let only = hub.release("v0.1.0", false, plugin_assets(MANIFEST)).await;
+    hub.answer(
+        "/repos/jane/hello/releases",
+        200,
+        json!([named_release, only]),
+    )
+    .await;
+    let home = Home::new(&hub, options()).await;
+    home.install_latest().await;
+    let listed = &home.installer.list().await[0];
+    assert_eq!(listed.source.as_ref().unwrap().addon, None);
+    assert_eq!(
+        home.installer.check_update("hello").await.unwrap(),
+        None,
+        "hello-v0.2.0 is how a repo of several tags, so not an update here"
+    );
+}

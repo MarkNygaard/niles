@@ -156,6 +156,8 @@ export interface PluginSummary {
   enabled: boolean;
   /** `https://github.com/<owner>/<repo>`. */
   repo: string | null;
+  /** Its name in a repo of several add-ons (`owner/repo/<addon>`); null for a repo of one. */
+  addon: string | null;
   release_tag: string | null;
   release_url: string | null;
   installed_at: string | null;
@@ -367,6 +369,14 @@ export type LibraryStanding = "listed" | "unreviewed" | "removed";
 export interface LibraryEntry {
   /** `https://github.com/<owner>/<repo>`, built by Niles from the checked repo. */
   repo: string;
+  /** Its name in a repo of several add-ons; null for a repo of one. */
+  addon: string | null;
+  /** What Install previews: `owner/repo`, or `owner/repo/<addon>`. */
+  address: string;
+  /** Its releases on GitHub: the repo's, or a search for the add-on's own tags. */
+  releases: string;
+  /** Other add-ons in the library come from the same repo, so its stars are the repo's, shared. */
+  shares_repo: boolean;
   owner: string;
   standing: LibraryStanding;
   /** For `removed`: why it was taken off the list. */

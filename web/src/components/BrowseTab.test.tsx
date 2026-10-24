@@ -28,6 +28,7 @@ const PLUGIN: PluginSummary = {
   dropped_events: 0,
   enabled: true,
   repo: "https://github.com/jane/niles-spotprice",
+  addon: null,
   release_tag: "v0.1.0",
   release_url: "https://github.com/jane/niles-spotprice/releases/tag/v0.1.0",
   installed_at: "2026-10-14T09:00:00Z",
@@ -76,8 +77,15 @@ let seq = 0;
 /** One library entry, with sane defaults and `over` on top. */
 function entry(over: Partial<LibraryEntry> = {}): LibraryEntry {
   seq += 1;
+  const repo = over.repo ?? `https://github.com/jane/add-on-${seq}`;
+  const addon = over.addon ?? null;
+  const path = repo.replace("https://github.com/", "");
   return {
-    repo: `https://github.com/jane/add-on-${seq}`,
+    repo,
+    addon,
+    address: addon ? `${path}/${addon}` : path,
+    releases: `${repo}/releases`,
+    shares_repo: false,
     owner: "jane",
     standing: "listed",
     removed_reason: null,
@@ -223,7 +231,7 @@ describe("Browse", () => {
       await screen.findByText("Connect to api.energidataservice.dk"),
     ).toBeInTheDocument();
     expect(preview).toHaveBeenCalledTimes(1);
-    expect(preview).toHaveBeenCalledWith("https://github.com/jane/niles-spotprice");
+    expect(preview).toHaveBeenCalledWith("jane/niles-spotprice");
 
     fireEvent.click(screen.getByRole("button", { name: "Install" }));
     expect(install).toHaveBeenCalledWith(PREVIEW);
@@ -253,6 +261,28 @@ describe("Browse", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Add-on from GitHub" }));
     expect(await screen.findByRole("textbox", { name: "GitHub repository" })).toBeInTheDocument();
+  });
+
+  it("lists each add-on of a repo on its own, installs it by owner/repo/name, and says its stars are the repo's", async () => {
+    const shared = { repo: "https://github.com/jane/niles-addons", stars: 9, shares_repo: true };
+    const alpha = entry({ ...shared, addon: "alpha", name: "Alpha", installs: 3 });
+    const bravo = entry({ ...shared, addon: "bravo", name: "Bravo", installs: 5 });
+    vi.mocked(api.pluginLibrary).mockResolvedValue(library(alpha, bravo));
+    const preview = vi.spyOn(api, "previewPlugin").mockResolvedValue(PREVIEW);
+    setup([
+      { ...PLUGIN, id: "bravo", repo: "https://github.com/jane/niles-addons", addon: "bravo" },
+    ]);
+    browse();
+    const listed = await screen.findByRole("region", { name: "Listed" });
+    expect(within(listed).getByText("3 installs")).toBeInTheDocument();
+    expect(within(listed).getByText("5 installs")).toBeInTheDocument();
+    expect(within(listed).getAllByText("9 stars on its repo")).toHaveLength(2);
+    expect(within(listed).getAllByText("Installed")).toHaveLength(1);
+    expect(within(listed).queryByRole("button", { name: "Install Bravo" })).toBeNull();
+
+    fireEvent.click(within(listed).getByRole("button", { name: "Install Alpha" }));
+    expect(await screen.findByText("Connect to api.energidataservice.dk")).toBeInTheDocument();
+    expect(preview).toHaveBeenCalledWith("jane/niles-addons/alpha");
   });
 
   it("narrows the library with the page's search", async () => {

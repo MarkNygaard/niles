@@ -36,6 +36,35 @@ body) are shown to
 the household when they are offered the update, so write them for people:
 what changed for them, not the commit log.
 
+## Several add-ons in one repo
+
+One repo can hold several add-ons, each released on its own. Tag each
+add-on's releases with its `id` from the manifest, a `-v` and the version:
+`spotprice-v0.2.0`, `pool-v1.0.0`. The assets are the same as above, one
+add-on's per release.
+
+The address of one of them is `owner/repo/<id>`, such as
+`you/your-addons/spotprice`. Niles installs that add-on's newest release
+tagged `spotprice-v`, not GitHub's latest release, which may be another
+add-on's. A release URL with such a tag works too:
+`https://github.com/you/your-addons/releases/tag/spotprice-v0.2.0`. The
+manifest's `id` must be the name in the address, and its `version` the
+version in the tag, or the preview refuses the release.
+
+Updates follow the same tags. Each add-on is offered only its own newer
+releases. Niles looks through the repo's newest 100 releases, so an add-on
+whose latest release is older than that isn't found.
+
+A repo of one add-on keeps tagging `v0.2.0`. Niles reads a tag like
+`spotprice-v0.2.0` as a release of the add-on `spotprice`, so don't use that
+form there.
+
+In the release workflow, push tags like `spotprice-v*`, check the tag against
+`<id>-v<version>`, and build the add-on the tag names.
+
+`niles plugin check --listing you/your-addons/spotprice` checks one add-on's
+newest release.
+
 ## The workflow
 
 The template's `.github/workflows/release.yml` builds and publishes on a
@@ -148,7 +177,8 @@ public data. You don't upload anything; your repo's releases are the truth.
 
 Give the repo the topic `niles-addon`, under the repo's About → Topics, or
 with `gh repo edit --add-topic niles-addon`. The library picks it up within
-six hours, as **Unreviewed**.
+six hours, as **Unreviewed**. In a repo of several add-ons, it lists each
+add-on its releases are tagged for.
 
 ### Getting listed
 
@@ -158,6 +188,14 @@ Open a pull request on `MarkNygaard/niles-addons` adding your repo to
 ```toml
 [[addon]]
 repo = "you/your-repo"
+```
+
+For one add-on of a repo that holds several, name it too:
+
+```toml
+[[addon]]
+repo = "you/your-addons"
+addon = "spotprice"
 ```
 
 The check runs `niles plugin check --listing you/your-repo` on your latest
@@ -172,7 +210,9 @@ household still approves its permissions on install.
 ### Install counts
 
 The library shows your installs: GitHub's download count of `niles-installed`,
-summed over your releases. A preview, an update or installing the same
+summed over your releases. In a repo of several add-ons, each add-on's count
+is summed over its own releases. Stars belong to the repo, so its add-ons
+share them, and Browse says so. A preview, an update or installing the same
 add-on again doesn't count, and nothing about the household is sent. It's a
 total, not active installs: removals aren't counted. Without
 `niles-installed` the library shows your component's downloads instead,

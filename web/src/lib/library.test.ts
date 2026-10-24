@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import type { LibraryEntry, PluginLibrary, PluginSummary } from "@/lib/api";
 import {
   countLine,
+  entryKey,
   entryMatches,
   installedFrom,
   sameRepo,
@@ -20,8 +21,15 @@ let seq = 0;
 /** One library entry, with sane defaults and `over` on top. */
 function entry(over: Partial<LibraryEntry> = {}): LibraryEntry {
   seq += 1;
+  const repo = over.repo ?? `https://github.com/jane/add-on-${seq}`;
+  const addon = over.addon ?? null;
+  const path = repo.replace("https://github.com/", "");
   return {
-    repo: `https://github.com/jane/add-on-${seq}`,
+    repo,
+    addon,
+    address: addon ? `${path}/${addon}` : path,
+    releases: `${repo}/releases`,
+    shares_repo: false,
     owner: "jane",
     standing: "listed",
     removed_reason: null,
@@ -80,6 +88,52 @@ describe("installedFrom", () => {
   });
 });
 
+describe("several add-ons in one repo", () => {
+  const repo = "https://github.com/jane/niles-addons";
+
+  it("keys an entry by its repo and add-on", () => {
+    const alpha = entry({ repo, addon: "alpha" });
+    expect(entryKey(alpha)).toBe("jane/niles-addons/alpha");
+    expect(entryKey(entry({ repo: "https://github.com/Jane/Hello" }))).toBe("jane/hello");
+  });
+
+  it("finds the installed add-on by its repo and its name in it", () => {
+    const alpha = entry({ repo, addon: "alpha" });
+    const bravo = entry({ repo, addon: "bravo" });
+    const whole = entry({ repo });
+    const installed = plugin({ repo, addon: "bravo" });
+    expect(installedFrom(alpha, [installed])).toBeUndefined();
+    expect(installedFrom(bravo, [installed])).toBe(installed);
+    expect(installedFrom(whole, [installed])).toBeUndefined();
+    expect(installedFrom(whole, [plugin({ repo })])).toBeDefined();
+  });
+
+  it("gives each add-on its own standing", () => {
+    const lib = library(
+      entry({ repo, addon: "alpha" }),
+      entry({ repo, addon: "bravo", standing: "removed", removed_reason: "Broken" }),
+    );
+    expect(standingOf(plugin({ repo, addon: "alpha" }), lib)).toEqual({
+      label: "Listed",
+      note: null,
+    });
+    expect(standingOf(plugin({ repo, addon: "bravo" }), lib)?.label).toBe("No longer listed");
+    expect(standingOf(plugin({ repo, addon: "charlie" }), lib)).toBeNull();
+    expect(standingOf(plugin({ repo }), lib)).toBeNull();
+  });
+
+  it("says an add-on is no longer listed when its whole repo was taken off", () => {
+    const lib = library(
+      entry({ repo, standing: "removed", removed_reason: "Its author archived it." }),
+    );
+    expect(standingOf(plugin({ repo, addon: "alpha" }), lib)?.label).toBe("No longer listed");
+  });
+
+  it("matches the add-on's address in a search", () => {
+    expect(entryMatches(entry({ repo, addon: "alpha", name: "x" }), "addons/alpha")).toBe(true);
+  });
+});
+
 describe("shelvesOf", () => {
   it("leaves removed ones out and splits and sorts the two kinds", () => {
     const gone = entry({ name: "aaa", standing: "removed" });
@@ -117,6 +171,10 @@ describe("countLine and starsLine", () => {
   it("stars use the singular and the plural", () => {
     expect(starsLine(1)).toBe("1 star");
     expect(starsLine(1234)).toBe("1,234 stars");
+  });
+
+  it("stars shared by the add-ons in one repo say they are the repo's", () => {
+    expect(starsLine(12, true)).toBe("12 stars on its repo");
   });
 });
 
