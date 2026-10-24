@@ -7,13 +7,11 @@
 
 use crate::satellites::SatelliteRegistry;
 use crate::speak::{at_volume, for_satellite, wav_to_pcm};
+use crate::wiring::speech::LivePiper;
 use chrono::Utc;
 use niles_core::RoomName;
 use niles_notifications::QuietHoursConfig;
-use niles_tts::{
-    PiperClient,
-    speech_session::{Eligibility, PluginOwner, SpeechOutputError},
-};
+use niles_tts::speech_session::{Eligibility, PluginOwner, SpeechOutputError};
 use std::{
     collections::HashMap,
     future::Future,
@@ -206,13 +204,13 @@ impl CommentaryPolicy {
 /// transport write. This never invokes notification delivery or a live-peer
 /// index, so a disconnected satellite is dialled through `ip_for`.
 pub(crate) struct CommentaryOutput {
-    piper: Arc<PiperClient>,
+    piper: Arc<LivePiper>,
     satellites: Arc<SatelliteRegistry>,
     arbiter: Arc<RoomArbiter>,
 }
 impl CommentaryOutput {
     pub(crate) fn new(
-        piper: Arc<PiperClient>,
+        piper: Arc<LivePiper>,
         satellites: Arc<SatelliteRegistry>,
         arbiter: Arc<RoomArbiter>,
     ) -> Self {
@@ -243,8 +241,8 @@ impl CommentaryOutput {
             return Err(SpeechOutputError::Failed);
         };
         let work = async {
-            let synthesis =
-                (self.piper.synthesize(text, None).await).map_err(|_| SpeechOutputError::Failed)?;
+            let synthesis = (self.piper.current().synthesize(text, None).await)
+                .map_err(|_| SpeechOutputError::Failed)?;
             let (pcm, format) =
                 wav_to_pcm(&synthesis.audio_wav).map_err(|_| SpeechOutputError::Failed)?;
             let (pcm, format) = for_satellite(pcm, format);
@@ -512,12 +510,12 @@ mod tests {
     }
 
     fn output(arbiter: Arc<RoomArbiter>, satellites: Arc<SatelliteRegistry>) -> CommentaryOutput {
-        let piper = PiperClient::new(niles_tts::PiperConfig {
-            base_url: "http://127.0.0.1:1".into(),
-            default_voice: "en_GB-alan-medium".into(),
-            request_timeout: Duration::from_secs(1),
-        })
-        .unwrap();
+        let config = niles_config::ConfigStore::from_str_in_memory(
+            "[tts]\nbase_url = \"http://127.0.0.1:1\"\ntimeout_seconds = 1\n",
+        )
+        .unwrap()
+        .current();
+        let piper = LivePiper::new(None, &config).unwrap();
         CommentaryOutput::new(Arc::new(piper), satellites, arbiter)
     }
 

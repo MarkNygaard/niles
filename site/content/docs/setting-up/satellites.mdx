@@ -126,8 +126,11 @@ Pick the provider and the **Model**, give it its key, and choose a
 **Reasoning effort**: the provider's default, low, medium or high.
 Cerebras is the one Niles ships with.
 
-**Speaking** is Piper. **Piper** is the address of the Piper server, and
-**Voice** which of its voice models speaks.
+**Speaking** is Piper. **Piper** is the base address of Piper's HTTP
+server, such as `http://192.168.1.11:5000`, with no path: Niles finds the
+current server's `/synthesize` and the older servers' `/` by itself. A new
+address is used from the next reply. **Voice** is which of its voice
+models speaks.
 
 **Assistant** chooses who answers the chat, works out new rules and
 reviews the day: **Niles's own model**, **Claude** or **ChatGPT**. Claude

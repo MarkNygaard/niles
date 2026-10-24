@@ -22,7 +22,7 @@ use crate::wiring::memory::{
 use crate::wiring::mqtt::{build_command_router, connect_from_config, spawn_wled_source};
 use crate::wiring::notifications::{WyomingDelivery, build_notification_center};
 use crate::wiring::presence::{build_presence, build_tado, spawn_presence_poll_loop};
-use crate::wiring::speech::{LiveStt, build_enrollment_backend, build_piper_client, stt_base_url};
+use crate::wiring::speech::{LivePiper, LiveStt, build_enrollment_backend, stt_base_url};
 use crate::wiring::stores::build_room_music;
 use crate::{
     assistant, courtesy, follow_up, last_target, music, profile, recognition, ringer, speakers, tv,
@@ -34,7 +34,6 @@ use niles_history::{CommandEntry, CommandReader, CommandWriter};
 use niles_mqtt::Z2mSource;
 use niles_scheduler::{ManualModeTracker, SceneStore, TimerStore};
 use niles_stt::{Confidence, PcmFormat, SttClient, pcm_to_wav};
-use niles_tts::PiperClient;
 use niles_wyoming::{SessionTracker, WyomingSender, WyomingServer};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -205,7 +204,7 @@ pub(crate) async fn keep_waiting<T>(
 pub(crate) fn spawn_dispatch_task(
     whisper: &Arc<LiveStt>,
     ctx: &DispatchCtx,
-    piper: &Arc<PiperClient>,
+    piper: &Arc<LivePiper>,
     sender: &WyomingSender,
     session: niles_wyoming::AudioSession,
     conversation: Option<ConversationLease>,
@@ -397,7 +396,7 @@ pub(crate) fn spawn_dispatch_task(
                 tracing::info!("[{peer}] say: {say}");
                 let speak_started = Instant::now();
                 let spoken = crate::speak::speak_back(
-                    &piper,
+                    &piper.current(),
                     &sender,
                     peer,
                     &say,
@@ -464,7 +463,7 @@ pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()
         .socket_addr()
         .context("resolving wyoming.bind_address")?;
     let whisper = Arc::new(LiveStt::new(None, &cfg)?);
-    let piper = Arc::new(build_piper_client(&cfg)?);
+    let piper = Arc::new(LivePiper::new(None, &cfg)?);
     // Registry populated by Z2mSource. Dispatch tasks look up
     // devices in a room from this shared snapshot.
     let registry = Arc::new(DeviceRegistry::new());
