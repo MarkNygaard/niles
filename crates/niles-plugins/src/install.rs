@@ -1386,12 +1386,11 @@ mod tests {
     }
 
     #[test]
-    fn the_groups_only_add_ons_use_are_kept() {
+    fn the_group_only_add_ons_use_is_kept() {
         assert_eq!(
             group_of(&manifest(Some("devices"))).label,
             "Devices & appliances"
         );
-        assert_eq!(group_of(&manifest(Some("energy"))).label, "Energy");
     }
 
     fn staged(component: &[u8]) -> Staged {

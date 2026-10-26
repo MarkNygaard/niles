@@ -52,8 +52,6 @@ pub enum Group {
     Assistants,
     /// Nothing built in yet: for add-ons, such as a 3D printer.
     Devices,
-    /// Nothing built in yet: for add-ons, such as electricity prices.
-    Energy,
 }
 
 /// How much a house misses it.
@@ -127,12 +125,6 @@ pub const GROUPS: &[GroupInfo] = &[
         id: Group::Devices,
         label: "Devices & appliances",
         blurb: "Printers, appliances and other machines that aren't lights.",
-        requirement: None,
-    },
-    GroupInfo {
-        id: Group::Energy,
-        label: "Energy",
-        blurb: "What power costs, and what the house uses.",
         requirement: None,
     },
 ];
@@ -710,15 +702,15 @@ mod tests {
     }
 
     #[test]
-    fn only_the_add_on_groups_are_empty() {
-        // The page heads a group only when something is in it, so these
-        // show once an add-on names them.
+    fn only_the_add_on_group_is_empty() {
+        // The page heads a group only when something is in it, so this
+        // one shows once an add-on names it.
         let empty: Vec<Group> = GROUPS
             .iter()
             .map(|g| g.id)
             .filter(|id| KNOWN.iter().all(|k| k.group != *id))
             .collect();
-        assert_eq!(empty, [Group::Devices, Group::Energy]);
+        assert_eq!(empty, [Group::Devices]);
     }
 
     #[test]
