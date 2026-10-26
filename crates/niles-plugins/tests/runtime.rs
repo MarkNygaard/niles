@@ -21,6 +21,8 @@ const MANIFEST: &str = include_str!("fixtures/hello/niles-integration.toml");
 const COMPONENT: &[u8] = include_bytes!("fixtures/hello.wasm");
 const SPEECH_MANIFEST: &str = include_str!("fixtures/speech-stream/niles-integration.toml");
 const SPEECH_COMPONENT: &[u8] = include_bytes!("fixtures/speech-stream.wasm");
+const SPEECH_MANIFEST_0_6: &str = include_str!("fixtures/speech-stream-0.6/niles-integration.toml");
+const SPEECH_COMPONENT_0_6: &[u8] = include_bytes!("fixtures/speech-stream-0.6.wasm");
 
 /// The spec's limits, shortened so a test that waits for a deadline or
 /// a backoff takes milliseconds.
@@ -193,6 +195,17 @@ async fn init_reads_its_settings_and_secrets() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn speech_stream_wasm_routes_real_imports_and_checks_both_gates() {
+    speech_stream_routes_and_checks_both_gates(SPEECH_MANIFEST, SPEECH_COMPONENT).await;
+}
+
+/// 0.6 defines speech-stream under its own version, so a component built
+/// against it needs that name in the linker too.
+#[tokio::test(flavor = "multi_thread")]
+async fn speech_stream_works_for_a_0_6_component() {
+    speech_stream_routes_and_checks_both_gates(SPEECH_MANIFEST_0_6, SPEECH_COMPONENT_0_6).await;
+}
+
+async fn speech_stream_routes_and_checks_both_gates(speech_manifest: &str, component: &[u8]) {
     for (permission, enabled, expected_error) in [
         (false, true, Some("NotPermitted")),
         (true, false, Some("disabled")),
@@ -213,7 +226,7 @@ async fn speech_stream_wasm_routes_real_imports_and_checks_both_gates() {
         .with_settings(Arc::new(move |_| settings.clone()));
         let runtime = Runtime::new(house, quick()).unwrap();
         runtime.connect_speech_stream(fake.clone());
-        let manifest = SPEECH_MANIFEST.replace(
+        let manifest = speech_manifest.replace(
             "speech_stream = { room = \"room\" }",
             if permission {
                 "speech_stream = { room = \"room\" }"
@@ -222,7 +235,7 @@ async fn speech_stream_wasm_routes_real_imports_and_checks_both_gates() {
             },
         );
         runtime
-            .install(&manifest, SPEECH_COMPONENT.to_vec())
+            .install(&manifest, component.to_vec())
             .await
             .unwrap();
         let until = Instant::now() + Duration::from_secs(20);
