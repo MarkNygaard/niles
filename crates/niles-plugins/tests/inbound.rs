@@ -3,6 +3,8 @@
 //! `build.sh`). Nothing leaves the machine: the sign-in page is only
 //! ever named, never fetched.
 
+#![allow(clippy::unwrap_used, reason = "test helpers: a failure fails the test")]
+
 use async_trait::async_trait;
 use niles_core::{DeviceRegistry, Event, EventBus};
 use niles_plugins::{

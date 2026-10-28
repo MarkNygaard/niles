@@ -2055,6 +2055,7 @@ room = "kitchen"
     /// The volume tool, with a paired TV standing in `tv_room`. Nothing
     /// listens on loopback for the TV, which is how one that is off looks.
     async fn volume_tool(house: &House, tv_room: &str) -> Control {
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::set_var("NILES_TEST_MUSIC_TV_KEY", "key") };
         let tv = TvControl::new(Arc::new(
             ConfigStore::from_str_in_memory(&format!(

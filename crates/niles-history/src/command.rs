@@ -76,7 +76,10 @@ impl CommandWriter {
         if !self.enabled {
             return Ok(());
         }
-        let _guard = self.lock.lock().unwrap();
+        let _guard = self
+            .lock
+            .lock()
+            .expect("no thread panics holding the history lock");
         let date = entry.ts.date_naive();
         let path = self
             .root

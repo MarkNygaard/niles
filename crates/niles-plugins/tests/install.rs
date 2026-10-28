@@ -3,6 +3,8 @@
 //! remove. The component is `fixtures/hello.wasm`, released under
 //! whatever versions a test needs by changing its manifest.
 
+#![allow(clippy::unwrap_used, reason = "test helpers: a failure fails the test")]
+
 use async_trait::async_trait;
 use niles_core::{Device, DeviceClass, DeviceId, DeviceRegistry, DeviceState, Event, EventBus};
 use niles_plugins::{

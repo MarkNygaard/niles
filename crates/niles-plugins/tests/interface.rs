@@ -2,6 +2,8 @@
 //! 0.2.0 and kept so, still loads and runs on a Niles that serves 0.2.1;
 //! `fixtures/printer.wasm`, built against 0.2.1, uses what 0.2.1 added.
 
+#![allow(clippy::unwrap_used, reason = "test helpers: a failure fails the test")]
+
 use futures_util::{SinkExt, StreamExt};
 use niles_core::{DeviceId, DeviceRegistry, Event, EventBus};
 use niles_plugins::{House, Limits, MemoryStore, PluginStore, Runtime, Status};

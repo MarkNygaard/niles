@@ -161,7 +161,10 @@ impl MqttClient {
         // up via the replay path even if the immediate send below
         // races against an in-progress reconnect.
         {
-            let mut subs = self.subscriptions.lock().unwrap();
+            let mut subs = self
+                .subscriptions
+                .lock()
+                .expect("no thread panics holding the subscriptions");
             if !subs.iter().any(|t| t == topic) {
                 subs.push(topic.to_string());
             }
@@ -212,7 +215,10 @@ impl MqttClient {
     /// the original `subscribe` calls; duplicates are deduped at
     /// subscription time.
     pub fn subscriptions(&self) -> Vec<String> {
-        self.subscriptions.lock().unwrap().clone()
+        self.subscriptions
+            .lock()
+            .expect("no thread panics holding the subscriptions")
+            .clone()
     }
 }
 
@@ -312,7 +318,10 @@ async fn pump_events(
                     // would double-subscribe, which Mosquitto handles
                     // poorly when multiple overlapping patterns are in
                     // play (silently wedges message delivery).
-                    let to_replay: Vec<String> = subscriptions.lock().unwrap().clone();
+                    let to_replay: Vec<String> = subscriptions
+                        .lock()
+                        .expect("no thread panics holding the subscriptions")
+                        .clone();
                     replay.replace(Replay::start(client.clone(), to_replay));
                 } else {
                     info!("MQTT connected");

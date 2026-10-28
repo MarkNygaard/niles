@@ -68,6 +68,7 @@ mod tests {
 
     #[test]
     fn a_set_variable_is_returned() {
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::set_var("NILES_TEST_ENV_OK", "secret-value") };
         assert_eq!(
             require_env("stt", "NILES_TEST_ENV_OK").unwrap(),
@@ -85,6 +86,7 @@ mod tests {
     fn an_empty_variable_counts_as_unset() {
         // The failure this exists for: an empty secret placeholder that
         // starts the process and breaks the first API call instead.
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::set_var("NILES_TEST_ENV_EMPTY", "") };
         let err = require_env("stt", "NILES_TEST_ENV_EMPTY").unwrap_err();
         assert!(err.to_string().contains("set but empty"), "{err}");
@@ -92,6 +94,7 @@ mod tests {
 
     #[test]
     fn whitespace_only_counts_as_unset() {
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::set_var("NILES_TEST_ENV_BLANK", "   \n") };
         assert!(require_env("stt", "NILES_TEST_ENV_BLANK").is_err());
     }

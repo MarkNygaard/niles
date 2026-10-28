@@ -333,6 +333,7 @@ mod tests {
         // looked in the store, so every credential fed by an env var
         // read as unset — and the page offered to overwrite working
         // credentials, which is exactly the guard it was meant to be.
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::set_var("NILES_TEST_SOURCE_KEY", "from-the-env") };
         let cfg = crate::Config::load_from_str(
             "[mqtt]
@@ -360,6 +361,7 @@ password_env = \"NILES_TEST_DEFINITELY_UNSET_XYZ\"
         // Same order the reader uses. Reporting "stored" while the
         // reader takes the env var would make the page describe a
         // credential Niles is not using.
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::set_var("NILES_TEST_SOURCE_WINS", "from-the-env") };
         load(HashMap::from([("stt.api_key".into(), "stored".into())]));
         let cfg = crate::Config::load_from_str(

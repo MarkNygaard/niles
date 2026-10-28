@@ -2,6 +2,8 @@
 //! from `fixtures/hello/` (see its `build.sh`). No network is used; the
 //! HTTP tests are about what is refused before anything is sent.
 
+#![allow(clippy::unwrap_used, reason = "test helpers: a failure fails the test")]
+
 use niles_core::RoomName;
 use niles_core::{
     Device, DeviceClass, DeviceId, DeviceRegistry, DeviceState, Event, EventBus, PresenceState,

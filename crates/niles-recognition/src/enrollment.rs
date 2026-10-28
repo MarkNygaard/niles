@@ -85,7 +85,10 @@ impl EnrollmentStore {
             });
         }
 
-        let _in_process = self.in_process_lock.lock().unwrap();
+        let _in_process = self
+            .in_process_lock
+            .lock()
+            .expect("no thread panics holding the enrollment lock");
         let lock_path = self.lock_path_for(speaker);
         let _guard = lock_file(&lock_path, Duration::from_secs(5))?;
 
@@ -171,7 +174,10 @@ impl EnrollmentStore {
     /// does not exist.
     pub fn bump_last_seen(&self, speaker: &str) -> Result<()> {
         validate_speaker_slug(speaker)?;
-        let _in_process = self.in_process_lock.lock().unwrap();
+        let _in_process = self
+            .in_process_lock
+            .lock()
+            .expect("no thread panics holding the enrollment lock");
         let path = self.path_for(speaker);
         let lock_path = self.lock_path_for(speaker);
         let _lock = lock_file(&lock_path, Duration::from_secs(5))?;
@@ -216,7 +222,10 @@ impl EnrollmentStore {
     /// Read, change, write back under the speaker's lock.
     fn edit(&self, speaker: &str, change: impl FnOnce(&mut EnrolledSpeaker)) -> Result<()> {
         validate_speaker_slug(speaker)?;
-        let _in_process = self.in_process_lock.lock().unwrap();
+        let _in_process = self
+            .in_process_lock
+            .lock()
+            .expect("no thread panics holding the enrollment lock");
         let path = self.path_for(speaker);
         let lock_path = self.lock_path_for(speaker);
         let _lock = lock_file(&lock_path, Duration::from_secs(5))?;
@@ -239,7 +248,10 @@ impl EnrollmentStore {
     /// Remove a speaker from the store.
     pub fn delete(&self, speaker: &str) -> Result<()> {
         validate_speaker_slug(speaker)?;
-        let _in_process = self.in_process_lock.lock().unwrap();
+        let _in_process = self
+            .in_process_lock
+            .lock()
+            .expect("no thread panics holding the enrollment lock");
         let lock_path = self.lock_path_for(speaker);
         let _guard = lock_file(&lock_path, Duration::from_secs(5))?;
 
@@ -292,7 +304,7 @@ pub fn validate_speaker_slug(name: &str) -> Result<()> {
         });
     }
     let mut chars = name.chars();
-    let first = chars.next().unwrap();
+    let first = chars.next().expect("checked non-empty above");
     if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
         return Err(Error::InvalidName {
             name: name.to_string(),
@@ -358,7 +370,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("the clock is after 1970")
             .as_nanos()
     );
     let tmp = path.with_file_name(&tmp_name);

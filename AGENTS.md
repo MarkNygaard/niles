@@ -51,6 +51,24 @@ Keep a source file under roughly 1,000 to 1,500 lines, not counting its tests. S
 
 A function is at most 100 lines. Clippy's `too_many_lines` enforces it (the threshold is in `clippy.toml`). A longer function needs `#[expect(clippy::too_many_lines, reason = "...")]` with a real reason, such as "one match over every intent; splitting it scatters the dispatch table".
 
+### Rust style
+
+Clippy enforces three rules, in `[workspace.lints.clippy]`:
+
+- **No `unwrap()` outside tests** (`unwrap_used`). Handle the error, or use `expect("...")` saying why it can't happen: `expect("checked non-empty above")`, not `expect("failed")`. A test file's helpers outside `#[test]` take a file-level `#![allow(clippy::unwrap_used, reason = "...")]`.
+- **A `// SAFETY:` comment on every `unsafe` block** (`undocumented_unsafe_blocks`). In tests that is usually `env::set_var`: "a test-only variable name nothing else reads".
+- **No functions with several `bool` parameters** (`fn_params_excessive_bools`). Use an enum.
+
+What a lint can't check:
+
+- Named fields over tuples, except a newtype's one field.
+- An enum, not a `bool`, wherever `true` at the call site doesn't say what it means.
+- Short iterator chains. Don't build one in a `for` header; bind it to a name first.
+- `format!` over chains of `+`.
+- `#[must_use]` on a function whose result it is a bug to ignore, unless the type already carries it, as `Result` does.
+
+Where this file says nothing, [Google's Rust style guide](https://google.github.io/styleguide/rustguide.html) decides, except its rules for Google's own codebases: Niles uses `async`, `Arc` for shared state, Cargo's crate layout, and stable rustfmt.
+
 ## The web UI
 
 `web/` is a Vite and React app, served by `niles-api` behind the `ui` feature. Bun installs the dependencies and `bun.lock` is the lockfile. Components come from shadcn/ui on Base UI (`components.json`, `style: "base-nova"`). Two traps that each cost an hour:

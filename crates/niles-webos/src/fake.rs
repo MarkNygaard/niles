@@ -1,5 +1,10 @@
 //! A TV on loopback, for the tests here and in the crates that drive one.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test double: a failure fails the test using it"
+)]
+
 use crate::tv::{
     CONNECTION_INFO, CONNECTION_STATUS, FOREGROUND_APP, GET_VOLUME, POWER_STATE, SET_MUTE,
     SET_VOLUME, Tv,

@@ -45,7 +45,11 @@ pub fn wav_to_pcm(wav: &[u8]) -> Result<(Vec<u8>, AudioFormat)> {
 
     while pos + 8 <= wav.len() {
         let chunk_id = &wav[pos..pos + 4];
-        let chunk_size = u32::from_le_bytes(wav[pos + 4..pos + 8].try_into().unwrap()) as usize;
+        let chunk_size = u32::from_le_bytes(
+            wav[pos + 4..pos + 8]
+                .try_into()
+                .expect("a slice of the array\'s length"),
+        ) as usize;
         let end = pos.checked_add(8).and_then(|p| p.checked_add(chunk_size));
         let Some(end) = end else {
             anyhow::bail!("invalid chunk size");
@@ -56,13 +60,29 @@ pub fn wav_to_pcm(wav: &[u8]) -> Result<(Vec<u8>, AudioFormat)> {
                 anyhow::bail!("truncated fmt chunk");
             }
             let body = &wav[pos + 8..end];
-            let audio_format = u16::from_le_bytes(body[0..2].try_into().unwrap());
+            let audio_format = u16::from_le_bytes(
+                body[0..2]
+                    .try_into()
+                    .expect("a slice of the array\'s length"),
+            );
             if audio_format != 1 {
                 anyhow::bail!("unsupported audio format {audio_format}, expected PCM (1)");
             }
-            let channels = u16::from_le_bytes(body[2..4].try_into().unwrap());
-            let sample_rate = u32::from_le_bytes(body[4..8].try_into().unwrap());
-            let bps = u16::from_le_bytes(body[14..16].try_into().unwrap());
+            let channels = u16::from_le_bytes(
+                body[2..4]
+                    .try_into()
+                    .expect("a slice of the array\'s length"),
+            );
+            let sample_rate = u32::from_le_bytes(
+                body[4..8]
+                    .try_into()
+                    .expect("a slice of the array\'s length"),
+            );
+            let bps = u16::from_le_bytes(
+                body[14..16]
+                    .try_into()
+                    .expect("a slice of the array\'s length"),
+            );
             if channels == 0 || sample_rate == 0 || bps == 0 {
                 anyhow::bail!("invalid fmt: channels={channels}, bps={bps}, rate={sample_rate}");
             }

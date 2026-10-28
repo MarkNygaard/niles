@@ -260,7 +260,7 @@ impl<Prepared: Send + 'static> SpeechStreamHost for SessionSpeechHost<Prepared> 
                                     }
                                 }
                             }
-                            match tokio::time::timeout_at(deadline, manager.submit(id.unwrap(), &text)).await {
+                            match tokio::time::timeout_at(deadline, manager.submit(id.expect("opened just above"), &text)).await {
                                 Ok(Ok((_, terminal))) => {
                                     completions.spawn(async move {
                                         let outcome = terminal.await.map(map_terminal).unwrap_or(SpeechOutcome::Cancelled);
@@ -336,7 +336,7 @@ impl<Prepared: Send + 'static> SpeechStreamHost for SessionSpeechHost<Prepared> 
             .front()
             .is_some_and(|(_, status)| *status != SpeechOutcome::Pending)
         {
-            ready.push(queue.pop_front().unwrap());
+            ready.extend(queue.pop_front());
         }
         Ok(ready)
     }

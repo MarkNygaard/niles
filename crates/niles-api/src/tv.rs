@@ -407,6 +407,7 @@ mod tests {
     async fn a_tv_that_is_off_says_so() {
         // Nothing listens on loopback for it, which is how a TV that is
         // off looks.
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::set_var("NILES_TEST_API_TV_KEY", "key") };
         let paired = "[tv]\nhost = \"127.0.0.1\"\nclient_key_env = \"NILES_TEST_API_TV_KEY\"\n";
         let (status, said) = post_volume(app(Some(paired)), json!({ "delta": 2 })).await;

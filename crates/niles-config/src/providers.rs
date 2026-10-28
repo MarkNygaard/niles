@@ -384,6 +384,7 @@ mod tests {
     #[test]
     fn a_role_with_its_own_endpoint_uses_its_own_key() {
         // A Whisper server in the house: no provider, its own URL.
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::set_var("NILES_TEST_PROV_OWN", "own-key") };
         let cfg = crate::Config::load_from_str(
             "[stt]\nbase_url = \"http://whisper.local/v1\"\napi_key_env = \"NILES_TEST_PROV_OWN\"\n",
@@ -405,6 +406,7 @@ mod tests {
 
     #[test]
     fn naming_a_provider_takes_its_endpoint() {
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::set_var("NILES_TEST_PROV_KEY", "shared-key") };
         let cfg = crate::Config::load_from_str(concat!(
             "[[providers]]\nname = \"cerebras\"\n",

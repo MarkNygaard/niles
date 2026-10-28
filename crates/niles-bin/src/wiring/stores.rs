@@ -461,6 +461,7 @@ kelvin = 2000
         // The bug this test exists for: niles-db compiled, tested and
         // shipped while nothing ever constructed it, so config lived in
         // memory and the database stayed empty.
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe {
             std::env::set_var(
                 "NILES_TEST_WIRING_DSN",

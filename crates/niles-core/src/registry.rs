@@ -6,7 +6,9 @@
 
 use crate::device::{Device, DeviceId, DeviceState, RoomName};
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+const POISONED: &str = "no thread panics holding the device map";
 
 /// In-memory registry keyed by `DeviceId`.
 ///
@@ -27,7 +29,7 @@ impl DeviceRegistry {
     /// about the device, and sources re-describe their devices on every
     /// reconnect without knowing it.
     pub fn upsert(&self, mut device: Device) {
-        let mut guard = self.devices.write().unwrap();
+        let mut guard = self.write();
         if let Some(existing) = guard.get(&device.id) {
             device.reports_actions |= existing.reports_actions;
         }
@@ -37,7 +39,7 @@ impl DeviceRegistry {
     /// Note that a device reported an action. Returns true when it had
     /// not before, so a source that remembers it knows to.
     pub fn note_action(&self, id: &DeviceId) -> bool {
-        let mut guard = self.devices.write().unwrap();
+        let mut guard = self.write();
         match guard.get_mut(id) {
             Some(device) if !device.reports_actions => {
                 device.reports_actions = true;
@@ -49,13 +51,13 @@ impl DeviceRegistry {
 
     /// Remove a device. Returns the removed entry if any.
     pub fn remove(&self, id: &DeviceId) -> Option<Device> {
-        let mut guard = self.devices.write().unwrap();
+        let mut guard = self.write();
         guard.remove(id)
     }
 
     /// Get a snapshot of a device. The lock is not held across the caller.
     pub fn get(&self, id: &DeviceId) -> Option<Device> {
-        let guard = self.devices.read().unwrap();
+        let guard = self.read();
         guard.get(id).cloned()
     }
 
@@ -65,7 +67,7 @@ impl DeviceRegistry {
     /// publishing an event nobody needs — availability messages are
     /// retained and arrive again on every reconnect.
     pub fn set_available(&self, id: &DeviceId, available: bool) -> bool {
-        let mut guard = self.devices.write().unwrap();
+        let mut guard = self.write();
         let Some(device) = guard.get_mut(id) else {
             return false;
         };
@@ -87,7 +89,7 @@ impl DeviceRegistry {
     /// Readings merge name by name for the same reason: a payload
     /// carrying `power` must not wipe `energy`.
     pub fn merge_state(&self, id: &DeviceId, partial: DeviceState) -> bool {
-        let mut guard = self.devices.write().unwrap();
+        let mut guard = self.write();
         let Some(device) = guard.get_mut(id) else {
             return false;
         };
@@ -97,7 +99,7 @@ impl DeviceRegistry {
 
     /// All devices in the given room.
     pub fn list_room(&self, room: &RoomName) -> Vec<Device> {
-        let guard = self.devices.read().unwrap();
+        let guard = self.read();
         guard
             .values()
             .filter(|d| d.id.room() == room)
@@ -107,16 +109,24 @@ impl DeviceRegistry {
 
     /// All devices, regardless of room.
     pub fn list_all(&self) -> Vec<Device> {
-        let guard = self.devices.read().unwrap();
+        let guard = self.read();
         guard.values().cloned().collect()
     }
 
     pub fn len(&self) -> usize {
-        self.devices.read().unwrap().len()
+        self.read().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.devices.read().unwrap().is_empty()
+        self.read().is_empty()
+    }
+
+    fn read(&self) -> RwLockReadGuard<'_, HashMap<DeviceId, Device>> {
+        self.devices.read().expect(POISONED)
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, HashMap<DeviceId, Device>> {
+        self.devices.write().expect(POISONED)
     }
 }
 
