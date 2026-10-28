@@ -76,7 +76,7 @@ impl CommandWriter {
         if !self.enabled {
             return Ok(());
         }
-        let _guard = self.lock.lock().unwrap();
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let date = entry.ts.date_naive();
         let path = self
             .root

@@ -139,10 +139,12 @@ mod tests {
         // SAFETY: tests in this crate read this variable only here.
         unsafe { std::env::remove_var(DEFAULT_URL_ENV) };
         assert!(from_environment().is_none());
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::set_var(DEFAULT_URL_ENV, "postgres://niles@db/niles") };
         let cfg = from_environment().expect("the variable is set");
         assert_eq!(cfg.url_env, DEFAULT_URL_ENV);
         assert_eq!(cfg.resolve_url().unwrap(), "postgres://niles@db/niles");
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::remove_var(DEFAULT_URL_ENV) };
     }
 

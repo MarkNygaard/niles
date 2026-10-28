@@ -48,14 +48,17 @@ pub(crate) struct MemorySecrets(pub std::sync::Mutex<HashMap<String, String>>);
 #[async_trait::async_trait]
 impl SecretStore for MemorySecrets {
     async fn load_all(&self) -> niles_config::Result<HashMap<String, String>> {
-        Ok(self.0.lock().unwrap().clone())
+        Ok(self.0.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
     async fn set(&self, key: &str, value: &str) -> niles_config::Result<()> {
-        self.0.lock().unwrap().insert(key.into(), value.into());
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.into(), value.into());
         Ok(())
     }
     async fn clear(&self, key: &str) -> niles_config::Result<()> {
-        self.0.lock().unwrap().remove(key);
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).remove(key);
         Ok(())
     }
 }

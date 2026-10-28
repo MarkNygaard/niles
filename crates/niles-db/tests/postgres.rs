@@ -12,6 +12,8 @@
 //! NILES_TEST_DATABASE_URL=postgres://... cargo test -p niles-db -- --ignored
 //! ```
 
+#![allow(clippy::unwrap_used, reason = "test helpers: a failure fails the test")]
+
 use niles_config::{ChangeSource, OverrideBackend, Revision, StoredState};
 use niles_db::PostgresBackend;
 
