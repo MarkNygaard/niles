@@ -57,7 +57,7 @@ tokio-tungstenite = "0.30"
 futures-util = "0.3"
 serde_yaml = "0.9"
 tempfile = "3"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "chrono"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "chrono"] }
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 mime_guess = "2"
 hound = "3"
