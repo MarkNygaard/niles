@@ -60,7 +60,9 @@ A function is at most 100 lines. Clippy's `too_many_lines` enforces it (the thre
 
 ## First-party add-ons
 
-Niles's own add-ons don't live in this repo. They are in the add-on library's repository, [`MarkNygaard/niles-addons`](https://github.com/MarkNygaard/niles-addons), under `addons/<name>/`, released one by one with tags like `spotprice-v0.1.0`, and installed as `MarkNygaard/niles-addons/<name>`. Its README says how to build, check and release one.
+Niles's own add-ons don't live in this repo. They are in the add-on library's repository, [`MarkNygaard/niles-addons`](https://github.com/MarkNygaard/niles-addons), under `addons/<name>/`, released one by one with tags like `bambulab-v0.2.0`, and installed as `MarkNygaard/niles-addons/<name>`. Its README says how to build, check and release one.
+
+Anybody's add-on starts from [`MarkNygaard/niles-addon-template`](https://github.com/MarkNygaard/niles-addon-template), which the author guide's getting-started walks through. When a Niles release ships a new interface, the template moves to it too: its `wit/`, `interface` and `min_niles`.
 
 They are built like anybody's: against the published interface, a copy of a `schemas/` WIT file kept in that repo's `addons/wit/`, never against a crate in `crates/`. A change to the interface lands here first and ships in a Niles release. Only then does an add-on that uses it move to the new WIT, with a `min_niles` of that release, since its CI checks it with the published Niles image.
 
