@@ -82,6 +82,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `notify-approval-waiting` | Something waiting for your yes is on your page at once, on your devices at once or a minute later; a tap opens its card | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `push-approval-buttons` | On Android and computers an approval's notification has Deny, Approve where a spoken yes counts, Review for a mail | [#485](https://github.com/MarkNygaard/niles/pull/485) |
 | `push-approval-replaced` | Answered or lapsed, an approval's notification is replaced quietly on your other devices with what became of it | [#485](https://github.com/MarkNygaard/niles/pull/485) |
+| `artifacts-designed-pages` | A new trip or training plan comes with a page the assistant designs as it writes it; the built-in view is a fallback | [#506](https://github.com/MarkNygaard/niles/pull/506) |
 | `artifacts-documents` | Claude or ChatGPT saves documents for you, with versions, and writes a big one in the background | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `artifacts-edits` | Small changes to a saved item or its page made in the chat as edits; big or slow ones finish in the background | [#474](https://github.com/MarkNygaard/niles/pull/474) |
 | `artifacts-pages` | Ask Claude or ChatGPT for a page for any saved artifact: HTML that draws its data, and draws again as the data changes | [#440](https://github.com/MarkNygaard/niles/pull/440) |
@@ -123,6 +124,11 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `notify-workout-counted` | A notification once per workout counted on your plan: Your 8.2 km run on Saturday was counted as the long run | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `training-plan-follows-runs` | A training plan follows your Strava runs: each marks its session done, and Claude or ChatGPT adjusts what is to come | [#436](https://github.com/MarkNygaard/niles/pull/436) |
 | `training-strava-sync` | Each person's own Strava: 180 days on connect, then a poll every 15 minutes within Strava's rate limits | [#418](https://github.com/MarkNygaard/niles/pull/418) |
+
+### `artifacts-designed-pages` — example phrasings
+
+- plan our trip to Thailand in January
+- make me a training plan for the Copenhagen Half
 
 ### `artifacts-documents` — example phrasings
 

@@ -11,8 +11,9 @@
 //! A training plan then keeps up with the runs ([`coach`]).
 //!
 //! Any artifact may have a page: HTML the assistant writes once that
-//! draws the data, shown by the app in a sealed frame. Making one is a
-//! job of its own on an artifact that is there already
+//! draws the data, shown by the app in a sealed frame. A trip or a
+//! training plan gets one from the job that first writes it. Otherwise
+//! making one is a job of its own on an artifact that is there already
 //! (`start_page_job`), and never the coach's: a look after a run changes
 //! the data, which the page then draws.
 //!
@@ -1456,11 +1457,19 @@ fn pictures(searching: Searching) -> &'static str {
     }
 }
 
-/// A job's look is its kind's own view, unless the brief asks for
-/// another.
+/// A document's or podcast's look is its kind's own view, unless the
+/// brief asks for another.
 const LOOK: &str = "The app shows it with its kind's own view. Only if the brief asks for it \
     to look a particular way, give it a page as well with artifact_set_page, once the content \
     is saved.";
+
+/// A trip's or training plan's job makes its page as well, so its look
+/// is the assistant's own over the data the app and Niles read. The
+/// data matters more: a page that won't save leaves the kind's own view.
+const PAGED: &str = "Once the content is saved, give it a page as well with \
+    artifact_set_page, with the reason \"A page for it\": the app shows the page in place of \
+    the kind's own view. The content comes first: if the page is still refused after you \
+    have fixed what the answer says, finish without one.";
 
 /// How a page is made well: for this artifact and its person, drawing
 /// what the data has.
@@ -1525,7 +1534,10 @@ fn job_prompts(
         PODCAST => podcast::craft(searching, voices),
         _ => format!("{research} {pictures}"),
     };
-    let craft = format!("{craft} {LOOK}");
+    let craft = match artifact.kind.as_str() {
+        TRAINING_PLAN | TRIP => format!("{craft} {PAGED} {DESIGN}"),
+        _ => format!("{craft} {LOOK}"),
+    };
     let language = if artifact.kind == PODCAST {
         "Write it in English, whatever language the brief is in: the voices speak only \
          English."
@@ -1606,9 +1618,9 @@ const PROMPT: &str = "\n\n# Saved for the person\n\nWhat the person will want to
     roughly where they want to go if you do not know them; put in the brief who is going, \
     what they have booked already, and what they said about pace, budget and what they \
     like.\n\nAn artifact can have a page as well: HTML that draws its data, shown in place \
-    of its kind's own view. Only for when the look matters: they ask for it to look nicer or \
-    different, or want something to show. The kind's own view is good otherwise, so make no \
-    page unasked. For a page, or anything that rebuilds the page there is (a new layout, a \
+    of its kind's own view. A trip or a training plan gets one from the job that first writes \
+    it. Anything else only when the look matters: they ask for it to look nicer or different, \
+    or want something to show, so make no page unasked. For a page, or anything that rebuilds the page there is (a new layout, a \
     calendar instead of a list), call start_page_job with the artifact's id and a brief of \
     what they want, and answer in one sentence that it is being made. A small change to a \
     page there is (a colour, a heading, a label) you make yourself: read it with \
@@ -3278,6 +3290,28 @@ mod tests {
     }
 
     #[test]
+    fn a_trip_or_training_plan_s_job_makes_its_page_and_a_document_s_does_not() {
+        for kind in ["trip", "training_plan"] {
+            let (system, _) = job_prompts(&working(kind), Searching::Niles, None);
+            assert!(system.contains(PAGED), "{kind}: {system}");
+            assert!(system.contains(DESIGN), "{kind}: {system}");
+            assert!(!system.contains(LOOK), "{kind}: {system}");
+        }
+        let (system, _) = job_prompts(&working("document"), Searching::Niles, None);
+        assert!(system.contains(LOOK), "{system}");
+        assert!(!system.contains(PAGED), "{system}");
+    }
+
+    #[test]
+    fn the_chat_is_told_a_trip_or_training_plan_comes_with_a_page() {
+        assert!(
+            PROMPT.contains("A trip or a training plan gets one from the job"),
+            "{PROMPT}"
+        );
+        assert!(PROMPT.contains("make no page unasked"), "{PROMPT}");
+    }
+
+    #[test]
     fn a_job_names_the_search_it_has_or_says_there_is_none() {
         for kind in ["document", "trip"] {
             let (niles, _) = job_prompts(&working(kind), Searching::Niles, None);
@@ -4681,7 +4715,7 @@ mod tests {
         assert!(prompt.contains("race poster"), "{prompt}");
         assert!(PROMPT.contains("start_page_job"), "{PROMPT}");
         assert!(PROMPT.contains("make no page unasked"), "{PROMPT}");
-        let (system, _) = job_prompts(&working("trip"), Searching::Niles, None);
+        let (system, _) = job_prompts(&working("document"), Searching::Niles, None);
         assert!(system.contains("Only if the brief asks"), "{system}");
     }
 
