@@ -1385,6 +1385,14 @@ mod tests {
         assert_eq!(group_of(&manifest(None)).label, "Custom");
     }
 
+    #[test]
+    fn the_group_only_add_ons_use_is_kept() {
+        assert_eq!(
+            group_of(&manifest(Some("devices"))).label,
+            "Devices & appliances"
+        );
+    }
+
     fn staged(component: &[u8]) -> Staged {
         Staged {
             token: "t".into(),

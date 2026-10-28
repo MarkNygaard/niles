@@ -50,6 +50,8 @@ pub enum Group {
     Calendars,
     Shopping,
     Assistants,
+    /// Nothing built in yet: for add-ons, such as a 3D printer.
+    Devices,
 }
 
 /// How much a house misses it.
@@ -117,6 +119,12 @@ pub const GROUPS: &[GroupInfo] = &[
         id: Group::Assistants,
         label: "Assistants & tools",
         blurb: "Claude or ChatGPT in the chat, on your own subscription, work handed to Niles from Linear, the web search they use, and the podcasts they make.",
+        requirement: None,
+    },
+    GroupInfo {
+        id: Group::Devices,
+        label: "Devices & appliances",
+        blurb: "Printers, appliances and other machines that aren't lights.",
         requirement: None,
     },
 ];
@@ -687,15 +695,22 @@ mod tests {
     }
 
     #[test]
-    fn every_group_is_listed_once_and_used() {
+    fn every_group_is_listed_once() {
         for (i, group) in GROUPS.iter().enumerate() {
             assert_eq!(group.id.position(), i + 1, "{:?} listed twice", group.id);
-            assert!(
-                KNOWN.iter().any(|k| k.group == group.id),
-                "{:?} has nothing in it",
-                group.id
-            );
         }
+    }
+
+    #[test]
+    fn only_the_add_on_group_is_empty() {
+        // The page heads a group only when something is in it, so this
+        // one shows once an add-on names it.
+        let empty: Vec<Group> = GROUPS
+            .iter()
+            .map(|g| g.id)
+            .filter(|id| KNOWN.iter().all(|k| k.group != *id))
+            .collect();
+        assert_eq!(empty, [Group::Devices]);
     }
 
     #[test]

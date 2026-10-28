@@ -16,7 +16,7 @@ import { PluginSettings } from "@/components/PluginSettings";
 import { api } from "@/lib/api";
 import type { PluginPreview, PluginSummary, SecretsReport } from "@/lib/api";
 import type { Status } from "@/lib/integrations";
-import { day, setupLine, widgetPlace, widgetPlaceOptions } from "@/lib/plugins";
+import { day, isFirstParty, setupLine, widgetPlace, widgetPlaceOptions } from "@/lib/plugins";
 import { standingOf, useLibrary } from "@/lib/library";
 import { cn } from "@/lib/utils";
 
@@ -44,11 +44,13 @@ export function PluginRow({
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-center gap-2">
           <span className="truncate text-sm font-medium">{plugin.name}</span>
-          {/* Every plugin says it is one: somebody else's code, chosen
-              by this house, not a part of Niles. */}
-          <Badge variant="outline" className="text-muted-foreground h-4 px-1.5 text-[10px]">
-            Custom
-          </Badge>
+          {/* Somebody else's add-on says it is one: their code, chosen by
+              this house, not a part of Niles. */}
+          {!isFirstParty(plugin) && (
+            <Badge variant="outline" className="text-muted-foreground h-4 px-1.5 text-[10px]">
+              Custom
+            </Badge>
+          )}
         </span>
         <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
           <span
