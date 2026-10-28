@@ -50,26 +50,16 @@ impl MemoryTokenStore {
 #[async_trait]
 impl TokenStore for MemoryTokenStore {
     async fn load(&self) -> Result<Option<String>> {
-        Ok(self
-            .token
-            .lock()
-            .expect("no thread panics holding the token")
-            .clone())
+        Ok(self.token.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
 
     async fn save(&self, refresh_token: &str) -> Result<()> {
-        *self
-            .token
-            .lock()
-            .expect("no thread panics holding the token") = Some(refresh_token.to_string());
+        *self.token.lock().unwrap_or_else(|e| e.into_inner()) = Some(refresh_token.to_string());
         Ok(())
     }
 
     async fn clear(&self) -> Result<()> {
-        *self
-            .token
-            .lock()
-            .expect("no thread panics holding the token") = None;
+        *self.token.lock().unwrap_or_else(|e| e.into_inner()) = None;
         Ok(())
     }
 }

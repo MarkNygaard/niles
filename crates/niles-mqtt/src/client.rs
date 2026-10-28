@@ -161,10 +161,7 @@ impl MqttClient {
         // up via the replay path even if the immediate send below
         // races against an in-progress reconnect.
         {
-            let mut subs = self
-                .subscriptions
-                .lock()
-                .expect("no thread panics holding the subscriptions");
+            let mut subs = self.subscriptions.lock().unwrap_or_else(|e| e.into_inner());
             if !subs.iter().any(|t| t == topic) {
                 subs.push(topic.to_string());
             }
@@ -217,7 +214,7 @@ impl MqttClient {
     pub fn subscriptions(&self) -> Vec<String> {
         self.subscriptions
             .lock()
-            .expect("no thread panics holding the subscriptions")
+            .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
 }
@@ -320,7 +317,7 @@ async fn pump_events(
                     // play (silently wedges message delivery).
                     let to_replay: Vec<String> = subscriptions
                         .lock()
-                        .expect("no thread panics holding the subscriptions")
+                        .unwrap_or_else(|e| e.into_inner())
                         .clone();
                     replay.replace(Replay::start(client.clone(), to_replay));
                 } else {

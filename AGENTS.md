@@ -66,6 +66,7 @@ What a lint can't check:
 - Short iterator chains. Don't build one in a `for` header; bind it to a name first.
 - `format!` over chains of `+`.
 - `#[must_use]` on a function whose result it is a bug to ignore, unless the type already carries it, as `Result` does.
+- A poisoned lock is recovered, not a panic: `.lock().unwrap_or_else(|e| e.into_inner())`. One panicking task mustn't fail every later request that touches the same data, and since a panic stops only its own task, nothing would restart Niles. Every write under our locks is a single insert or field update, so the data is whole. A lock guarding several steps that only make sense together panics instead, with a comment saying why.
 
 Where this file says nothing, [Google's Rust style guide](https://google.github.io/styleguide/rustguide.html) decides, except its rules for Google's own codebases: Niles uses `async`, `Arc` for shared state, Cargo's crate layout, and stable rustfmt.
 

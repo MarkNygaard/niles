@@ -70,10 +70,7 @@ impl StateWriter {
         if !self.enabled {
             return Ok(());
         }
-        let _guard = self
-            .lock
-            .lock()
-            .expect("no thread panics holding the history lock");
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let date = entry.ts.date_naive();
         let path = self
             .root

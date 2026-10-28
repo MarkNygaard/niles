@@ -112,9 +112,7 @@ impl PresenceAggregator {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .expect("no thread panics holding presence state")
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 #[cfg(test)]

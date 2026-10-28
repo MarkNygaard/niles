@@ -8,8 +8,6 @@ use crate::device::{Device, DeviceId, DeviceState, RoomName};
 use std::collections::HashMap;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-const POISONED: &str = "no thread panics holding the device map";
-
 /// In-memory registry keyed by `DeviceId`.
 ///
 /// Wrap in `Arc<DeviceRegistry>` to share between subsystems.
@@ -122,11 +120,11 @@ impl DeviceRegistry {
     }
 
     fn read(&self) -> RwLockReadGuard<'_, HashMap<DeviceId, Device>> {
-        self.devices.read().expect(POISONED)
+        self.devices.read().unwrap_or_else(|e| e.into_inner())
     }
 
     fn write(&self) -> RwLockWriteGuard<'_, HashMap<DeviceId, Device>> {
-        self.devices.write().expect(POISONED)
+        self.devices.write().unwrap_or_else(|e| e.into_inner())
     }
 }
 

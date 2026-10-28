@@ -178,7 +178,7 @@ impl WyomingSender {
         let tx = self
             .outbound
             .lock()
-            .expect("no thread panics holding the outbound map")
+            .unwrap_or_else(|e| e.into_inner())
             .get(&peer)
             .cloned()
             .ok_or(SendError::NotConnected)?;
@@ -330,9 +330,7 @@ async fn handle_connection(
 
     let (outbound_tx, mut outbound_rx) = mpsc::channel(OUTBOUND_CHANNEL_CAPACITY);
     {
-        let mut map = outbound
-            .lock()
-            .expect("no thread panics holding the outbound map");
+        let mut map = outbound.lock().unwrap_or_else(|e| e.into_inner());
         if map.contains_key(&peer) {
             warn!("rejecting duplicate connection from {peer}");
             return false;
@@ -392,7 +390,7 @@ async fn handle_connection(
 
     outbound
         .lock()
-        .expect("no thread panics holding the outbound map")
+        .unwrap_or_else(|e| e.into_inner())
         .remove(&peer);
     true
 }

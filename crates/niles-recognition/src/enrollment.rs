@@ -88,7 +88,7 @@ impl EnrollmentStore {
         let _in_process = self
             .in_process_lock
             .lock()
-            .expect("no thread panics holding the enrollment lock");
+            .unwrap_or_else(|e| e.into_inner());
         let lock_path = self.lock_path_for(speaker);
         let _guard = lock_file(&lock_path, Duration::from_secs(5))?;
 
@@ -177,7 +177,7 @@ impl EnrollmentStore {
         let _in_process = self
             .in_process_lock
             .lock()
-            .expect("no thread panics holding the enrollment lock");
+            .unwrap_or_else(|e| e.into_inner());
         let path = self.path_for(speaker);
         let lock_path = self.lock_path_for(speaker);
         let _lock = lock_file(&lock_path, Duration::from_secs(5))?;
@@ -225,7 +225,7 @@ impl EnrollmentStore {
         let _in_process = self
             .in_process_lock
             .lock()
-            .expect("no thread panics holding the enrollment lock");
+            .unwrap_or_else(|e| e.into_inner());
         let path = self.path_for(speaker);
         let lock_path = self.lock_path_for(speaker);
         let _lock = lock_file(&lock_path, Duration::from_secs(5))?;
@@ -251,7 +251,7 @@ impl EnrollmentStore {
         let _in_process = self
             .in_process_lock
             .lock()
-            .expect("no thread panics holding the enrollment lock");
+            .unwrap_or_else(|e| e.into_inner());
         let lock_path = self.lock_path_for(speaker);
         let _guard = lock_file(&lock_path, Duration::from_secs(5))?;
 
