@@ -12,7 +12,7 @@
 //! the binary: a title, one summary line, never the call's arguments.
 
 use chrono::{DateTime, Utc};
-use sqlx::{Row, postgres::PgPool, postgres::PgRow};
+use sqlx::{AssertSqlSafe, Row, postgres::PgPool, postgres::PgRow};
 
 const SCHEMA: &str = "
 create table if not exists approval_log (
@@ -143,7 +143,7 @@ impl PostgresApprovalLog {
         Ok(())
     }
 
-    async fn write(&self, e: &ApprovalEntry, conflict: &str) -> Result<(), String> {
+    async fn write(&self, e: &ApprovalEntry, conflict: &'static str) -> Result<(), String> {
         let sql = format!(
             "insert into approval_log
                  (approval, person, tool, icon, title, summary, status, decision, outcome,
@@ -151,7 +151,7 @@ impl PostgresApprovalLog {
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
              {conflict}"
         );
-        sqlx::query(&sql)
+        sqlx::query(AssertSqlSafe(sql))
             .bind(&e.approval)
             .bind(&e.person)
             .bind(&e.tool)

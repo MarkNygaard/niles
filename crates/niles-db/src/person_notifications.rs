@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use niles_webpush::inbox::KEPT_PER_PERSON;
 use niles_webpush::{Error, Inbox, Notice, Notification, Result};
-use sqlx::{Row, postgres::PgPool, postgres::PgRow};
+use sqlx::{AssertSqlSafe, Row, postgres::PgPool, postgres::PgRow};
 
 const SCHEMA: &str = "
 create table if not exists person_notifications (
@@ -87,7 +87,7 @@ impl Inbox for PostgresPersonNotifications {
                  url = excluded.url, created_at = now(), read_at = null
              returning {COLUMNS}"
         );
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(AssertSqlSafe(sql))
             .bind(person)
             .bind(notice.kind.as_str())
             .bind(&notice.title)
@@ -121,7 +121,7 @@ impl Inbox for PostgresPersonNotifications {
              where person = $1 and ($2::bigint is null or id < $2)
              order by id desc limit $3"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(AssertSqlSafe(sql))
             .bind(person)
             .bind(before)
             .bind(limit)
