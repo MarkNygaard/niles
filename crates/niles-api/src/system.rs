@@ -231,9 +231,13 @@ impl Restart {
     /// Re-checks on every config and secret change, so open apps hear of
     /// a change made anywhere.
     pub fn watch(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let mut config_changed = self.store.subscribe();
+        let mut secrets_changed = niles_config::secrets::subscribe();
         tokio::spawn(async move {
-            let mut config_changed = self.store.subscribe();
-            let mut secrets_changed = niles_config::secrets::subscribe();
+            // Recovery may have adopted overrides since the boot snapshot,
+            // before this watcher was started. Check after subscribing so
+            // neither those changes nor a write during startup is missed.
+            let _ = self.pending();
             loop {
                 tokio::select! {
                     // A senders' going means nothing more can change;
@@ -599,6 +603,40 @@ mod tests {
             .expect("apply works");
         restart.pending();
         expect_pending_changed(&mut rx).await;
+    }
+
+    #[tokio::test]
+    async fn watching_catches_a_change_before_its_task_starts() {
+        let (_, store, restart, bus) = fixture(None);
+        let mut rx = bus.subscribe();
+        let watch = restart.clone().watch();
+        // No await before adoption: on this current-thread runtime the
+        // watcher has not been polled yet.
+        store
+            .adopt(niles_config::StoredState {
+                overrides: toml::from_str("[api]\nbind_address = \"0.0.0.0:9090\"").unwrap(),
+                revisions: Vec::new(),
+            })
+            .expect("recovered overrides validate");
+        expect_pending_changed(&mut rx).await;
+        assert!(restart.pending().iter().any(|p| p.what == "api"));
+        watch.abort();
+    }
+
+    #[tokio::test]
+    async fn watching_checks_changes_adopted_before_it_started() {
+        let (_, store, restart, bus) = fixture(None);
+        store
+            .adopt(niles_config::StoredState {
+                overrides: toml::from_str("[api]\nbind_address = \"0.0.0.0:9090\"").unwrap(),
+                revisions: Vec::new(),
+            })
+            .expect("recovered overrides validate");
+        let mut rx = bus.subscribe();
+        let watch = restart.clone().watch();
+        expect_pending_changed(&mut rx).await;
+        assert!(restart.pending().iter().any(|p| p.what == "api"));
+        watch.abort();
     }
 
     async fn expect_pending_changed(rx: &mut tokio::sync::broadcast::Receiver<Event>) {

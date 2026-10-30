@@ -1022,157 +1022,165 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let mut ticker = tokio::time::interval(Duration::from_secs(args.tick_seconds.max(1)));
     let mut stop = std::pin::pin!(shutdown::stopped(restart.requested()));
 
-    let serve_result = loop {
-        tokio::select! {
-            biased;
-            // First, so a stream of audio cannot starve it: the handlers
-            // are installed once, before the loop, and the same future
-            // serves a restart, a SIGTERM and Ctrl-C.
-            why = &mut stop => break Ok(why),
-            incoming = rx.recv() => match incoming {
-                Some(incoming) => {
-                    let audio_stop = incoming.event.kind == niles_wyoming::EventKind::AudioStop;
-                    let peer = incoming.from;
-                    if let Some(room) = satellites.room_for(incoming.from) {
-                        peer_index.lock().unwrap_or_else(|e| e.into_inner()).insert(room.clone(), incoming.from);
-                    }
-                    if let Some(conversation) = hush_on_wake(&ctx, &speech_arbiter, &incoming) {
-                        conversations.insert(incoming.from, conversation);
-                    }
-                    let session = session_tracker.feed(incoming);
-                    let conversation = take_conversation_after_audio(
-                        &mut conversations,
-                        peer,
-                        audio_stop,
-                        session.is_some(),
-                    );
-                    if let Some(session) = session {
-                        spawn_dispatch_task(&whisper, &ctx, &piper, &wyoming_sender, session, conversation);
-                    }
-                }
-                None => {
-                    eprintln!("\nWyoming server stopped.");
-                    break Ok(shutdown::Stop::Terminated);
-                }
-            },
-            disconnect = disconnects_rx.recv() => {
-                if let Some(peer) = disconnect {
-                    session_tracker.drop_peer(peer);
-                    conversations.remove(&peer);
-                    let mut index = peer_index.lock().unwrap_or_else(|e| e.into_inner());
-                    index.retain(|_, addr| *addr != peer);
-                }
-            }
-            Ok(()) = config_changes.changed() => {
-                // A tuning change should land on the lights now, not up
-                // to a tick later. What was published before was for the
-                // old target, so none of it is a reason to stay quiet.
-                last_published.clear();
-                lighting.refresh(&store);
-                run_curve_tick(
-                    &registry,
-                    &publisher,
-                    &router,
-                    &lighting.curve,
-                    lighting.snapshot.lighting.ambient_target(),
-                    lighting.ambient(),
-                    tz,
-                    args.dry_run,
-                    Duration::ZERO,
-                    &mut last_published,
-                    &tracker,
-                    &claim_tracker,
-                    Some(wake_ups.as_ref()),
-                ).await;
-            }
-            Some(id) = curve_nudge_rx.recv() => {
-                // A light just came on. Drop its last-published entry so the
-                // tick can't mistake the stale target for "already applied",
-                // then run a pass immediately. Drain the queue first so a
-                // whole-room turn-on costs one pass, not one per light.
-                last_published.remove(&id);
-                while let Ok(extra) = curve_nudge_rx.try_recv() {
-                    last_published.remove(&extra);
-                }
-                lighting.refresh(&store);
-                run_curve_tick(
-                    &registry,
-                    &publisher,
-                    &router,
-                    &lighting.curve,
-                    lighting.snapshot.lighting.ambient_target(),
-                    lighting.ambient(),
-                    tz,
-                    args.dry_run,
-                    Duration::ZERO,
-                    &mut last_published,
-                    &tracker,
-                    &claim_tracker,
-                    Some(wake_ups.as_ref()),
-                ).await;
-            }
-            _ = ticker.tick() => {
-                if source_handle.is_finished() {
-                    break Err(anyhow::anyhow!(
-                        "Z2mSource task has exited; the device registry is no longer \
-                         being updated, so the curve would publish blindly. Bailing."
-                    ));
-                }
-                lighting.refresh(&store);
-                // Wake-ups ramp on, follow the curve's warmth where they
-                // have none of their own, and let go of what the curve
-                // has caught up with. With the curve off, nothing catches
-                // up: a hold then lasts until the light is turned off.
-                let curve_now = match current_minute_of_day(tz) {
-                    Some((minute, now)) if lighting.curve.enabled => {
-                        let at = effective_minute(
-                            &lighting.curve,
-                            WeekInstant::new(now.weekday(), minute),
+    let serving = async {
+        loop {
+            tokio::select! {
+                biased;
+                // Stop is selected outside this loop so a blocked publish
+                // inside a branch cannot delay shutdown.
+                incoming = rx.recv() => match incoming {
+                    Some(incoming) => {
+                        let audio_stop = incoming.event.kind == niles_wyoming::EventKind::AudioStop;
+                        let peer = incoming.from;
+                        if let Some(room) = satellites.room_for(incoming.from) {
+                            peer_index.lock().unwrap_or_else(|e| e.into_inner()).insert(room.clone(), incoming.from);
+                        }
+                        if let Some(conversation) = hush_on_wake(&ctx, &speech_arbiter, &incoming) {
+                            conversations.insert(incoming.from, conversation);
+                        }
+                        let session = session_tracker.feed(incoming);
+                        let conversation = take_conversation_after_audio(
+                            &mut conversations,
+                            peer,
+                            audio_stop,
+                            session.is_some(),
                         );
-                        Some(wake_up::CurveNow {
-                            brightness: brightness_at(&lighting.curve, at),
-                            kelvin: color_temp_at(&lighting.curve, at),
-                        })
+                        if let Some(session) = session {
+                            spawn_dispatch_task(&whisper, &ctx, &piper, &wyoming_sender, session, conversation);
+                        }
                     }
-                    _ => None,
-                };
-                wake_ups.tick(Utc::now(), curve_now, lighting.transition()).await;
-                if let Some(routine) = lighting.routine() {
-                    run_morning_routine_tick(
+                    None => {
+                        // Not a SIGTERM, though the log would have said
+                        // so: nothing asked for this stop.
+                        break Err(anyhow::anyhow!(
+                            "the Wyoming server stopped; satellites can no longer be heard"
+                        ));
+                    }
+                },
+                disconnect = disconnects_rx.recv() => {
+                    if let Some(peer) = disconnect {
+                        session_tracker.drop_peer(peer);
+                        conversations.remove(&peer);
+                        let mut index = peer_index.lock().unwrap_or_else(|e| e.into_inner());
+                        index.retain(|_, addr| *addr != peer);
+                    }
+                }
+                Ok(()) = config_changes.changed() => {
+                    // A tuning change should land on the lights now, not up
+                    // to a tick later. What was published before was for the
+                    // old target, so none of it is a reason to stay quiet.
+                    last_published.clear();
+                    lighting.refresh(&store);
+                    run_curve_tick(
                         &registry,
                         &publisher,
                         &router,
-                        routine,
-                        lighting.curve.morning_start,
-                        lighting.curve.morning_end,
+                        &lighting.curve,
+                        lighting.snapshot.lighting.ambient_target(),
+                        lighting.ambient(),
+                        tz,
+                        args.dry_run,
+                        Duration::ZERO,
+                        &mut last_published,
+                        &tracker,
+                        &claim_tracker,
+                        Some(wake_ups.as_ref()),
+                    ).await;
+                }
+                Some(id) = curve_nudge_rx.recv() => {
+                    // A light just came on. Drop its last-published entry so the
+                    // tick can't mistake the stale target for "already applied",
+                    // then run a pass immediately. Drain the queue first so a
+                    // whole-room turn-on costs one pass, not one per light.
+                    last_published.remove(&id);
+                    while let Ok(extra) = curve_nudge_rx.try_recv() {
+                        last_published.remove(&extra);
+                    }
+                    lighting.refresh(&store);
+                    run_curve_tick(
+                        &registry,
+                        &publisher,
+                        &router,
+                        &lighting.curve,
+                        lighting.snapshot.lighting.ambient_target(),
+                        lighting.ambient(),
+                        tz,
+                        args.dry_run,
+                        Duration::ZERO,
+                        &mut last_published,
+                        &tracker,
+                        &claim_tracker,
+                        Some(wake_ups.as_ref()),
+                    ).await;
+                }
+                _ = ticker.tick() => {
+                    if source_handle.is_finished() {
+                        break Err(anyhow::anyhow!(
+                            "Z2mSource task has exited; the device registry is no longer \
+                             being updated, so the curve would publish blindly. Bailing."
+                        ));
+                    }
+                    lighting.refresh(&store);
+                    // Wake-ups ramp on, follow the curve's warmth where they
+                    // have none of their own, and let go of what the curve
+                    // has caught up with. With the curve off, nothing catches
+                    // up: a hold then lasts until the light is turned off.
+                    let curve_now = match current_minute_of_day(tz) {
+                        Some((minute, now)) if lighting.curve.enabled => {
+                            let at = effective_minute(
+                                &lighting.curve,
+                                WeekInstant::new(now.weekday(), minute),
+                            );
+                            Some(wake_up::CurveNow {
+                                brightness: brightness_at(&lighting.curve, at),
+                                kelvin: color_temp_at(&lighting.curve, at),
+                            })
+                        }
+                        _ => None,
+                    };
+                    wake_ups.tick(Utc::now(), curve_now, lighting.transition()).await;
+                    if let Some(routine) = lighting.routine() {
+                        run_morning_routine_tick(
+                            &registry,
+                            &publisher,
+                            &router,
+                            routine,
+                            lighting.curve.morning_start,
+                            lighting.curve.morning_end,
+                            tz,
+                            args.dry_run,
+                            lighting.transition(),
+                            &tracker,
+                            &claim_tracker,
+                            lighting.ambient(),
+                            lighting.lamp_plugs(),
+                            Some(wake_ups.as_ref()),
+                            curve_now.map(|c| c.kelvin),
+                        ).await;
+                    }
+                    run_curve_tick(
+                        &registry,
+                        &publisher,
+                        &router,
+                        &lighting.curve,
+                        lighting.snapshot.lighting.ambient_target(),
+                        lighting.ambient(),
                         tz,
                         args.dry_run,
                         lighting.transition(),
+                        &mut last_published,
                         &tracker,
                         &claim_tracker,
-                        lighting.ambient(),
-                        lighting.lamp_plugs(),
                         Some(wake_ups.as_ref()),
-                        curve_now.map(|c| c.kelvin),
                     ).await;
                 }
-                run_curve_tick(
-                    &registry,
-                    &publisher,
-                    &router,
-                    &lighting.curve,
-                    lighting.snapshot.lighting.ambient_target(),
-                    lighting.ambient(),
-                    tz,
-                    args.dry_run,
-                    lighting.transition(),
-                    &mut last_published,
-                    &tracker,
-                    &claim_tracker,
-                    Some(wake_ups.as_ref()),
-                ).await;
             }
         }
+    };
+    let serve_result = tokio::select! {
+        biased;
+        why = &mut stop => Ok(why),
+        result = serving => result,
     };
 
     match &serve_result {
