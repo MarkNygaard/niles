@@ -149,7 +149,9 @@ pub(crate) struct Parts<Prepared: Send + 'static> {
 
 /// Stop what `serve` was running, in `Stage` order. A step that runs
 /// over its budget is left behind; the whole stop takes at most about
-/// ten seconds, within Docker's default and Kubernetes' 30 s.
+/// twelve seconds: within Kubernetes' 30 s grace, and past Docker's
+/// default 10 s only when several steps run long — what the SIGKILL then
+/// cuts is a goodbye, never a write.
 pub(crate) async fn stop<Prepared: Send + 'static>(parts: Parts<Prepared>) {
     const BRIEF: Duration = Duration::from_secs(1);
     let Parts {

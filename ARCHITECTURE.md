@@ -167,7 +167,7 @@ A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the res
 7. Send MQTT's DISCONNECT (1 s).
 8. Exit 0.
 
-A step that runs over its budget is left behind, so a stop takes at most about ten seconds, within Docker's default and Kubernetes' 30 s.
+A step that runs over its budget is left behind, so a stop takes at most about twelve seconds: within Kubernetes' 30 s grace, and past Docker's default 10 s only when several steps run long — what the SIGKILL then cuts is a goodbye (a DISCONNECT, a socket close), never a write.
 
 **Under Kubernetes a restart can update Niles.** With `imagePullPolicy: Always`, the kubelet asks the registry every time it starts the container, a restart in the same pod included. So a pod on `:latest` starts the newest image, and the confirmation says it may. Restarting again within ten minutes waits out the kubelet's back-off (10 s, 20 s, 40 s …).
 
