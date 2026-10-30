@@ -105,6 +105,8 @@ pub struct AutomationEngine {
     /// The minute each clock trigger last fired, so a tick twice in one
     /// minute does not fire it twice.
     clock: Mutex<HashMap<(String, String), NaiveDateTime>>,
+    /// Set by [`Self::stop`]; nothing starts once it is.
+    stopping: std::sync::atomic::AtomicBool,
     log: Arc<RunLog>,
 }
 
@@ -146,6 +148,7 @@ impl AutomationEngine {
             presence: Mutex::new(None),
             running: Mutex::new(HashMap::new()),
             clock: Mutex::new(HashMap::new()),
+            stopping: std::sync::atomic::AtomicBool::new(false),
             log: Arc::new(RunLog::new()),
         }
     }
@@ -193,6 +196,27 @@ impl AutomationEngine {
 
     pub fn log(&self) -> Arc<RunLog> {
         self.log.clone()
+    }
+
+    /// Stop, for a restart or a shutdown.
+    ///
+    /// No run starts from here on, and each run in progress stops where
+    /// it is. A run waiting out a `delay` keeps its wait in the store,
+    /// since nothing here forgets it, and [`Self::resume`] carries on
+    /// from it when Niles is back. Called before MQTT closes, so a delay
+    /// that ends during a shutdown cannot run its last steps into a
+    /// closed broker and then forget its wait.
+    pub fn stop(&self) {
+        use std::sync::atomic::Ordering;
+        self.stopping.store(true, Ordering::SeqCst);
+        let holds: Vec<AbortHandle> = lock(&self.holds).drain().map(|(_, h)| h).collect();
+        for handle in holds {
+            handle.abort();
+        }
+        let running: Vec<AbortHandle> = lock(&self.running).drain().map(|(_, (_, h))| h).collect();
+        for handle in running {
+            handle.abort();
+        }
     }
 
     /// Run `rules` from now on, in place of the ones before. A run or a
@@ -245,6 +269,9 @@ impl AutomationEngine {
     /// `for`s it started, which the bus loop lets go of and a test can
     /// wait for.
     pub async fn handle_event(self: &Arc<Self>, event: &Event, now: DateTime<Utc>) -> Handles {
+        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            return Vec::new();
+        }
         if let Event::PresenceChanged { state } = event {
             *lock(&self.presence) = Some(*state);
         }
@@ -274,7 +301,7 @@ impl AutomationEngine {
                 }
                 match t.hold {
                     None => handles.extend(self.start(rule, &t.id, now)),
-                    Some(wait) => handles.push(self.hold(rule.clone(), &t.id, key, wait, now)),
+                    Some(wait) => handles.extend(self.hold(rule.clone(), &t.id, key, wait, now)),
                 }
             }
         }
@@ -283,6 +310,9 @@ impl AutomationEngine {
 
     /// Fire the clock's triggers due this minute.
     pub async fn tick(self: &Arc<Self>, now: DateTime<Utc>) -> Handles {
+        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            return Vec::new();
+        }
         let local = now.with_timezone(&self.tz).naive_local();
         let Some(minute) = local.with_second(0).and_then(|m| m.with_nanosecond(0)) else {
             return Vec::new();
@@ -313,11 +343,14 @@ impl AutomationEngine {
         key: Followed,
         wait: std::time::Duration,
         now: DateTime<Utc>,
-    ) -> JoinHandle<()> {
+    ) -> Option<JoinHandle<()>> {
         let engine = self.clone();
         let trigger = trigger.to_string();
         let held = key.clone();
         let mut holds = lock(&self.holds);
+        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
         let task = tokio::spawn(async move {
             tokio::time::sleep(wait).await;
             lock(&engine.holds).remove(&held);
@@ -329,7 +362,7 @@ impl AutomationEngine {
         if let Some(older) = holds.insert(key, task.abort_handle()) {
             older.abort();
         }
-        task
+        Some(task)
     }
 
     /// Start a run of `rule`, started by `trigger`: unless a condition
@@ -340,6 +373,9 @@ impl AutomationEngine {
         trigger: &str,
         now: DateTime<Utc>,
     ) -> Option<JoinHandle<()>> {
+        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
         let presence = *lock(&self.presence);
         let unmet = {
             let ctx = Context {
@@ -362,29 +398,33 @@ impl AutomationEngine {
             return None;
         }
         tracing::info!("automation '{}' fired ({trigger})", rule.id);
-        let number = self
-            .log
-            .begin(&rule.id, Some(trigger), now, Outcome::Running, None);
-        Some(self.launch(rule, trigger, number, now, None))
+        self.launch(rule, trigger, now, None)
     }
 
-    /// Run `rule`'s actions as run `number`: from the start, or from a
+    /// Run `rule`'s actions: from the start, or from a
     /// delay it was waiting out when Niles stopped. Replaces the rule's
     /// run in progress, if there is one.
     fn launch(
         self: &Arc<Self>,
         rule: &Arc<Rule>,
         trigger: &str,
-        number: u64,
         now: DateTime<Utc>,
         resume: Option<Resume>,
-    ) -> JoinHandle<()> {
+    ) -> Option<JoinHandle<()>> {
         let engine = self.clone();
         let run_rule = rule.clone();
         let trigger = trigger.to_string();
         // Held while the run is spawned and noted, so a run that ends at
         // once cannot clear itself before it is there to be cleared.
         let mut running = lock(&self.running);
+        // Check under the same lock stop drains: an in-flight trigger
+        // must either be registered in time to abort, or not launch.
+        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
+        let number = self
+            .log
+            .begin(&rule.id, Some(&trigger), now, Outcome::Running, None);
         let task = tokio::spawn(async move {
             // A run this one replaced may have left its wait behind.
             if resume.is_none()
@@ -428,7 +468,7 @@ impl AutomationEngine {
             handle.abort();
             self.log.replaced(&rule.id, older);
         }
-        task
+        Some(task)
     }
 
     /// Carry on with the runs that were waiting out a delay when Niles
@@ -436,12 +476,18 @@ impl AutomationEngine {
     /// whose rule was changed, paused or removed is dropped, and its run
     /// says so.
     pub async fn resume(self: &Arc<Self>, now: DateTime<Utc>) -> Handles {
+        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            return Vec::new();
+        }
         let Some(waits) = self.waits.clone() else {
             return Vec::new();
         };
         let rules = self.rules.read().await.clone();
         let mut handles = Vec::new();
         for wait in waits.all().await {
+            if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
             let rule = rules
                 .iter()
                 .find(|r| r.id == wait.rule && r.enabled && r.fingerprint == wait.fingerprint);
@@ -465,13 +511,9 @@ impl AutomationEngine {
                 rule.id,
                 wait.until
             );
-            let number = self
-                .log
-                .begin(&rule.id, Some(&wait.trigger), now, Outcome::Running, None);
-            handles.push(self.launch(
+            handles.extend(self.launch(
                 rule,
                 &wait.trigger,
-                number,
                 now,
                 Some((wait.at.clone(), wait.until)),
             ));
@@ -1520,6 +1562,107 @@ mod tests {
         }
         assert!(waits.all().await.is_empty(), "forgotten once over");
         assert_eq!(t.set().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn stopping_while_resume_waits_does_not_launch_or_forget_the_wait() {
+        let waits = Arc::new(MemoryWaits::default());
+        let kept = waits.clone();
+        let t = office_with(vec![seven_hours_after_closing()], move |e| {
+            e.with_waits(Some(kept as Arc<dyn WaitStore>))
+        });
+        let rules = t.engine.rules.write().await;
+        waits
+            .keep(&Waiting {
+                rule: "wake".into(),
+                fingerprint: rules[0].fingerprint.clone(),
+                trigger: "closed".into(),
+                at: vec![Step {
+                    index: 0,
+                    branch: None,
+                }],
+                until: noon(),
+            })
+            .await;
+        let mut resume = std::pin::pin!(t.engine.resume(Utc::now()));
+        std::future::poll_fn(|cx| {
+            assert!(resume.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+
+        t.engine.stop();
+        drop(rules);
+        for handle in resume.await {
+            handle.await.unwrap();
+        }
+        assert!(
+            t.set().is_empty(),
+            "a resume already in flight must stop too"
+        );
+        assert_eq!(
+            waits.all().await.len(),
+            1,
+            "the next process still needs its wait"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stopping_keeps_a_waiting_run_for_after_the_restart() {
+        // The order of a shutdown promises automations stop before the
+        // broker closes: a run cut mid-wait must keep its wait, or a
+        // delay that ends during the shutdown would run its last steps
+        // into a closed broker and then forget itself.
+        let waits = Arc::new(MemoryWaits::default());
+        let kept = waits.clone();
+        let t = office_with(vec![seven_hours_after_closing()], move |e| {
+            e.with_waits(Some(kept as Arc<dyn WaitStore>))
+        });
+        t.engine.seed().await;
+        t.send(door(true), noon()).await;
+        let _waiting = t.send_and_go_on(door(false), noon()).await;
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(waits.all().await.len(), 1, "the run is in its delay");
+
+        t.engine.stop();
+        // The delay is up while Niles is down: nothing may run, and the
+        // wait is still there for the next start to carry on from.
+        tokio::time::sleep(Duration::from_secs(8 * 60 * 60)).await;
+        assert!(
+            t.set().is_empty(),
+            "the delay is not up and the run was stopped: nothing ran"
+        );
+        assert_eq!(
+            waits.all().await.len(),
+            1,
+            "stopping forgets nothing that was kept"
+        );
+
+        // A fresh engine on the same store carries the run on.
+        let carried = waits.clone();
+        let t = office_with(vec![seven_hours_after_closing()], move |e| {
+            e.with_waits(Some(carried as Arc<dyn WaitStore>))
+        });
+        for h in t.engine.resume(Utc::now()).await {
+            let _ = h.await;
+        }
+        assert_eq!(t.set().len(), 2, "the rest of the run, from the keep");
+        assert!(waits.all().await.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn nothing_starts_once_stopped() {
+        let t = office_with(vec![seven_hours_after_closing()], |e| e);
+        t.engine.seed().await;
+        t.engine.stop();
+        t.send(door(true), noon()).await;
+        t.send(door(false), noon()).await;
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert!(
+            t.runs("wake").is_empty(),
+            "an event after the stop starts no run"
+        );
+        assert!(t.set().is_empty());
     }
 
     #[tokio::test(start_paused = true)]

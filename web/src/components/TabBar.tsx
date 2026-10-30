@@ -1,4 +1,4 @@
-import { HOME, destinationOf } from "@/lib/destinations";
+import { DESTINATIONS, HOME, destinationOf } from "@/lib/destinations";
 import type { Destination } from "@/lib/destinations";
 import { AVATAR_UNLESS_PLACED, MOVABLE } from "@/lib/menu";
 import type { MenuItem } from "@/lib/menu";
@@ -12,6 +12,8 @@ export interface TabBarProps {
   menu?: MenuItem[];
   /** The plugins' pages, for the entries that are theirs. */
   pages?: PluginPageEntry[];
+  /** A restart waits: the Settings entry carries a dot. */
+  settingsDot?: boolean;
 }
 
 const UNARRANGED: MenuItem[] = MOVABLE.filter(
@@ -29,7 +31,12 @@ const UNARRANGED: MenuItem[] = MOVABLE.filter(
  * comes first; the rest is what Settings → Menu put here. You — your
  * profile, the look of the app — are in the avatar menu in the corner.
  */
-export function TabBar({ route, menu = UNARRANGED, pages = [] }: TabBarProps) {
+export function TabBar({
+  route,
+  menu = UNARRANGED,
+  pages = [],
+  settingsDot = false,
+}: TabBarProps) {
   const tabs: Destination[] = [
     HOME,
     ...menu
@@ -52,11 +59,13 @@ export function TabBar({ route, menu = UNARRANGED, pages = [] }: TabBarProps) {
       <ul className="mx-auto flex max-w-md sm:max-w-none sm:gap-1">
         {tabs.map((tab) => {
           const active = tab.owns(route);
+          const dotted = settingsDot && tab.href === DESTINATIONS.settings.href;
           return (
             <li key={tab.href} className="flex-1 sm:flex-none">
               <a
                 href={tab.href}
                 aria-current={active ? "page" : undefined}
+                aria-label={dotted ? `${tab.label}, a restart is waiting` : undefined}
                 className={cn(
                   // Held 8px off the bar's top edge rather than centred:
                   // centred, the icons sat right against it. The bar keeps
@@ -65,6 +74,7 @@ export function TabBar({ route, menu = UNARRANGED, pages = [] }: TabBarProps) {
                   "sm:h-9 sm:flex-row sm:justify-center sm:gap-2 sm:rounded-full sm:px-3 sm:pt-0 sm:text-sm",
                   "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
                   "[&_svg]:size-6 sm:[&_svg]:size-4",
+                  dotted && "relative",
                   active
                     ? "text-foreground sm:bg-muted"
                     : "text-muted-foreground hover:text-foreground",
@@ -72,6 +82,12 @@ export function TabBar({ route, menu = UNARRANGED, pages = [] }: TabBarProps) {
               >
                 {tab.icon}
                 {tab.label}
+                {dotted && (
+                  <span
+                    aria-hidden
+                    className="bg-primary absolute top-1.5 right-1/4 size-2 rounded-full sm:top-1 sm:right-1"
+                  />
+                )}
               </a>
             </li>
           );

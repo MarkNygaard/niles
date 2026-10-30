@@ -6,7 +6,8 @@ import { APPROVALS, approvalTag } from "@/lib/approvals";
 import { closeWaitingLater } from "@/lib/pwa";
 import { ARTIFACTS, ARTIFACT_LIST } from "@/lib/artifacts";
 import { NOTIFICATIONS } from "@/lib/notifications";
-import type { Artifact, ArtifactList, ArtifactStatus, Device, DeviceState } from "@/lib/api";
+import { RESTART, startWaiting } from "@/lib/restart";
+import type { Artifact, ArtifactList, ArtifactStatus, Device, DeviceState, RestartStatus } from "@/lib/api";
 
 /**
  * Keep the device list in step with what the house is actually doing.
@@ -24,15 +25,20 @@ import type { Artifact, ArtifactList, ArtifactStatus, Device, DeviceState } from
  * when something of theirs waiting for a yes is asked or answered —
  * and once it is answered or lapses, its notification is taken off this
  * device after Niles's own push had its chance to replace it — and
- * when a notification of theirs is kept or read, which the bell follows.
+ * when a notification of theirs is kept or read, which the bell follows
+ * — and when what waits for a restart changed, which Settings follows,
+ * or a restart was asked for, which starts the waiting here.
  *
  * One socket however many components ask: the bell in the header asks
  * on every page, and so does the page under it.
+ * `enabled` lets a caller with no sign-in hold off: no socket, so no
+ * 401 retry loop on the sign-in screen.
  */
-export function useDeviceStream() {
+export function useDeviceStream(enabled = true) {
   const queryClient = useQueryClient();
 
   useEffect(() => {
+    if (!enabled) return;
     const shared = streams.get(queryClient) ?? { users: 0, stop: () => {} };
     if (shared.users === 0) shared.stop = stream(queryClient);
     shared.users += 1;
@@ -44,7 +50,7 @@ export function useDeviceStream() {
         streams.delete(queryClient);
       }
     };
-  }, [queryClient]);
+  }, [queryClient, enabled]);
 }
 
 const streams = new Map<QueryClient, { users: number; stop: () => void }>();
@@ -55,6 +61,7 @@ function stream(queryClient: QueryClient): () => void {
   let retry: ReturnType<typeof setTimeout> | undefined;
   let attempt = 0;
   let closed = false;
+  let opened = false;
 
   function connect() {
     if (closed) return;
@@ -62,6 +69,12 @@ function stream(queryClient: QueryClient): () => void {
     socket = new WebSocket(`${protocol}//${window.location.host}/events/stream`);
 
     socket.onopen = () => {
+      // A change made while the socket was down sent its frame to
+      // nobody, so whatever the server would have said is stale: ask
+      // for the restart answer again. Only a reconnect, not the first
+      // connect: the query itself is fresh then.
+      if (opened) void queryClient.invalidateQueries({ queryKey: RESTART });
+      opened = true;
       attempt = 0;
     };
 
@@ -110,6 +123,20 @@ function stream(queryClient: QueryClient): () => void {
         case "notifications_read":
           void queryClient.invalidateQueries({ queryKey: NOTIFICATIONS });
           break;
+        // What waits changed somewhere — the app, another voice undo,
+        // the API — so ask again.
+        case "restart_pending_changed":
+          void queryClient.invalidateQueries({ queryKey: RESTART });
+          break;
+        // Every open app waits for the new Niles, not only the one
+        // whose button it was.
+        case "restart_started":
+          startWaiting({
+            before: event.boot_id,
+            supervisor:
+              queryClient.getQueryData<RestartStatus>(RESTART)?.supervisor ?? null,
+          });
+          break;
       }
     };
 
@@ -141,6 +168,8 @@ type WireEvent =
   | { type: "approval_changed"; id: string; status: string }
   | { type: "notification_added"; id: number }
   | { type: "notifications_read" }
+  | { type: "restart_pending_changed" }
+  | { type: "restart_started"; boot_id: string }
   | { type: "ping" | "close" };
 
 interface ArtifactChanged {

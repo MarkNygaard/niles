@@ -188,7 +188,9 @@ pub(crate) async fn api(args: ApiArgs) -> anyhow::Result<()> {
         bus.clone(),
     );
     let api_handle = tokio::spawn(async move {
-        if let Err(e) = niles_api::serve(bind, state).await {
+        // The dev subcommand's Ctrl-C below is its stop; the API itself
+        // is asked for nothing here.
+        if let Err(e) = niles_api::serve(bind, state, std::future::pending::<()>()).await {
             tracing::error!("API server exited: {e}");
         }
     });
@@ -352,7 +354,7 @@ pub(crate) async fn enroll(args: EnrollArgs) -> anyhow::Result<()> {
         record.clip_count,
         store.describe()
     );
-    println!("Niles picks up a new voice on its next restart.");
+    println!("A Niles that is already running picks this voice up when it restarts.");
     Ok(())
 }
 
@@ -507,7 +509,7 @@ pub(crate) async fn chat(args: ChatArgs) -> anyhow::Result<()> {
     }
 
     source_handle.abort();
-    if let Some(h) = wled_handle {
+    if let Some((h, _publisher)) = wled_handle {
         h.abort();
     }
     if let Some(h) = presence_handle {

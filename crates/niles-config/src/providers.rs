@@ -280,6 +280,31 @@ impl crate::Config {
             }
         }
     }
+
+    /// Where Tier 1 goes, and with which key: what `niles serve` builds
+    /// its client from, and so what a restart would build it from now.
+    pub fn llm_endpoint(&self) -> Result<Endpoint> {
+        self.endpoint_for(
+            Role::Llm,
+            self.llm.provider.as_deref(),
+            self.llm.base_url.as_deref(),
+            &self.llm.api_key_env,
+            "llm",
+        )
+    }
+
+    /// Tier 2's, or `None` without `[llm.tier2]`.
+    pub fn tier2_endpoint(&self) -> Option<Result<Endpoint>> {
+        self.llm.tier2.as_ref().map(|tier2| {
+            self.endpoint_for(
+                Role::Llm,
+                tier2.provider.as_deref(),
+                Some(&tier2.base_url),
+                &tier2.api_key_env,
+                "llm.tier2",
+            )
+        })
+    }
 }
 
 fn invalid(reason: impl Into<String>) -> Error {

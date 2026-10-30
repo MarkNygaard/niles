@@ -9,6 +9,7 @@ import { MediaPage, somethingPlays } from "@/components/MediaPage";
 import { AvatarMenu } from "@/components/AvatarMenu";
 import { MyProfile } from "@/components/MyProfile";
 import { NotificationBell } from "@/components/NotificationBell";
+import { RestartingScreen } from "@/components/RestartingScreen";
 import { NotificationsPage } from "@/components/NotificationsPage";
 import { PluginPageView } from "@/components/PluginPageView";
 import { RoomDashboard } from "@/components/RoomDashboard";
@@ -19,9 +20,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { menuLayout } from "@/lib/menu";
 import { pageRoute, pluginPages } from "@/lib/plugins";
+import { startWaiting } from "@/lib/restart";
 import type { PluginPageEntry } from "@/lib/plugins";
 import { useRoute } from "@/lib/route";
 import { useTheme } from "@/lib/theme";
+import { useRestartStatus } from "@/hooks/useRestartStatus";
 import { cn } from "@/lib/utils";
 
 // Its own chunk: React Flow and dagre are a quarter of the app,
@@ -99,12 +102,24 @@ export function App() {
     enabled: !auth.isLoading && !refused,
     retry: false,
   });
+  const restart = useRestartStatus(!auth.isLoading && !refused);
 
   // A new page starts at its top. `#root` is what scrolls, not the
   // document — see globals.css.
   useEffect(() => {
     document.getElementById("root")?.scrollTo(0, 0);
   }, [route]);
+
+  // A page loaded while Niles was already on its way down waits with
+  // the rest.
+  useEffect(() => {
+    if (restart.data?.restarting) {
+      startWaiting({
+        before: restart.data.boot.id,
+        supervisor: restart.data.supervisor,
+      });
+    }
+  }, [restart.data]);
 
   // The header's height, for what sticks under it as a page scrolls
   // (the chat's Niles, see ChatView). Measured: the header wraps and
@@ -208,7 +223,12 @@ export function App() {
         )}
         {/* Nothing after Home until the arrangement is known: an entry
             somebody hid should not flash up on every load. */}
-        <TabBar route={screen.at} menu={layout?.main ?? []} pages={pages} />
+        <TabBar
+          route={screen.at}
+          menu={layout?.main ?? []}
+          pages={pages}
+          settingsDot={(restart.data?.pending.length ?? 0) > 0}
+        />
         {/* Notifications are someone's own, so only with someone signed in. */}
         {email && <NotificationBell current={screen.at === "/notifications"} />}
         <AvatarMenu
@@ -218,10 +238,12 @@ export function App() {
           pages={pages}
           theme={theme}
           onTheme={setTheme}
+          settingsDot={(restart.data?.pending.length ?? 0) > 0}
         />
       </header>
 
       {screen.body}
+      <RestartingScreen />
     </main>
   );
 }

@@ -47,6 +47,7 @@ mod review;
 mod ringer;
 mod satellites;
 mod serve;
+mod shutdown;
 mod speak;
 mod speakers;
 mod speech_stream;
@@ -101,7 +102,20 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     match cli.command {
-        Commands::Serve(args) => serve(args).await,
+        Commands::Serve(args) => {
+            // Exit here rather than return: dropping the runtime waits
+            // for every blocking task, and one that never ends would
+            // keep Niles from stopping, so whatever runs it would never
+            // start it again.
+            let code = match serve(args).await {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("Error: {e:?}");
+                    1
+                }
+            };
+            std::process::exit(code)
+        }
         Commands::Config { action } => match action {
             ConfigAction::Validate(args) => config_validate(args),
         },

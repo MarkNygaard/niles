@@ -195,6 +195,12 @@ impl WakeUps {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Wake-ups ramping now. A restart pauses them; they carry on after,
+    /// since what is under way is kept.
+    pub(crate) fn ramping(&self) -> usize {
+        self.lock().ramps.len()
+    }
+
     /// Whether a wake-up is ramping or holding `id`: the curve and the
     /// scheduled routine leave it alone.
     pub(crate) fn owns(&self, id: &DeviceId) -> bool {
@@ -688,9 +694,11 @@ mod tests {
     #[tokio::test]
     async fn wakes_the_lights_that_are_off_ramps_them_and_holds_them() {
         let (wake_ups, _) = bedroom().await;
+        assert_eq!(wake_ups.ramping(), 0, "nothing under way yet");
         let started: DateTime<Utc> = "2026-10-16T03:00:00Z".parse().unwrap();
         let said = wake_ups.start(&plan(), started).await.unwrap();
         assert_eq!(said, "started a 30-minute wake-up to 80%, 1 light");
+        assert_eq!(wake_ups.ramping(), 1, "one ramp under way");
         assert!(wake_ups.owns(&id("bedroom/ceiling")));
         assert!(!wake_ups.owns(&id("bedroom/lamp")), "excepted");
         assert!(!wake_ups.owns(&id("hall/ceiling")), "not named");

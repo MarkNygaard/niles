@@ -932,6 +932,29 @@ impl Artifacts {
         })
     }
 
+    /// Jobs going now, everybody's: artifacts being written, and the
+    /// pages, changes and post-run looks being made in the background.
+    pub(crate) fn jobs_going(&self) -> usize {
+        let running: usize = self
+            .running
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .sum();
+        let paging = self.paging.lock().unwrap_or_else(|e| e.into_inner()).len();
+        let changing = self
+            .changing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+        let reviewing = self
+            .reviewing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+        running + paging + changing + reviewing
+    }
+
     /// Make the artifact, marked working, and start its job.
     async fn start(
         self: &Arc<Self>,
@@ -2729,6 +2752,19 @@ mod tests {
 
     fn fixture(runner: Arc<dyn Runner>) -> Fixture {
         fixture_in(runner, None)
+    }
+
+    #[test]
+    fn jobs_going_counts_a_taken_slot() {
+        let f = fixture_in(FakeRunner::doing(vec![]), None);
+        assert_eq!(f.artifacts.jobs_going(), 0, "nothing going");
+        let slot = f.artifacts.take_slot("person:a").expect("a slot is free");
+        assert_eq!(f.artifacts.jobs_going(), 1, "one job going");
+        let held = Held::claim(&f.artifacts.paging, 7).expect("unclaimed");
+        assert_eq!(f.artifacts.jobs_going(), 2, "and a page being made");
+        drop(held);
+        drop(slot);
+        assert_eq!(f.artifacts.jobs_going(), 0, "given back however it ends");
     }
 
     #[async_trait]
