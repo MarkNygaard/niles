@@ -2,7 +2,7 @@ import { useState } from "react";
 import { LogOut, Monitor, Moon, Sun, UserRound } from "lucide-react";
 import { Avatar } from "@/components/Avatar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { PROFILE, destinationOf } from "@/lib/destinations";
+import { DESTINATIONS, PROFILE, destinationOf } from "@/lib/destinations";
 import type { Destination } from "@/lib/destinations";
 import type { MenuItem } from "@/lib/menu";
 import type { PluginPageEntry } from "@/lib/plugins";
@@ -19,6 +19,8 @@ export interface AvatarMenuProps {
   pages?: PluginPageEntry[];
   theme: Theme;
   onTheme: (theme: Theme) => void;
+  /** A restart waits: the trigger and the Settings entry carry a dot. */
+  settingsDot?: boolean;
 }
 
 /**
@@ -38,6 +40,7 @@ export function AvatarMenu({
   pages = [],
   theme,
   onTheme,
+  settingsDot = false,
 }: AvatarMenuProps) {
   const [open, setOpen] = useState(false);
   const entries: Destination[] = [
@@ -48,13 +51,16 @@ export function AvatarMenu({
       .flatMap((item) => destinationOf(item.id, pages) ?? []),
   ];
 
+  const dotted =
+    settingsDot && entries.some((entry) => entry.href === DESTINATIONS.settings.href);
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
-        aria-label="Your menu"
+        aria-label={dotted ? "Your menu, a restart is waiting" : "Your menu"}
         className={cn(
           "flex size-9 shrink-0 items-center justify-center rounded-full",
           "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+          dotted && "relative",
           !email && "text-muted-foreground hover:text-foreground",
         )}
       >
@@ -63,27 +69,42 @@ export function AvatarMenu({
         ) : (
           <UserRound className="size-5" />
         )}
+        {dotted && (
+          <span
+            aria-hidden
+            className="bg-primary absolute top-0 right-0 size-2 rounded-full"
+          />
+        )}
       </PopoverTrigger>
       <PopoverContent align="end" className="flex w-64 flex-col gap-2 p-2">
         {email && (
           <div className="text-muted-foreground truncate px-2 pt-1 text-xs">{email}</div>
         )}
         <nav aria-label="Your menu" className="flex flex-col">
-          {entries.map((entry) => (
-            <a
-              key={entry.href}
-              href={entry.href}
-              onClick={() => setOpen(false)}
-              className={cn(
-                "flex items-center gap-3 rounded-md px-2 py-2 text-sm transition-colors",
-                "hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
-                "[&>svg]:text-muted-foreground [&>svg]:size-4",
-              )}
-            >
-              {entry.icon}
-              {entry.label}
-            </a>
-          ))}
+          {entries.map((entry) => {
+            const entryDotted = dotted && entry.href === DESTINATIONS.settings.href;
+            return (
+              <a
+                key={entry.href}
+                href={entry.href}
+                onClick={() => setOpen(false)}
+                className={cn(
+                  "flex items-center gap-3 rounded-md px-2 py-2 text-sm transition-colors",
+                  "hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
+                  "[&>svg]:text-muted-foreground [&>svg]:size-4",
+                )}
+              >
+                {entry.icon}
+                {entry.label}
+                {entryDotted && (
+                  <>
+                    <span aria-hidden className="bg-primary ml-auto size-2 rounded-full" />
+                    <span className="sr-only">, a restart is waiting</span>
+                  </>
+                )}
+              </a>
+            );
+          })}
         </nav>
         <div className="bg-muted flex gap-1 rounded-lg p-1" role="group" aria-label="Appearance">
           <Appearance current={theme} value="light" icon={<Sun />} onPick={onTheme}>

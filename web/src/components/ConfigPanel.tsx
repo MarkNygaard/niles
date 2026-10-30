@@ -33,6 +33,10 @@ import type { PodcastsSettings } from "@/lib/podcasts";
 import { SetupChecklist } from "@/components/SetupChecklist";
 import { gapsFor, todoByPage } from "@/lib/setup";
 import { useRoute } from "@/lib/route";
+import { RESTART } from "@/lib/restart";
+import { RestartBar } from "@/components/RestartBar";
+import { RestartButton } from "@/components/RestartButton";
+import { useRestartStatus } from "@/hooks/useRestartStatus";
 import { WledCard } from "@/components/WledCard";
 import { BlindsCard } from "@/components/BlindsCard";
 import { HomeCard } from "@/components/HomeCard";
@@ -334,6 +338,7 @@ function overridesAt(root: unknown): BlindOverride[] {
 
 export function ConfigPanel() {
   const queryClient = useQueryClient();
+  const restart = useRestartStatus();
   const [lastApplied, setLastApplied] = useState<Applied | null>(null);
   const [rowError, setRowError] = useState<{ row: string; message: string } | null>(null);
 
@@ -511,6 +516,7 @@ export function ConfigPanel() {
       setLastApplied(applied);
       setRowError(null);
       refresh();
+      void queryClient.invalidateQueries({ queryKey: RESTART });
     },
     onError: (error, { row }) =>
       setRowError({
@@ -531,6 +537,7 @@ export function ConfigPanel() {
       setLastApplied(applied);
       setRowError(null);
       refresh();
+      void queryClient.invalidateQueries({ queryKey: RESTART });
     },
   });
 
@@ -539,6 +546,7 @@ export function ConfigPanel() {
     onSuccess: (applied) => {
       setLastApplied(applied);
       refresh();
+      void queryClient.invalidateQueries({ queryKey: RESTART });
     },
     onError: () => setLastApplied(null),
   });
@@ -673,6 +681,7 @@ export function ConfigPanel() {
 
   return (
     <div className="flex flex-col gap-4">
+      <RestartBar />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-muted-foreground text-sm">
           Values Niles is running right now. Changes apply immediately.
@@ -701,7 +710,11 @@ export function ConfigPanel() {
             ? "That value was already set — nothing changed."
             : lastApplied.summary}
           {lastApplied.needs_restart.length > 0 && (
-            <> · needs a restart to take effect ({lastApplied.needs_restart.join(", ")})</>
+            <>
+              {" "}· needs a restart to take effect (
+              {lastApplied.needs_restart.map((r) => r.label).join(", ")})
+              {restart.data && <RestartButton status={restart.data} />}
+            </>
           )}
         </Notice>
       )}
@@ -1140,6 +1153,7 @@ export function ConfigPanel() {
             onSecretsChanged={() => {
               secrets.refetch();
               queryClient.invalidateQueries({ queryKey: ["setup"] });
+              void queryClient.invalidateQueries({ queryKey: RESTART });
             }}
           />
         </TabsContent>
@@ -1281,6 +1295,7 @@ export function ConfigPanel() {
             onSecretsChanged={() => {
               secrets.refetch();
               recheckToolServers();
+              void queryClient.invalidateQueries({ queryKey: RESTART });
             }}
             onTadoChanged={() => tado.refetch()}
           />
