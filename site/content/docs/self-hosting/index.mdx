@@ -99,6 +99,41 @@ when you upgrade. Niles creates the tables it needs by itself, so there is
 no migration step. The releases and what changed in
 each are on [GitHub](https://github.com/MarkNygaard/niles/releases).
 
+## Restarting
+
+Some settings are read only when Niles starts: the broker, the language
+model, the satellites and a few more. While one of them waits for a
+restart, Settings says so at the top — "Some changes take effect after a
+restart: Zigbee & MQTT." — and the Settings menu entry has a dot. Changing
+the setting back clears both.
+
+**Restart now** asks first. It says what a restart cuts short (a
+background job, approvals waiting, a wake-up ramp under way), then Niles
+stops in order, whatever runs it starts it again, and it is back in about
+half a minute. Anyone who can sign in can restart Niles; it cannot be done
+by voice.
+
+The button appears only where something starts Niles again:
+
+- **Kubernetes**: always. The container restarts in the same pod, with no
+  extra permissions. With `imagePullPolicy: Always` on the `latest` tag it
+  also starts the newest image.
+- **Docker Compose**: the shipped `compose.yaml` sets
+  `NILES_SUPERVISOR: docker` beside `restart: unless-stopped`.
+- **Anything else**: set `NILES_SUPERVISOR` to its name once it restarts
+  Niles after a clean exit. For systemd that means `Restart=always`;
+  `Restart=on-failure` and Docker's `on-failure` don't restart a clean exit.
+
+Without one, Settings still says what waits; restart Niles where it runs.
+
+Without a database the changes are lost at a restart, so there is no
+button; put the setting in `niles.toml`.
+
+If Niles isn't back after two minutes the app says so. Look at the log:
+`kubectl logs deploy/niles` or `docker compose logs niles`.
+
+Niles stops in the same order when Kubernetes or Docker stops it.
+
 ## HTTPS for phones
 
 Browsers send notifications only to a page served over HTTPS, so phone

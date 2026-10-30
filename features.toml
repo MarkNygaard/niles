@@ -1049,3 +1049,39 @@ id = "api-events-notifications"
 category = "api.events"
 summary = "notification_added and notifications_read on /events/stream, to their person only"
 since_pr = 483
+
+[[feature]]
+id = "ui-restart-pending"
+category = "ui.settings"
+summary = "While a change waits for a restart, the top of Settings names it and its menu has a dot; changing it back clears both"
+since_pr = 507
+
+[[feature]]
+id = "ui-restart-now"
+category = "ui.settings"
+summary = "Restart now under Kubernetes or a declared supervisor: says what a restart cuts short, waits for the new Niles, reloads"
+since_pr = 507
+
+[[feature]]
+id = "api-system-restart"
+category = "api.write"
+summary = "GET /system/restart says what waits, the boot id and what a restart cuts short; POST /system/restart restarts Niles"
+since_pr = 507
+
+[[feature]]
+id = "api-events-restart"
+category = "api.events"
+summary = "restart_pending_changed and restart_started on /events/stream, to everyone"
+since_pr = 507
+
+[[feature]]
+id = "runtime-orderly-stop"
+category = "runtime.lifecycle"
+summary = "A restart, SIGTERM or Ctrl-C stops Niles in order: requests finish, delays are kept, satellites and MQTT close, exit 0"
+since_pr = 507
+
+[[feature]]
+id = "config-live-speaking-integrations"
+category = "ui.settings"
+summary = "Speaking and integration settings say they apply at once, as they always did, and the voice lock asks for no restart"
+since_pr = 507
