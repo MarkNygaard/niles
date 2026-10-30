@@ -92,7 +92,9 @@ describe("RestartBar", () => {
       }),
     );
     const restart = vi.spyOn(api, "restart").mockResolvedValue({
-      boot: { id: "boot-a", started_at: "x" },
+      // The cached status can predate a deploy. Wait for the process
+      // that accepted this restart, not the one the page first saw.
+      boot: { id: "boot-b", started_at: "x" },
     });
     renderBar();
     fireEvent.click(await screen.findByRole("button", { name: "Restart now" }));
@@ -111,7 +113,7 @@ describe("RestartBar", () => {
       const {
         result: { current },
       } = renderHook(() => useRestarting());
-      expect(current).toEqual({ before: "boot-a", supervisor: "kubernetes" });
+      expect(current).toEqual({ before: "boot-b", supervisor: "kubernetes" });
     });
   });
 

@@ -90,6 +90,7 @@ export async function waitForNewBoot(before: string, options: WaitOptions): Prom
       ),
       sleep(ANSWER_MS).then(() => undefined),
     ]);
+    if (signal?.aborted) return "aborted";
     if (isStatus(answer)) {
       if (answer.boot.id !== before) return "back";
     } else if (answer instanceof ApiError && answer.status === 401) {

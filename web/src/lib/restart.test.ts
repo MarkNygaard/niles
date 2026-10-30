@@ -157,6 +157,17 @@ describe("waitForNewBoot", () => {
     });
     expect(outcome).toBe("aborted");
   });
+
+  it("ignores a new boot returned after the wait was cancelled", async () => {
+    const controller = new AbortController();
+    const outcome = waitForNewBoot("boot-a", {
+      status: () => Promise.resolve(status({ boot: { id: "boot-b", started_at: "x" } })),
+      sleep: () => Promise.resolve(),
+      signal: controller.signal,
+    });
+    controller.abort();
+    expect(await outcome).toBe("aborted");
+  });
 });
 
 describe("the waiting store", () => {

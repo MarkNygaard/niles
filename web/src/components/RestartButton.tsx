@@ -19,9 +19,9 @@ export function RestartButton({
   const [open, setOpen] = useState(false);
   const restart = useMutation({
     mutationFn: () => api.restart(),
-    onSuccess: () => {
+    onSuccess: ({ boot }) => {
       setOpen(false);
-      startWaiting({ before: status.boot.id, supervisor: status.supervisor });
+      startWaiting({ before: boot.id, supervisor: status.supervisor });
     },
   });
 
