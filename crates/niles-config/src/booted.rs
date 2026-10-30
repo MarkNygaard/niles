@@ -211,8 +211,10 @@ mod tests {
         (guard, store, booted)
     }
 
+    /// The caller holds `TEST_GUARD` for the whole test: this must not
+    /// lock it again — a `std::sync::Mutex` is not re-entrant, and the
+    /// same thread locking it twice is a deadlock.
     fn differs(store: &crate::ConfigStore, booted: &Booted) -> Vec<String> {
-        let _guard = hold_guard();
         let (config, table) = store.current_and_table();
         booted.differs(&table, &config)
     }
