@@ -84,6 +84,7 @@ pub struct WyomingServer {
     /// writer task. Removed on disconnect so subsequent sends
     /// return `SendError::NotConnected`.
     outbound: Arc<Mutex<HashMap<SocketAddr, mpsc::Sender<OutboundMessage>>>>,
+    closing: tokio::sync::watch::Sender<bool>,
 }
 
 impl WyomingServer {
@@ -114,6 +115,7 @@ impl WyomingServer {
                 events_tx,
                 disconnects_tx,
                 outbound,
+                closing: tokio::sync::watch::channel(false).0,
             },
             events_rx,
             disconnects_rx,
@@ -125,6 +127,7 @@ impl WyomingServer {
     pub fn sender(&self) -> WyomingSender {
         WyomingSender {
             outbound: Arc::clone(&self.outbound),
+            closing: self.closing.clone(),
         }
     }
 
@@ -147,12 +150,13 @@ impl WyomingServer {
             let events_tx = self.events_tx.clone();
             let disconnects_tx = self.disconnects_tx.clone();
             let outbound = Arc::clone(&self.outbound);
+            let closing = self.closing.subscribe();
             tokio::spawn(async move {
                 // Only notify if the connection was accepted into the
                 // outbound map. A rejected duplicate returns false and
                 // must not fire a spurious disconnect for the still-
                 // active original connection.
-                if handle_connection(stream, peer, events_tx, outbound).await {
+                if handle_connection(stream, peer, events_tx, outbound, closing).await {
                     let _ = disconnects_tx.send(peer);
                 }
             });
@@ -164,6 +168,7 @@ impl WyomingServer {
 #[derive(Clone)]
 pub struct WyomingSender {
     outbound: Arc<Mutex<HashMap<SocketAddr, mpsc::Sender<OutboundMessage>>>>,
+    closing: tokio::sync::watch::Sender<bool>,
 }
 
 impl WyomingSender {
@@ -192,11 +197,11 @@ impl WyomingSender {
         }
     }
 
-    /// End every satellite's connection, for a shutdown. Each one's
-    /// writer sees its queue close, so the connection ends and its socket
-    /// is closed rather than reset when the process exits; the satellite
-    /// then reconnects to whichever Niles answers next.
+    /// End every satellite's connection, for a shutdown, including a
+    /// writer stalled on a satellite that stopped reading. Queue senders
+    /// held by in-flight speech must not keep the connection open.
     pub fn close_all(&self) {
+        self.closing.send_replace(true);
         self.outbound
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -335,6 +340,7 @@ async fn handle_connection(
     peer: SocketAddr,
     tx: mpsc::Sender<IncomingEvent>,
     outbound: Arc<Mutex<HashMap<SocketAddr, mpsc::Sender<OutboundMessage>>>>,
+    mut closing: tokio::sync::watch::Receiver<bool>,
 ) -> bool {
     let (read_half, write_half) = stream.into_split();
     let mut reader = WyomingReader::new(read_half);
@@ -342,6 +348,9 @@ async fn handle_connection(
     let (outbound_tx, mut outbound_rx) = mpsc::channel(OUTBOUND_CHANNEL_CAPACITY);
     {
         let mut map = outbound.lock().unwrap_or_else(|e| e.into_inner());
+        if *closing.borrow() {
+            return false;
+        }
         if map.contains_key(&peer) {
             warn!("rejecting duplicate connection from {peer}");
             return false;
@@ -395,6 +404,11 @@ async fn handle_connection(
     };
 
     tokio::select! {
+        biased;
+        // An error means every sender is gone, so nobody can ask for a
+        // close any more: that disables this branch rather than ending
+        // the connection.
+        Ok(_) = closing.wait_for(|closed| *closed) => {}
         _ = read_fut => {}
         _ = write_fut => {}
     }
@@ -429,7 +443,8 @@ mod tests {
         let peer = "127.0.0.1:12345".parse().unwrap();
         let (tx, rx) = mpsc::channel(1);
         let outbound = Arc::new(Mutex::new(HashMap::from([(peer, tx)])));
-        (WyomingSender { outbound }, peer, rx)
+        let closing = tokio::sync::watch::channel(false).0;
+        (WyomingSender { outbound, closing }, peer, rx)
     }
 
     #[tokio::test]
@@ -939,9 +954,8 @@ mod tests {
         assert_eq!(collected, 5000); // dropped the trailing byte
     }
 
-    /// A shutdown ends every satellite's connection: the writer's queue
-    /// closes, the connection ends, and the client's socket reaches EOF
-    /// rather than being reset when the process exits.
+    /// A shutdown ends every satellite's connection, even while an
+    /// in-flight sender still holds the outbound queue open.
     #[tokio::test]
     async fn closing_all_ends_each_connection() {
         use tokio::io::AsyncReadExt as _;
@@ -961,6 +975,15 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        // send_to holds this clone until the writer acknowledges it.
+        // Closing must not depend on all in-flight sends dropping theirs.
+        let _in_flight = sender
+            .outbound
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&peer)
+            .cloned()
+            .expect("the ping established the connection");
 
         sender.close_all();
         // The server answered the ping above but the client never read
