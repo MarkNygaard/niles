@@ -27,6 +27,18 @@ describe("TabBar", () => {
     expect(screen.queryByRole("link", { name: "Me" })).toBeNull();
   });
 
+  it("says on the Settings entry when a restart is waiting", () => {
+    render(<TabBar route="/" menu={[{ id: "settings", hidden: false }]} settingsDot />);
+    expect(
+      screen.getByRole("link", { name: "Settings, a restart is waiting" }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not say it without the dot", () => {
+    render(<TabBar route="/" menu={[{ id: "settings", hidden: false }]} />);
+    expect(screen.getByRole("link", { name: "Settings" })).toBeInTheDocument();
+  });
+
   it("puts the entries in the arranged order and leaves out the hidden", () => {
     render(
       <TabBar

@@ -38,4 +38,25 @@ describe("AvatarMenu", () => {
     expect(screen.queryByRole("link", { name: "Sign out" })).toBeNull();
     expect(screen.getByRole("link", { name: "Settings" })).toBeInTheDocument();
   });
+
+  it("labels the trigger and the Settings entry when a restart is waiting", () => {
+    render(
+      <AvatarMenu
+        email="mark@example.com"
+        items={[{ id: "settings", hidden: false }]}
+        theme="system"
+        onTheme={vi.fn()}
+        settingsDot
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Your menu, a restart is waiting" }));
+    expect(
+      screen.getByRole("link", { name: "Settings, a restart is waiting" }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not label the trigger when Settings is not among its entries", () => {
+    render(<AvatarMenu email="mark@example.com" items={[]} theme="system" onTheme={vi.fn()} settingsDot />);
+    expect(screen.getByRole("button", { name: "Your menu" })).toBeInTheDocument();
+  });
 });
