@@ -12,6 +12,7 @@ pub mod automations;
 pub mod backend;
 mod blinds;
 mod capture;
+pub mod booted;
 pub mod catalogue;
 pub mod database;
 mod env;
@@ -55,6 +56,7 @@ pub use automations::{
 };
 pub use backend::{MemoryBackend, OverrideBackend, StoredState};
 pub use blinds::{BlindOverride, BlindsConfig, BlindsTargets, FULLY_OPEN, OPEN_TOLERANCE};
+pub use booted::Booted;
 pub use capture::CaptureConfig;
 pub use database::DatabaseConfig;
 pub use error::{Error, Result};
@@ -249,8 +251,86 @@ pub fn section_reload(section: &str) -> Reload {
         // snapshot, and the client is rebuilt when they change; whether
         // Claude gets its own search instead is decided per run.
         "web_search" => Reload::Hot,
+        // `LivePiper` compares the live `[tts]` with what it was built
+        // from before every synthesis and rebuilds when they differ, as
+        // the speech-to-text client does.
+        "tts" => Reload::Hot,
+        // Read where each is used: the assistant is chosen per turn, and
+        // nemlig, Spotify, podcasts and the calendars per request.
+        "integrations" => Reload::Hot,
         _ => Reload::Boot,
     }
+}
+
+/// Settings re-read as Niles runs, although the rest of their section
+/// is read once at startup. Without these, switching the voice lock
+/// off for somebody new to enrol would say a restart waits.
+const LIVE_IN_BOOT_SECTIONS: &[&str] = &[
+    // Read per turn by the voice lock.
+    "recognition.known_voices_only",
+    // Read each time the house falls quiet and a review would run.
+    "skills.review.enabled",
+];
+
+/// How a change to one dotted path reaches the running process: its
+/// section's answer, unless it is one of the few settings re-read
+/// inside a boot section.
+pub fn path_reload(path: &str) -> Reload {
+    let section = path.split('.').next().unwrap_or(path);
+    let live = LIVE_IN_BOOT_SECTIONS.iter().any(|live| {
+        path == *live || path.strip_prefix(live).is_some_and(|rest| rest.starts_with('.'))
+    });
+    if live { Reload::Hot } else { section_reload(section) }
+}
+
+/// The paths inside `section` that are re-read, relative to it:
+/// `known_voices_only` for `recognition`.
+pub(crate) fn live_in(section: &str) -> impl Iterator<Item = &'static str> + '_ {
+    LIVE_IN_BOOT_SECTIONS
+        .iter()
+        .filter_map(move |p| p.strip_prefix(section)?.strip_prefix('.'))
+}
+
+/// The title of the card that sets `section`, or its plain name when no
+/// page does. `None` for a section Niles does not know. Used in messages
+/// such as "a restart waits for Zigbee & MQTT".
+pub fn section_label(section: &str) -> Option<&'static str> {
+    Some(match section {
+        "home" => "Home",
+        "mqtt" => "Zigbee & MQTT",
+        "api" => "API address",
+        "auth" => "People",
+        "database" => "Database",
+        "recognition" => "Voice recognition",
+        "satellites" => "Satellites",
+        "speakers" => "Speakers",
+        "tv" => "TV",
+        "ambient_lights" => "Ambient lights",
+        "lamp_plugs" => "Lamps on plugs",
+        "blinds" => "Blinds",
+        "history" => "Command history",
+        "memory" => "Memory",
+        "notifications" => "Notifications",
+        "presence" => "Presence",
+        "providers" => "AI providers",
+        "rooms" => "Rooms",
+        "menu" => "Menu",
+        "skills" => "Skills",
+        "web_search" => "Web search",
+        "wled" => "WLED strips",
+        "integrations" => "Integrations",
+        "wyoming" => "Wyoming address",
+        "stt" => "Hearing",
+        "tts" => "Speaking",
+        "llm" => "Thinking",
+        "lighting" => "Lighting",
+        "automation" => "Automations",
+        "plugins" => "Add-ons",
+        "tool_servers" => "Tool servers",
+        "public" => "Public address",
+        "capture" => "Keep what it hears",
+        _ => return None,
+    })
 }
 
 /// Every section [`Config`] understands, whether or not the config file
@@ -488,6 +568,34 @@ mod tests {
     fn blinds_are_read_live_by_every_open() {
         assert_eq!(section_reload("blinds"), Reload::Hot);
         assert!(SECTIONS.contains(&"blinds"));
+    }
+
+    #[test]
+    fn every_known_section_has_a_label() {
+        for section in SECTIONS {
+            assert!(
+                section_label(section).is_some(),
+                "no Settings label for {section}"
+            );
+        }
+    }
+
+    #[test]
+    fn speaking_and_integrations_are_live() {
+        assert_eq!(section_reload("tts"), Reload::Hot);
+        assert_eq!(section_reload("integrations"), Reload::Hot);
+    }
+
+    #[test]
+    fn the_voice_lock_is_live_inside_a_boot_section() {
+        assert_eq!(path_reload("recognition.known_voices_only"), Reload::Hot);
+        assert_eq!(path_reload("recognition.enabled"), Reload::Boot);
+        assert_eq!(path_reload("skills.review.enabled"), Reload::Hot);
+        assert_eq!(path_reload("skills.skill_max_chars"), Reload::Boot);
+        assert_eq!(path_reload("mqtt.host"), Reload::Boot);
+        assert_eq!(path_reload("lighting.daytime_brightness"), Reload::Hot);
+        // A prefix that is not a whole segment is not the live path.
+        assert_eq!(path_reload("recognition.known_voices_onlyx"), Reload::Boot);
     }
 
     #[test]

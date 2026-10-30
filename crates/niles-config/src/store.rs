@@ -37,7 +37,7 @@
 
 use crate::backend::{MemoryBackend, OverrideBackend, StoredState};
 use crate::error::{Error, Result};
-use crate::{Config, Reload, section_reload};
+use crate::{Config, Reload, path_reload};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -167,12 +167,21 @@ impl ConfigStore {
     /// life, silently ignoring everything the user had tuned.
     ///
     /// Does not write back — the state came *from* the backend.
+    ///
+    /// Wakes subscribers like any change: what was adopted may differ
+    /// from what is running.
     pub fn adopt(&self, state: StoredState) -> Result<()> {
         let config = layer(&self.base, &state.overrides)?;
+        // Read before the move: the adopted state's last revision id, or
+        // 0 when it has none.
+        let id = state.revisions.last().map_or(0, |r| r.id);
         let mut guard = self.write();
         guard.overrides = state.overrides;
         guard.current = Arc::new(config);
         guard.revisions = state.revisions;
+        drop(guard);
+        // After the swap, so a woken reader sees the adopted config.
+        self.changed.send_replace(id);
         Ok(())
     }
 
@@ -201,6 +210,13 @@ impl ConfigStore {
     /// observe two different configs.
     pub fn current(&self) -> Arc<Config> {
         Arc::clone(&self.read().current)
+    }
+
+    /// The effective config and the table it was layered from, read
+    /// together so neither can be from a write the other missed.
+    pub fn current_and_table(&self) -> (Arc<Config>, toml::Table) {
+        let inner = self.read();
+        (Arc::clone(&inner.current), layer_table(&self.base, &inner.overrides))
     }
 
     /// The override document as it stands — only the values that differ
@@ -335,6 +351,9 @@ impl ConfigStore {
         guard.overrides = restored;
         guard.current = Arc::new(config);
         guard.revisions = remaining;
+        drop(guard);
+        // After the swap, so a woken reader sees the restored config.
+        self.changed.send_replace(last.id);
         Ok(Some(Applied {
             revision: last.id,
             sections: sections_of(&changes),
@@ -554,7 +573,7 @@ impl Applied {
         self.changes.is_empty()
     }
 
-    /// Sections that changed but won't take effect until a restart.
+    /// Sections with a changed setting that is read only at startup.
     pub fn needs_restart(&self) -> Vec<&str> {
         self.sections
             .iter()
@@ -616,15 +635,6 @@ impl LoadOutcome {
 pub struct SectionChange {
     pub section: String,
     pub reload: Reload,
-}
-
-impl SectionChange {
-    fn new(section: &str) -> Self {
-        Self {
-            section: section.to_string(),
-            reload: section_reload(section),
-        }
-    }
 }
 
 /// Flatten a patch into `(dotted path, value)` leaves, so a nested
@@ -743,8 +753,16 @@ fn sections_of(changes: &[Change]) -> Vec<SectionChange> {
     let mut sections: Vec<SectionChange> = Vec::new();
     for change in changes {
         let section = change.path.split('.').next().unwrap_or(&change.path);
-        if !sections.iter().any(|s| s.section == section) {
-            sections.push(SectionChange::new(section));
+        let reload = path_reload(&change.path);
+        match sections.iter_mut().find(|s| s.section == section) {
+            // One setting read only at startup is enough for the
+            // section to need a restart.
+            Some(known) if reload == Reload::Boot => known.reload = Reload::Boot,
+            Some(_) => {}
+            None => sections.push(SectionChange {
+                section: section.to_string(),
+                reload,
+            }),
         }
     }
     sections
@@ -1334,6 +1352,67 @@ daytime_brightness = 70",
             store.undo(ChangeSource::Api).await.unwrap().is_none(),
             "nothing left to undo"
         );
+    }
+
+    #[tokio::test]
+    async fn undo_wakes_subscribers() {
+        // An undo is a write like any other: whatever re-checks on
+        // change must hear it, or a voice undo of a boot change leaves
+        // the restart answer wrong until the next check.
+        let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
+        store
+            .apply(
+                &patch("[lighting]\ndaytime_brightness = 85"),
+                ChangeSource::Api,
+            )
+            .await
+            .unwrap();
+        let mut changes = store.subscribe();
+        changes.borrow_and_update();
+        store.undo(ChangeSource::Api).await.unwrap();
+        assert!(changes.has_changed().unwrap());
+    }
+
+    #[tokio::test]
+    async fn adopt_wakes_subscribers() {
+        // Adopting late-arriving state changes what is running, so a
+        // holder of the fingerprint must hear of it.
+        let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
+        let mut changes = store.subscribe();
+        changes.borrow_and_update();
+        store
+            .adopt(crate::StoredState::default())
+            .expect("adopting an empty state validates");
+        assert!(changes.has_changed().unwrap());
+    }
+
+    #[tokio::test]
+    async fn switching_the_voice_lock_needs_no_restart() {
+        let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
+        let applied = store
+            .apply(
+                &patch("[recognition]\nknown_voices_only = true"),
+                ChangeSource::Api,
+            )
+            .await
+            .unwrap();
+        assert!(
+            applied.needs_restart().is_empty(),
+            "the voice lock is re-read per turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_boot_setting_beside_it_still_does() {
+        let store = ConfigStore::from_str_in_memory(base_toml()).unwrap();
+        let applied = store
+            .apply(
+                &patch("[recognition]\nknown_voices_only = true\nuse_gpu = true"),
+                ChangeSource::Api,
+            )
+            .await
+            .unwrap();
+        assert_eq!(applied.needs_restart(), vec!["recognition"]);
     }
 
     #[tokio::test]

@@ -64,6 +64,15 @@ pub struct SectionView {
     overridden: bool,
 }
 
+/// What a write left waiting for a restart: touched, read only at
+/// startup, and still different from what Niles started with. One
+/// changed back is not named.
+#[derive(Serialize)]
+pub struct RestartItemView {
+    what: String,
+    label: String,
+}
+
 /// What a write did, in the shape the caller needs to report it.
 #[derive(Serialize)]
 pub struct AppliedView {
@@ -75,8 +84,8 @@ pub struct AppliedView {
     summary: String,
     /// True when every requested value already held that setting.
     noop: bool,
-    /// Sections that changed but need a restart to take effect.
-    needs_restart: Vec<String>,
+    /// Sections this write left waiting for a restart.
+    needs_restart: Vec<RestartItemView>,
 }
 
 #[derive(Serialize)]
@@ -168,7 +177,7 @@ pub async fn patch_config(
         .apply_and_reset(&patch, &resets, ChangeSource::Api)
         .await
     {
-        Ok(applied) => applied_response(applied),
+        Ok(applied) => applied_response(&state, applied),
         // A rejected value is the caller's mistake, not a server fault,
         // and the message from `validate()` says which field and why.
         Err(e) => problem(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
@@ -183,7 +192,7 @@ pub async fn reset_config(State(state): State<AppState>, Path(path): Path<String
         return unconfigured();
     };
     match store.reset(&path, ChangeSource::Api).await {
-        Ok(applied) => applied_response(applied),
+        Ok(applied) => applied_response(&state, applied),
         Err(e) => problem(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
     }
 }
@@ -206,7 +215,7 @@ pub async fn undo_config(State(state): State<AppState>) -> Response {
         return unconfigured();
     };
     match store.undo(ChangeSource::Api).await {
-        Ok(Some(applied)) => applied_response(applied),
+        Ok(Some(applied)) => applied_response(&state, applied),
         Ok(None) => problem(StatusCode::NOT_FOUND, "no config changes to undo"),
         Err(e) => problem(StatusCode::UNPROCESSABLE_ENTITY, &e.to_string()),
     }
@@ -299,13 +308,29 @@ fn unconfigured() -> Response {
     )
 }
 
-fn applied_response(applied: Applied) -> Response {
+fn applied_response(state: &AppState, applied: Applied) -> Response {
     let summary = applied.summary();
-    let needs_restart = applied
-        .needs_restart()
-        .into_iter()
-        .map(str::to_string)
-        .collect();
+    let touched = applied.needs_restart();
+    // Limited to what still differs from what Niles started with: a
+    // change put back in the same write is not named.
+    let needs_restart: Vec<RestartItemView> = match &state.restart {
+        Some(restart) => restart
+            .pending()
+            .into_iter()
+            .filter(|p| touched.contains(&p.what.as_str()))
+            .map(|p| RestartItemView {
+                what: p.what,
+                label: p.label,
+            })
+            .collect(),
+        None => touched
+            .into_iter()
+            .map(|what| RestartItemView {
+                label: niles_config::section_label(what).unwrap_or(what).to_string(),
+                what: what.to_string(),
+            })
+            .collect(),
+    };
     let changes = applied
         .changes
         .iter()

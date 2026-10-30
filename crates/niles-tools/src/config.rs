@@ -163,6 +163,14 @@ impl Tool for UpdateConfig {
                     .into(),
             });
         }
+        if APP_ONLY.contains(&section) {
+            return Err(Error::InvalidArgs {
+                tool: "update_config".into(),
+                reason: format!(
+                    "'{section}' is changed in the app, under Settings, never by voice"
+                ),
+            });
+        }
         if section_reload(section) != Reload::Hot {
             // Storing it would be honest only if we could also say "and
             // nothing will happen until the pod restarts", which is not a
@@ -360,8 +368,15 @@ fn hot_sections(effective: &toml::Table) -> Vec<String> {
         .collect()
 }
 
+/// Hot, and still changed only in the app. Each says where Niles
+/// sends what it speaks or whose accounts it uses, and the model
+/// reads pages and tool results anybody could have written. They
+/// were boot sections, which voice refuses, until they were found
+/// to be re-read; that is no reason to hand them to the model.
+const APP_ONLY: &[&str] = &["tts", "integrations"];
+
 fn changeable_by_voice(section: &str) -> bool {
-    section != "auth" && section_reload(section) == Reload::Hot
+    section != "auth" && !APP_ONLY.contains(&section) && section_reload(section) == Reload::Hot
 }
 
 fn section_list(effective: &toml::Table) -> String {
@@ -510,6 +525,33 @@ mod tests {
                 .unwrap()
                 .contains(&json!("auth"))
         );
+    }
+
+    #[tokio::test]
+    async fn speaking_and_integrations_stay_out_of_reach_by_voice() {
+        // Found to be re-read (they are Hot now), but they say where
+        // Niles sends what it speaks and whose accounts it uses — the
+        // model reads strangers' pages, so these stay app-only.
+        let store = store();
+        for path in ["tts.base_url", "integrations.assistant"] {
+            let err = update(&store, path, json!("https://elsewhere.example"))
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("never by voice"),
+                "{path}: {err}"
+            );
+        }
+        assert_eq!(store.overrides(), toml::Table::new(), "unchanged");
+    }
+
+    #[test]
+    fn hot_sections_offered_by_voice_leave_them_out() {
+        let effective: toml::Table = toml::from_str(BASE).unwrap();
+        let offered = hot_sections(&effective);
+        assert!(offered.contains(&"lighting".to_string()));
+        assert!(!offered.contains(&"tts".to_string()));
+        assert!(!offered.contains(&"integrations".to_string()));
     }
 
     #[tokio::test]
