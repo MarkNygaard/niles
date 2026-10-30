@@ -30,6 +30,9 @@ services:
       NILES_MQTT_PASSWORD: ${NILES_MQTT_PASSWORD:-}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
       CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
+      # What starts Niles again when it exits, so Settings can offer
+      # Restart now: Docker does, given the restart policy above.
+      NILES_SUPERVISOR: docker
     volumes:
       - ./niles.toml:/etc/niles/niles.toml:ro
     depends_on:

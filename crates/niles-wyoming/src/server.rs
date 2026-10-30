@@ -192,6 +192,14 @@ impl WyomingSender {
         }
     }
 
+    /// End every satellite's connection, for a shutdown. Each one's
+    /// writer sees its queue close, so the connection ends and its socket
+    /// is closed rather than reset when the process exits; the satellite
+    /// then reconnects to whichever Niles answers next.
+    pub fn close_all(&self) {
+        self.outbound.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
     /// Tell `peer` an answer is still coming. A satellite gives up on a
     /// reply after ten silent seconds; every byte it receives restarts
     /// that, and an event it does not know — a `ping` — is skipped.
@@ -926,6 +934,49 @@ mod tests {
         }
 
         assert_eq!(collected, 5000); // dropped the trailing byte
+    }
+
+    /// A shutdown ends every satellite's connection: the writer's queue
+    /// closes, the connection ends, and the client's socket reaches EOF
+    /// rather than being reset when the process exits.
+    #[tokio::test]
+    async fn closing_all_ends_each_connection() {
+        use tokio::io::AsyncReadExt as _;
+
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let (server, _events_rx, _disconnects_rx) = WyomingServer::bind(addr).await.unwrap();
+        let bound = server.listener.local_addr().unwrap();
+        let sender = server.sender();
+        let _server_task = tokio::spawn(server.run());
+
+        let mut stream = TcpStream::connect(bound).await.unwrap();
+        // Wait until the server knows the peer: it answers a ping.
+        let peer = stream.local_addr().unwrap();
+        for _ in 0..50 {
+            if sender
+                .send_to(peer, event(EventKind::Ping))
+                .await
+                .is_ok()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        sender.close_all();
+        // The server answered the ping above but the client never read
+        // it; EOF comes after that buffered byte.
+        let mut buf = [0u8; 64];
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let n = stream.read(&mut buf).await.expect("a clean read, not a reset");
+                if n == 0 {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("the connection ends within a second");
     }
 
     /// After a client disconnects, the peer is removed from the

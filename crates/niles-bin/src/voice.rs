@@ -767,7 +767,7 @@ pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()
 
     server_handle.abort();
     source_handle.abort();
-    if let Some(h) = wled_handle {
+    if let Some((h, _publisher)) = wled_handle {
         h.abort();
     }
     timer_handle.abort();
