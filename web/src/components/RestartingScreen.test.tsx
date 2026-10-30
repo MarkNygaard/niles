@@ -48,4 +48,16 @@ describe("RestartingScreen", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Reload" }));
     expect(onBack).toHaveBeenCalledTimes(1);
   });
+
+  it("does not restart the wait on a re-render", () => {
+    // A fresh default onBack each render would re-run the effect and
+    // reset the give-up clock on every render; the two minutes must
+    // accumulate across them.
+    startWaiting({ before: "boot-a", supervisor: null });
+    const wait = vi.fn(() => new Promise<Outcome>(() => {}));
+    const { rerender } = render(<RestartingScreen wait={wait} />);
+    expect(wait).toHaveBeenCalledTimes(1);
+    rerender(<RestartingScreen wait={wait} />);
+    expect(wait).toHaveBeenCalledTimes(1);
+  });
 });

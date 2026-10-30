@@ -5,8 +5,13 @@ import { Button } from "@/components/ui/button";
 
 /** The full-screen answer to a restart: wait for a new Niles, reload,
     and after two minutes say it has not come back and where to look. */
+// Module scope, not a default parameter: the effect below lists onBack
+// as a dependency, and a fresh closure per render would restart the
+// wait on every render — the two-minute give-up would never accumulate.
+const reload = () => window.location.reload();
+
 export function RestartingScreen({
-  onBack = () => window.location.reload(),
+  onBack = reload,
   wait = waitForNewBoot,
 }: {
   onBack?: () => void;
