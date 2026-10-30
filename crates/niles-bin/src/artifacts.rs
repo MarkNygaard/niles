@@ -941,11 +941,7 @@ impl Artifacts {
             .unwrap_or_else(|e| e.into_inner())
             .values()
             .sum();
-        let paging = self
-            .paging
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len();
+        let paging = self.paging.lock().unwrap_or_else(|e| e.into_inner()).len();
         let changing = self
             .changing
             .lock()
@@ -2762,10 +2758,7 @@ mod tests {
     fn jobs_going_counts_a_taken_slot() {
         let f = fixture_in(FakeRunner::doing(vec![]), None);
         assert_eq!(f.artifacts.jobs_going(), 0, "nothing going");
-        let slot = f
-            .artifacts
-            .take_slot("person:a")
-            .expect("a slot is free");
+        let slot = f.artifacts.take_slot("person:a").expect("a slot is free");
         assert_eq!(f.artifacts.jobs_going(), 1, "one job going");
         let held = Held::claim(&f.artifacts.paging, 7).expect("unclaimed");
         assert_eq!(f.artifacts.jobs_going(), 2, "and a page being made");

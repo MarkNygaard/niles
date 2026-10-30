@@ -1175,8 +1175,6 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     };
 
-
-
     match &serve_result {
         Ok(why) => tracing::info!("[shutdown] {why}: stopping in order"),
         Err(e) => tracing::error!("[shutdown] {e:#}: stopping in order"),

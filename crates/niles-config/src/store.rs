@@ -216,7 +216,10 @@ impl ConfigStore {
     /// together so neither can be from a write the other missed.
     pub fn current_and_table(&self) -> (Arc<Config>, toml::Table) {
         let inner = self.read();
-        (Arc::clone(&inner.current), layer_table(&self.base, &inner.overrides))
+        (
+            Arc::clone(&inner.current),
+            layer_table(&self.base, &inner.overrides),
+        )
     }
 
     /// The override document as it stands — only the values that differ

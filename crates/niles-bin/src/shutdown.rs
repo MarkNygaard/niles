@@ -124,9 +124,7 @@ impl Shutdown {
         let mut ran = Vec::new();
         for (stage, budget, step) in self.steps {
             if tokio::time::timeout(budget, step).await.is_err() {
-                tracing::warn!(
-                    "[shutdown] {stage:?} ran over {budget:?}; going on without it"
-                );
+                tracing::warn!("[shutdown] {stage:?} ran over {budget:?}; going on without it");
             }
             ran.push(stage);
         }
@@ -280,7 +278,11 @@ mod tests {
     async fn a_step_that_runs_over_is_left_behind() {
         let ran_later = Arc::new(Mutex::new(false));
         let mut shutdown = Shutdown::default();
-        shutdown.at(Stage::StopAddOns, Duration::from_secs(3), std::future::pending());
+        shutdown.at(
+            Stage::StopAddOns,
+            Duration::from_secs(3),
+            std::future::pending(),
+        );
         let later = ran_later.clone();
         shutdown.at(Stage::CloseMqtt, Duration::from_secs(1), async move {
             *later.lock().unwrap_or_else(|e| e.into_inner()) = true;

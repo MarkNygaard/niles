@@ -11,8 +11,8 @@ pub mod auth;
 pub mod automations;
 pub mod backend;
 mod blinds;
-mod capture;
 pub mod booted;
+mod capture;
 pub mod catalogue;
 pub mod database;
 mod env;
@@ -278,9 +278,16 @@ const LIVE_IN_BOOT_SECTIONS: &[&str] = &[
 pub fn path_reload(path: &str) -> Reload {
     let section = path.split('.').next().unwrap_or(path);
     let live = LIVE_IN_BOOT_SECTIONS.iter().any(|live| {
-        path == *live || path.strip_prefix(live).is_some_and(|rest| rest.starts_with('.'))
+        path == *live
+            || path
+                .strip_prefix(live)
+                .is_some_and(|rest| rest.starts_with('.'))
     });
-    if live { Reload::Hot } else { section_reload(section) }
+    if live {
+        Reload::Hot
+    } else {
+        section_reload(section)
+    }
 }
 
 /// The paths inside `section` that are re-read, relative to it:

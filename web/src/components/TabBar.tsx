@@ -65,6 +65,7 @@ export function TabBar({
               <a
                 href={tab.href}
                 aria-current={active ? "page" : undefined}
+                aria-label={dotted ? `${tab.label}, a restart is waiting` : undefined}
                 className={cn(
                   // Held 8px off the bar's top edge rather than centred:
                   // centred, the icons sat right against it. The bar keeps
@@ -82,13 +83,10 @@ export function TabBar({
                 {tab.icon}
                 {tab.label}
                 {dotted && (
-                  <>
-                    <span
-                      aria-hidden
-                      className="bg-primary absolute top-1.5 right-1/4 size-2 rounded-full sm:top-1 sm:right-1"
-                    />
-                    <span className="sr-only">, a restart is waiting</span>
-                  </>
+                  <span
+                    aria-hidden
+                    className="bg-primary absolute top-1.5 right-1/4 size-2 rounded-full sm:top-1 sm:right-1"
+                  />
                 )}
               </a>
             </li>

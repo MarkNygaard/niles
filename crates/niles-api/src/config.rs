@@ -326,7 +326,9 @@ fn applied_response(state: &AppState, applied: Applied) -> Response {
         None => touched
             .into_iter()
             .map(|what| RestartItemView {
-                label: niles_config::section_label(what).unwrap_or(what).to_string(),
+                label: niles_config::section_label(what)
+                    .unwrap_or(what)
+                    .to_string(),
                 what: what.to_string(),
             })
             .collect(),

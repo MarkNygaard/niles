@@ -57,7 +57,9 @@ impl Booted {
 
         let mut differs: Vec<String> = names
             .into_iter()
-            .filter(|name| comparable(name, effective.get(*name)).as_ref() != self.sections.get(*name))
+            .filter(|name| {
+                comparable(name, effective.get(*name)).as_ref() != self.sections.get(*name)
+            })
             .map(str::to_string)
             .collect();
 
@@ -75,7 +77,10 @@ impl Booted {
 
         differs.sort_by_key(|name| {
             (
-                SECTIONS.iter().position(|s| s == name).unwrap_or(usize::MAX),
+                SECTIONS
+                    .iter()
+                    .position(|s| s == name)
+                    .unwrap_or(usize::MAX),
                 name.clone(),
             )
         });
@@ -135,7 +140,12 @@ fn credentials(config: &Config) -> Vec<(&'static str, Vec<u8>)> {
     vec![
         (
             "mqtt",
-            digest(config.mqtt.resolve_credentials().map(|(user, pass)| vec![user, pass])),
+            digest(
+                config
+                    .mqtt
+                    .resolve_credentials()
+                    .map(|(user, pass)| vec![user, pass]),
+            ),
         ),
         ("llm", digest(llm_parts(config))),
     ]
@@ -181,10 +191,18 @@ mod tests {
     /// `differs` reads the global secrets map, so every test here holds
     /// the guard and starts from a known-empty map.
     fn hold_guard() -> std::sync::MutexGuard<'static, ()> {
-        crate::secrets::TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner())
+        crate::secrets::TEST_GUARD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
-    fn store_and_booted(base: &str) -> (std::sync::MutexGuard<'static, ()>, crate::ConfigStore, Booted) {
+    fn store_and_booted(
+        base: &str,
+    ) -> (
+        std::sync::MutexGuard<'static, ()>,
+        crate::ConfigStore,
+        Booted,
+    ) {
         let guard = hold_guard();
         crate::secrets::load(HashMap::new());
         let store = crate::ConfigStore::from_str_in_memory(base).expect("fixture config is valid");
@@ -217,7 +235,10 @@ mod tests {
     async fn a_boot_section_changed_from_the_app_waits() {
         let (_guard, store, booted) = store_and_booted(crate::tests_support::valid_toml());
         store
-            .apply(&patch("[api]\nbind_address = \"0.0.0.0:9999\""), crate::ChangeSource::Api)
+            .apply(
+                &patch("[api]\nbind_address = \"0.0.0.0:9999\""),
+                crate::ChangeSource::Api,
+            )
             .await
             .expect("apply works");
         assert_eq!(differs(&store, &booted), ["api"]);
@@ -231,7 +252,10 @@ mod tests {
     async fn a_change_by_voice_counts_the_same() {
         let (_guard, store, booted) = store_and_booted(crate::tests_support::valid_toml());
         store
-            .apply(&patch("[api]\nbind_address = \"0.0.0.0:9999\""), crate::ChangeSource::Voice)
+            .apply(
+                &patch("[api]\nbind_address = \"0.0.0.0:9999\""),
+                crate::ChangeSource::Voice,
+            )
             .await
             .expect("voice may change a boot section that is not auth");
         assert_eq!(differs(&store, &booted), ["api"]);
@@ -251,7 +275,10 @@ mod tests {
     async fn changing_it_back_clears_it() {
         let (_guard, store, booted) = store_and_booted(crate::tests_support::valid_toml());
         store
-            .apply(&patch("[api]\nbind_address = \"0.0.0.0:9999\""), crate::ChangeSource::Api)
+            .apply(
+                &patch("[api]\nbind_address = \"0.0.0.0:9999\""),
+                crate::ChangeSource::Api,
+            )
             .await
             .expect("apply works");
         store
@@ -272,7 +299,10 @@ mod tests {
     async fn resetting_it_clears_it() {
         let (_guard, store, booted) = store_and_booted(crate::tests_support::valid_toml());
         store
-            .apply(&patch("[api]\nbind_address = \"0.0.0.0:9999\""), crate::ChangeSource::Api)
+            .apply(
+                &patch("[api]\nbind_address = \"0.0.0.0:9999\""),
+                crate::ChangeSource::Api,
+            )
             .await
             .expect("apply works");
         store
@@ -301,7 +331,10 @@ bind_address = "0.0.0.0:8080"
 "#;
         let (_guard, store, booted) = store_and_booted(base);
         store
-            .apply(&patch("[mqtt]\nclient_id = \"tester\""), crate::ChangeSource::Api)
+            .apply(
+                &patch("[mqtt]\nclient_id = \"tester\""),
+                crate::ChangeSource::Api,
+            )
             .await
             .expect("apply works");
         assert_eq!(differs(&store, &booted), ["mqtt"]);
@@ -360,11 +393,17 @@ bind_address = "0.0.0.0:8080"
     async fn two_boot_sections_are_listed_in_section_order() {
         let (_guard, store, booted) = store_and_booted(crate::tests_support::valid_toml());
         store
-            .apply(&patch("[api]\nbind_address = \"0.0.0.0:9999\""), crate::ChangeSource::Api)
+            .apply(
+                &patch("[api]\nbind_address = \"0.0.0.0:9999\""),
+                crate::ChangeSource::Api,
+            )
             .await
             .expect("apply works");
         store
-            .apply(&patch("[mqtt]\nclient_id = \"tester\""), crate::ChangeSource::Api)
+            .apply(
+                &patch("[mqtt]\nclient_id = \"tester\""),
+                crate::ChangeSource::Api,
+            )
             .await
             .expect("apply works");
         assert_eq!(differs(&store, &booted), ["mqtt", "api"], "SECTIONS order");

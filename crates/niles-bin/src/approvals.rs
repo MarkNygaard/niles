@@ -1039,11 +1039,8 @@ mod tests {
         let approvals = Approvals::new(EventBus::default(), None);
         let (live, _) = held_for(&approvals, "person:mark", None);
         let (lapsed, _) = held_for(&approvals, "person:majse", None);
-        approvals
-            .lock()
-            .get_mut(&lapsed)
-            .expect("held")
-            .lapses = Instant::now() - Duration::from_secs(1);
+        approvals.lock().get_mut(&lapsed).expect("held").lapses =
+            Instant::now() - Duration::from_secs(1);
         assert_eq!(approvals.waiting_count(), 1, "only the live one counts");
         approvals.lock().remove(&live);
         assert_eq!(approvals.waiting_count(), 0);

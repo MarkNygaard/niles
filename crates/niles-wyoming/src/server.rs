@@ -197,7 +197,10 @@ impl WyomingSender {
     /// is closed rather than reset when the process exits; the satellite
     /// then reconnects to whichever Niles answers next.
     pub fn close_all(&self) {
-        self.outbound.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.outbound
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
     }
 
     /// Tell `peer` an answer is still coming. A satellite gives up on a
@@ -953,11 +956,7 @@ mod tests {
         // Wait until the server knows the peer: it answers a ping.
         let peer = stream.local_addr().unwrap();
         for _ in 0..50 {
-            if sender
-                .send_to(peer, event(EventKind::Ping))
-                .await
-                .is_ok()
-            {
+            if sender.send_to(peer, event(EventKind::Ping)).await.is_ok() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -969,7 +968,10 @@ mod tests {
         let mut buf = [0u8; 64];
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
-                let n = stream.read(&mut buf).await.expect("a clean read, not a reset");
+                let n = stream
+                    .read(&mut buf)
+                    .await
+                    .expect("a clean read, not a reset");
                 if n == 0 {
                     return;
                 }

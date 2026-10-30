@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { ApiError, type RestartStatus } from "@/lib/api";
 import {
   GIVE_UP_MS,
@@ -168,7 +168,10 @@ describe("the waiting store", () => {
     act(() => startWaiting({ before: "boot-a", supervisor: "docker" }));
     expect(result.current).toEqual({ before: "boot-a", supervisor: "docker" });
     act(() => startWaiting({ before: "boot-b", supervisor: "docker" }));
-    expect(result.current?.before).toBe("boot-a", "a second start is ignored");
+    expect(
+      result.current?.before,
+      "a second start is ignored while one is under way",
+    ).toBe("boot-a");
     act(() => stopWaiting());
     expect(result.current).toBeNull();
   });

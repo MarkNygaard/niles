@@ -71,9 +71,7 @@ impl Supervisor {
     }
 
     fn from_env(var: impl Fn(&str) -> Option<String>) -> Option<Self> {
-        if var("KUBERNETES_SERVICE_HOST")
-            .is_some_and(|value| !value.trim().is_empty())
-        {
+        if var("KUBERNETES_SERVICE_HOST").is_some_and(|value| !value.trim().is_empty()) {
             return Some(Self::Kubernetes);
         }
         var("NILES_SUPERVISOR")
@@ -424,7 +422,8 @@ mod tests {
         let restart = Arc::new(restart);
         let state = AppState::new(
             Arc::new(niles_core::DeviceRegistry::new()),
-            Arc::new(crate::config_tests::NoopPublisher) as Arc<dyn crate::publish::DevicePublisher>,
+            Arc::new(crate::config_tests::NoopPublisher)
+                as Arc<dyn crate::publish::DevicePublisher>,
             Arc::new(niles_mqtt::CommandRouter::z2m_only("zigbee2mqtt")),
             bus.clone(),
         )
@@ -485,7 +484,11 @@ mod tests {
     #[tokio::test]
     async fn a_boot_change_waits_with_its_label_and_since() {
         let (app, _, _, _) = fixture(None);
-        send(&app, patch(serde_json::json!({"api": {"bind_address": "0.0.0.0:9090"}}))).await;
+        send(
+            &app,
+            patch(serde_json::json!({"api": {"bind_address": "0.0.0.0:9090"}})),
+        )
+        .await;
         let (_, body) = send(&app, get("/system/restart")).await;
         let api = body["pending"]
             .as_array()
@@ -619,7 +622,12 @@ mod tests {
             .unwrap();
         let (status, body) = send(&app, req).await;
         assert_eq!(status, StatusCode::CONFLICT);
-        assert!(body["error"].as_str().expect("an error").contains("only stop it"));
+        assert!(
+            body["error"]
+                .as_str()
+                .expect("an error")
+                .contains("only stop it")
+        );
         assert!(!restart.is_requested(), "nothing was asked for");
     }
 
@@ -682,14 +690,20 @@ mod tests {
     async fn without_the_capability_it_says_so() {
         let state = AppState::new(
             Arc::new(niles_core::DeviceRegistry::new()),
-            Arc::new(crate::config_tests::NoopPublisher) as Arc<dyn crate::publish::DevicePublisher>,
+            Arc::new(crate::config_tests::NoopPublisher)
+                as Arc<dyn crate::publish::DevicePublisher>,
             Arc::new(niles_mqtt::CommandRouter::z2m_only("zigbee2mqtt")),
             EventBus::default(),
         );
         let app = crate::server::router(state);
         let (status, body) = send(&app, get("/system/restart")).await;
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-        assert!(body["error"].as_str().expect("an error").contains("config store"));
+        assert!(
+            body["error"]
+                .as_str()
+                .expect("an error")
+                .contains("config store")
+        );
         let req = Request::builder()
             .method("POST")
             .uri("/system/restart")
@@ -701,13 +715,16 @@ mod tests {
 
     #[test]
     fn the_supervisor_is_kubernetes_when_the_pod_says_so() {
-        let found = Supervisor::from_env(|name| (name == "KUBERNETES_SERVICE_HOST").then(|| "10.0.0.1".to_string()));
+        let found = Supervisor::from_env(|name| {
+            (name == "KUBERNETES_SERVICE_HOST").then(|| "10.0.0.1".to_string())
+        });
         assert!(matches!(found, Some(Supervisor::Kubernetes)));
     }
 
     #[test]
     fn a_declared_supervisor_is_named() {
-        let found = Supervisor::from_env(|name| (name == "NILES_SUPERVISOR").then(|| "Docker".to_string()));
+        let found =
+            Supervisor::from_env(|name| (name == "NILES_SUPERVISOR").then(|| "Docker".to_string()));
         assert!(
             matches!(found, Some(Supervisor::Declared(ref name)) if name == "docker"),
             "declared names are lowercased: {found:?}"

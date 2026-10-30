@@ -537,10 +537,7 @@ mod tests {
             let err = update(&store, path, json!("https://elsewhere.example"))
                 .await
                 .unwrap_err();
-            assert!(
-                err.to_string().contains("never by voice"),
-                "{path}: {err}"
-            );
+            assert!(err.to_string().contains("never by voice"), "{path}: {err}");
         }
         assert_eq!(store.overrides(), toml::Table::new(), "unchanged");
     }

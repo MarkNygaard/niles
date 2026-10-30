@@ -7,6 +7,13 @@ export function RestartBar() {
   const { data } = useRestartStatus();
   if (!data || data.pending.length === 0) return null;
   const labels = data.pending.map((p) => p.label).join(", ");
+  const why = !data.persistent
+    ? " Without a database a restart would undo them too, so set them in niles.toml instead."
+    : !data.supervisor
+      ? " Restart Niles where it runs to apply them."
+      : data.restarting
+        ? " Restarting…"
+        : "";
   return (
     <div
       role="status"
@@ -14,11 +21,7 @@ export function RestartBar() {
     >
       <RotateCw className="size-4 shrink-0" aria-hidden />
       <span className="min-w-0 flex-1">
-        Some changes take effect after a restart: {labels}.
-        {!data.persistent &&
-          " Without a database a restart would undo them too, so set them in niles.toml instead."}
-        {data.persistent && !data.supervisor && " Restart Niles where it runs to apply them."}
-        {data.restarting && " Restarting…"}
+        {`Some changes take effect after a restart: ${labels}.${why}`}
       </span>
       <RestartButton status={data} />
     </div>

@@ -88,6 +88,7 @@ export function AvatarMenu({
                 key={entry.href}
                 href={entry.href}
                 onClick={() => setOpen(false)}
+                aria-label={entryDotted ? `${entry.label}, a restart is waiting` : undefined}
                 className={cn(
                   "flex items-center gap-3 rounded-md px-2 py-2 text-sm transition-colors",
                   "hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
@@ -97,10 +98,7 @@ export function AvatarMenu({
                 {entry.icon}
                 {entry.label}
                 {entryDotted && (
-                  <>
-                    <span aria-hidden className="bg-primary ml-auto size-2 rounded-full" />
-                    <span className="sr-only">, a restart is waiting</span>
-                  </>
+                  <span aria-hidden className="bg-primary ml-auto size-2 rounded-full" />
                 )}
               </a>
             );

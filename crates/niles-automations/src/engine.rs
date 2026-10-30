@@ -213,10 +213,7 @@ impl AutomationEngine {
         for handle in holds {
             handle.abort();
         }
-        let running: Vec<AbortHandle> = lock(&self.running)
-            .drain()
-            .map(|(_, (_, h))| h)
-            .collect();
+        let running: Vec<AbortHandle> = lock(&self.running).drain().map(|(_, (_, h))| h).collect();
         for handle in running {
             handle.abort();
         }

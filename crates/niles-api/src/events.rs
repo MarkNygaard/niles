@@ -319,12 +319,18 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(started, serde_json::json!({"type": "restart_started", "boot_id": "b"}));
+        assert_eq!(
+            started,
+            serde_json::json!({"type": "restart_started", "boot_id": "b"})
+        );
         let pending = serde_json::to_value(
             WireEvent::for_viewer(Event::RestartPendingChanged, "person:x").unwrap(),
         )
         .unwrap();
-        assert_eq!(pending, serde_json::json!({"type": "restart_pending_changed"}));
+        assert_eq!(
+            pending,
+            serde_json::json!({"type": "restart_pending_changed"})
+        );
     }
 
     #[test]
