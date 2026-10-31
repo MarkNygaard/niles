@@ -241,14 +241,16 @@ since_pr = 84
 [[feature]]
 id = "tool-command-history"
 category = "llm.tools"
-summary = "Query the command-history log for past user requests"
-since_pr = 70
+summary = "Ask what was said to Niles and when, from 14 days of spoken turns kept in Postgres"
+phrasings = ["what did I ask you this morning", "turn it off again"]
+since_pr = 508
 
 [[feature]]
 id = "tool-device-history"
 category = "llm.tools"
-summary = "Query the device-state history log for past state changes"
-since_pr = 71
+summary = "Ask how devices were at a past time and set them back, from 14 days of history in Postgres"
+phrasings = ["set the lights like yesterday at eight", "make it like last night", "when did the kitchen light go off"]
+since_pr = 508
 
 [[feature]]
 id = "tool-explain-device-state"
@@ -397,14 +399,14 @@ since_pr = 64
 [[feature]]
 id = "observability-command-log"
 category = "runtime.observability"
-summary = "Structured command-history log for every voice and API request"
-since_pr = 70
+summary = "Every spoken turn kept in Postgres for 14 days, on whenever there is a database"
+since_pr = 508
 
 [[feature]]
 id = "observability-state-log"
 category = "runtime.observability"
-summary = "Structured device-state history log for every state change"
-since_pr = 71
+summary = "Each device's whole state after every change kept in Postgres for 14 days, on with a database"
+since_pr = 508
 
 [[feature]]
 id = "plugins-runtime"

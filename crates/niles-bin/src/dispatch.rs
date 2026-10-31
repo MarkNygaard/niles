@@ -23,7 +23,6 @@ use crate::{
 use chrono::{Timelike, Utc};
 use niles_capabilities::CapabilityLoader;
 use niles_core::{DeviceId, DeviceRegistry, RoomName};
-use niles_history::CommandWriter;
 use niles_intent::{DeviceIndex, Intent};
 use niles_llm::{Message, OpenAiClient};
 use niles_memory::MemoryStore;
@@ -68,7 +67,7 @@ pub(crate) struct DispatchCtx {
     pub(crate) presence: Option<Arc<PresenceAggregator>>,
     pub(crate) satellites: Arc<SatelliteRegistry>,
     pub(crate) device_index: Arc<RwLock<DeviceIndex>>,
-    pub(crate) history: Arc<CommandWriter>,
+    pub(crate) history: Option<Arc<crate::wiring::memory::History>>,
     /// Absent only when the kept memory could not be read.
     pub(crate) memory: Option<Arc<MemoryStore>>,
     pub(crate) skill_store: Option<Arc<SkillStore>>,

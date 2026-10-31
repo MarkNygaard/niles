@@ -136,8 +136,9 @@ impl Config {
                     severity: Severity::Degraded,
                     consequence: "Linear now works through its own tools, and was set up the old way. Add it again under Add-ons, with an API key.".into(),
                 }),
-                // Nothing to answer: the row could serve nothing.
-                Retired::Provider(_) => {}
+                // Nothing to answer: the row could serve nothing, and
+                // the history now keeps itself.
+                Retired::Provider(_) | Retired::History => {}
             }
         }
 

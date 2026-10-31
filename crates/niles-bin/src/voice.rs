@@ -16,8 +16,8 @@ use crate::timers::spawn_timer_driver;
 use crate::wiring::accounts::{build_tado_tokens, build_weather_client};
 use crate::wiring::llm::{build_llm_client, build_tier2_client, build_tool_registry};
 use crate::wiring::memory::{
-    append_state_history, build_conversation_memory, build_memory_store, build_skill_store,
-    build_state_reader, build_state_writer,
+    build_conversation_memory, build_history, build_memory_store, build_skill_store,
+    spawn_state_recorder,
 };
 use crate::wiring::mqtt::{build_command_router, connect_from_config, spawn_wled_source};
 use crate::wiring::notifications::{WyomingDelivery, build_notification_center};
@@ -30,7 +30,7 @@ use crate::{
 use anyhow::Context;
 use niles_config::ConfigStore;
 use niles_core::{DeviceRegistry, Event, EventBus, RoomName};
-use niles_history::{CommandEntry, CommandReader, CommandWriter};
+use niles_history::CommandEntry;
 use niles_mqtt::Z2mSource;
 use niles_scheduler::{ManualModeTracker, SceneStore, TimerStore};
 use niles_stt::{Confidence, PcmFormat, SttClient, pcm_to_wav};
@@ -389,8 +389,8 @@ pub(crate) fn spawn_dispatch_task(
                     _ => None,
                 },
             };
-            if let Err(e) = ctx.history.append(&entry) {
-                tracing::warn!("history append failed: {e:#}");
+            if let Some(history) = &ctx.history {
+                history.record_command(entry);
             }
             if let Some(say) = say {
                 tracing::info!("[{peer}] say: {say}");
@@ -544,26 +544,10 @@ pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
 
-    let command_writer = match &cfg.history.directory {
-        Some(dir) => {
-            let w = CommandWriter::new(dir).context("opening command history writer")?;
-            if let Err(e) = w.prune(cfg.history.retention_days) {
-                tracing::warn!("history prune failed: {e:#}");
-            }
-            w
-        }
-        None => CommandWriter::disabled(),
-    };
-    let command_writer = Arc::new(command_writer);
-    let command_reader = match &cfg.history.directory {
-        Some(dir) => Arc::new(CommandReader::new(dir)),
-        None => Arc::new(CommandReader::disabled()),
-    };
-    niles_tools::register_history_tools(&mut tools, command_reader);
-
-    let state_writer = build_state_writer(&cfg)?;
-    let state_reader = build_state_reader(&cfg);
-    niles_tools::register_state_history_tools(&mut tools, state_reader, registry.clone());
+    let history = build_history(&cfg);
+    if let Some(history) = &history {
+        history.register_tools(&mut tools, registry.clone());
+    }
 
     let tier2 = build_tier2_client(&cfg)?;
     if tier2.is_some() {
@@ -665,7 +649,7 @@ pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()
         presence: presence_agg,
         satellites: satellites.clone(),
         device_index: Arc::clone(&device_index),
-        history: command_writer,
+        history: history.map(Arc::new),
         memory: memory_store,
         skill_store,
         home: Arc::new(cfg.home.clone()),
@@ -691,7 +675,11 @@ pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()
     // Keep the device index in sync so Tier-0 device-name matchers
     // work in voice-dispatch mode too (same pattern as `serve`).
     let observer_device_index = Arc::clone(&ctx.device_index);
-    let observer_state_writer = state_writer.clone();
+    let observer_recorder = ctx
+        .history
+        .as_ref()
+        .map(|h| spawn_state_recorder(h.states.clone()));
+    let observer_registry = registry.clone();
     let _device_index_handle = tokio::spawn(async move {
         loop {
             match bus_rx.recv().await {
@@ -707,8 +695,16 @@ pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()
                         .unwrap_or_else(|e| e.into_inner())
                         .remove(&id);
                 }
-                Ok(Event::DeviceStateChanged { id, state }) => {
-                    append_state_history(&observer_state_writer, &id, &state);
+                Ok(Event::DeviceStateChanged { id, .. }) => {
+                    if let (Some(recorder), Some(device)) =
+                        (&observer_recorder, observer_registry.get(&id))
+                    {
+                        let _ = recorder.send(niles_history::StateEntry {
+                            ts: chrono::Utc::now(),
+                            device_id: id.clone(),
+                            state: device.state,
+                        });
+                    }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 _ => {}

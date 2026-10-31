@@ -143,6 +143,9 @@ pub enum Retired {
     /// Linear's own MCP server. Dropped: Linear is added again as a
     /// tool server, with its own key.
     Linear,
+    /// `[history]`, from before the history was kept in Postgres.
+    /// Dropped: there is nothing left to set.
+    History,
 }
 
 impl crate::Config {
@@ -201,6 +204,9 @@ impl crate::Config {
         }
         if self.integrations.linear.take().is_some() {
             retired.push(Retired::Linear);
+        }
+        if self.history.take().is_some() {
+            retired.push(Retired::History);
         }
         self.retired = retired;
     }

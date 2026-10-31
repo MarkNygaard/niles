@@ -61,7 +61,7 @@ A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the res
 |---|---|
 | `niles-memory` | Hermes-style markdown memory (the household, and Niles's own notes), scanned before each write. |
 | `niles-skills` | Skills the assistant writes and edits, with usage counts and a curator. |
-| `niles-history` | The command and state history the model reads to answer "what did I just do". |
+| `niles-history` | The command and state history the model reads to answer "what did I just do" and to put the lights back how they were. Traits here, kept in Postgres by `niles-db` for 14 days. |
 
 **The house**
 
