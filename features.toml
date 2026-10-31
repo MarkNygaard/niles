@@ -243,14 +243,14 @@ id = "tool-command-history"
 category = "llm.tools"
 summary = "Ask what was said to Niles and when, from 14 days of spoken turns kept in Postgres"
 phrasings = ["what did I ask you this morning", "turn it off again"]
-since_pr = 507
+since_pr = 508
 
 [[feature]]
 id = "tool-device-history"
 category = "llm.tools"
 summary = "Ask how devices were at a past time and set them back, from 14 days of history in Postgres"
 phrasings = ["set the lights like yesterday at eight", "make it like last night", "when did the kitchen light go off"]
-since_pr = 507
+since_pr = 508
 
 [[feature]]
 id = "tool-explain-device-state"
@@ -400,13 +400,13 @@ since_pr = 64
 id = "observability-command-log"
 category = "runtime.observability"
 summary = "Every spoken turn kept in Postgres for 14 days, on whenever there is a database"
-since_pr = 507
+since_pr = 508
 
 [[feature]]
 id = "observability-state-log"
 category = "runtime.observability"
 summary = "Each device's whole state after every change kept in Postgres for 14 days, on with a database"
-since_pr = 507
+since_pr = 508
 
 [[feature]]
 id = "plugins-runtime"

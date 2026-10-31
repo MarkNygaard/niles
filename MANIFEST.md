@@ -61,9 +61,9 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 | Feature | Summary | Since |
 | --- | --- | --- |
-| `tool-command-history` | Ask what was said to Niles and when, from 14 days of spoken turns kept in Postgres | [#507](https://github.com/MarkNygaard/niles/pull/507) |
+| `tool-command-history` | Ask what was said to Niles and when, from 14 days of spoken turns kept in Postgres | [#508](https://github.com/MarkNygaard/niles/pull/508) |
 | `tool-datetime` | Return the current date and time in the configured timezone | [#84](https://github.com/MarkNygaard/niles/pull/84) |
-| `tool-device-history` | Ask how devices were at a past time and set them back, from 14 days of history in Postgres | [#507](https://github.com/MarkNygaard/niles/pull/507) |
+| `tool-device-history` | Ask how devices were at a past time and set them back, from 14 days of history in Postgres | [#508](https://github.com/MarkNygaard/niles/pull/508) |
 | `tool-explain-device-state` | Provide a natural-language explanation of a device's current state | [#70](https://github.com/MarkNygaard/niles/pull/70) |
 | `tool-light-control` | Turn lights on or off and set brightness or color temperature | [#3](https://github.com/MarkNygaard/niles/pull/3) |
 | `tool-look-up-capability` | Retrieve a capability reference document by name for the LLM context | [#84](https://github.com/MarkNygaard/niles/pull/84) |
@@ -109,8 +109,8 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `notifications-kept` | Every notification to a person kept, pushed or not: the newest 200, a newer one about the same thing replacing the last | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `push-artifact-ready` | A notification on your phone or computer when a document written in the background is ready; a tap opens it | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `push-artifact-shared` | A notification when someone shares an artifact with you, from the app or by asking: Mark shared “Thailand trip” with you | [#452](https://github.com/MarkNygaard/niles/pull/452) |
-| `observability-command-log` | Every spoken turn kept in Postgres for 14 days, on whenever there is a database | [#507](https://github.com/MarkNygaard/niles/pull/507) |
-| `observability-state-log` | Each device's whole state after every change kept in Postgres for 14 days, on with a database | [#507](https://github.com/MarkNygaard/niles/pull/507) |
+| `observability-command-log` | Every spoken turn kept in Postgres for 14 days, on whenever there is a database | [#508](https://github.com/MarkNygaard/niles/pull/508) |
+| `observability-state-log` | Each device's whole state after every change kept in Postgres for 14 days, on with a database | [#508](https://github.com/MarkNygaard/niles/pull/508) |
 | `persistence-json-store` | JSON file persistence for timers, scenes, and morning-routine claims | [#64](https://github.com/MarkNygaard/niles/pull/64) |
 | `plugins-check-listing` | `niles plugin check` lists a plugin's permissions; `--listing` also checks the marker the add-on library needs | [#469](https://github.com/MarkNygaard/niles/pull/469) |
 | `plugins-dev-check` | `niles plugin check` validates a plugin as an install would; `niles plugin dev` runs one against a stand-in house | [#388](https://github.com/MarkNygaard/niles/pull/388) |
