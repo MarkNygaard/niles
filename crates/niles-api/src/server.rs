@@ -304,6 +304,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/config/{path}",
             axum::routing::delete(crate::config::reset_config),
+        )
+        .route(
+            "/system/restart",
+            get(crate::system::status).post(crate::system::restart),
         );
     if state.linear_webhook.is_some() {
         r = r.route("/webhooks/linear", post(crate::webhook::handle_linear));
@@ -324,12 +328,19 @@ pub fn router(state: AppState) -> Router {
     .with_state(state)
 }
 
-/// Bind to `addr` and run the API server until the process exits
-/// or the listener fails.
-pub async fn serve(addr: SocketAddr, state: AppState) -> std::io::Result<()> {
+/// Bind to `addr` and serve until `shutdown` resolves. Then no new
+/// connection is taken and requests in flight finish; an upgraded
+/// socket (`/events/stream`) is not waited for.
+pub async fn serve(
+    addr: SocketAddr,
+    state: AppState,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     info!("niles-api listening on http://{addr}");
-    axum::serve(listener, router(state)).await
+    axum::serve(listener, router(state))
+        .with_graceful_shutdown(shutdown)
+        .await
 }
 
 #[cfg(test)]

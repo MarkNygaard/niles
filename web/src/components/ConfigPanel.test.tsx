@@ -2,7 +2,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConfigPanel, musicByRoom, satellitesAt, sonosAt } from "@/components/ConfigPanel";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, type RestartStatus } from "@/lib/api";
+
+vi.mock("@/hooks/useDeviceStream", () => ({ useDeviceStream: () => {} }));
+
+/** Nothing waits for a restart: the bar and the dot stay away. */
+const NOTHING_WAITS: RestartStatus = {
+  boot: { id: "boot-a", started_at: "2026-10-30T00:00:00Z" },
+  pending: [],
+  supervisor: null,
+  persistent: true,
+  restarting: false,
+  cut_short: { jobs: 0, wake_ups: 0, approvals: 0 },
+};
 
 /**
  * The panel owns which queries go stale after a write, and nothing
@@ -52,6 +64,7 @@ function stubApi() {
     authorised: true,
     presence_enabled: false,
   });
+  vi.spyOn(api, "restartStatus").mockResolvedValue(NOTHING_WAITS);
   return vi.spyOn(api, "patchConfig").mockResolvedValue({
     revision: 1,
     noop: false,
@@ -261,7 +274,7 @@ function stubHouse() {
     },
     sections: [
       { name: "mqtt", reload: "boot", overridden: false },
-      { name: "tts", reload: "boot", overridden: false },
+      { name: "tts", reload: "hot", overridden: false },
       { name: "stt", reload: "hot", overridden: true },
       { name: "lighting", reload: "hot", overridden: true },
     ],
@@ -325,12 +338,14 @@ describe("ConfigPanel, the settings that left the ConfigMap", () => {
     expect(patch.mock.calls[0][0]).toEqual(body);
   });
 
-  it("says Piper only changes after a restart, and the language does not", async () => {
+  it("says Piper and the language both apply without a restart", async () => {
+    // Both sections are re-read as Niles runs: neither row may claim a
+    // restart is needed.
     stubHouse();
     renderPanel();
     await open(/Voice & AI/);
     await screen.findByLabelText("Piper address");
-    expect(within(rowOf("Piper")).getByText("restart required")).toBeInTheDocument();
+    expect(within(rowOf("Piper")).queryByText("restart required")).toBeNull();
     expect(within(rowOf("Language")).queryByText("restart required")).toBeNull();
   });
 
@@ -344,6 +359,51 @@ describe("ConfigPanel, the settings that left the ConfigMap", () => {
     await setAndSave("Language ISO 639-1, like en", "");
     await waitFor(() => expect(reset).toHaveBeenCalledWith("stt.language"));
     expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("names a change that waits for a restart, with Restart now", async () => {
+    stubHouse();
+    vi.mocked(api.restartStatus).mockResolvedValue({
+      ...NOTHING_WAITS,
+      supervisor: "kubernetes",
+      pending: [{ what: "mqtt", label: "Zigbee & MQTT", since: "2026-10-30T00:00:00Z" }],
+    });
+    const patch = vi.mocked(api.patchConfig).mockResolvedValue({
+      revision: 1,
+      noop: false,
+      changes: [],
+      summary: "mqtt.host → mosquitto.local",
+      needs_restart: [{ what: "mqtt", label: "Zigbee & MQTT" }],
+    });
+    renderPanel();
+    await open(/Devices/);
+    const host = await screen.findByLabelText("Broker address");
+    fireEvent.change(host, { target: { value: "mosquitto.local" } });
+    fireEvent.blur(host);
+    await waitFor(() => expect(patch).toHaveBeenCalled());
+    expect(
+      await screen.findByText(/needs a restart to take effect \(Zigbee & MQTT\)/),
+    ).toBeInTheDocument();
+    // One on the bar, one beside the note.
+    expect(screen.getAllByRole("button", { name: "Restart now" })).toHaveLength(2);
+  });
+
+  it("a change put back names nothing", async () => {
+    stubHouse();
+    const patch = vi.mocked(api.patchConfig).mockResolvedValue({
+      revision: 2,
+      noop: false,
+      changes: [],
+      summary: "mqtt.host → 192.168.42.16",
+      needs_restart: [],
+    });
+    renderPanel();
+    await open(/Devices/);
+    const host = await screen.findByLabelText("Broker address");
+    fireEvent.change(host, { target: { value: "192.168.42.16" } });
+    fireEvent.blur(host);
+    await waitFor(() => expect(patch).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText(/needs a restart/)).toBeNull());
   });
 
   it("saves the colour points as one sorted list", async () => {

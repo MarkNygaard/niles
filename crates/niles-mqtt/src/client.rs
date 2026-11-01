@@ -249,6 +249,14 @@ impl MqttPublisher {
             .await?;
         Ok(())
     }
+
+    /// Tell the broker goodbye: a DISCONNECT, so it sees a client leave
+    /// rather than a connection drop. Queued like a publish, so give the
+    /// eventloop a moment to send it before the client is dropped.
+    pub async fn disconnect(&self) -> Result<()> {
+        self.client.disconnect().await?;
+        Ok(())
+    }
 }
 
 const RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);

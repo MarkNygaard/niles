@@ -168,6 +168,11 @@ Tags are `latest` (the newest release), each version (`0.4.0`) and
 `sha-<commit>`. Change the tag, preview and apply. Niles creates the tables
 it needs by itself, so there is no migration step.
 
+**Restart now** in Settings restarts the container in the same pod. It
+needs no RBAC: Niles exits with code 0 and the kubelet starts it again,
+and with `imagePullPolicy: Always` on `latest` it may come back as a
+newer image. See [Restarting](/docs/self-hosting#restarting).
+
 ## Backing up
 
 Everything Niles keeps is in Postgres, so back up the database, for

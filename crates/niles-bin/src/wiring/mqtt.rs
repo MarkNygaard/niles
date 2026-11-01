@@ -29,13 +29,14 @@ pub(crate) fn command_router(cfg: &Config) -> CommandRouter {
     CommandRouter::new(cfg.mqtt.z2m_prefix.clone(), wled_map)
 }
 
-/// Spawn a `WledSource` when `[wled]` has at least one device.
-/// Returns `None` when WLED is not configured.
+/// Spawn a `WledSource` when `[wled]` has at least one device, and the
+/// publisher to its client, so a shutdown can say goodbye on that
+/// connection too. Returns `None` when WLED is not configured.
 pub(crate) async fn spawn_wled_source(
     cfg: &Config,
     registry: Arc<DeviceRegistry>,
     bus: EventBus,
-) -> Option<tokio::task::JoinHandle<()>> {
+) -> Option<(tokio::task::JoinHandle<()>, niles_mqtt::MqttPublisher)> {
     if cfg.wled.devices.is_empty() {
         return None;
     }
@@ -63,13 +64,15 @@ pub(crate) async fn spawn_wled_source(
             })
         })
         .collect();
+    let publisher = client.publisher();
     let source = WledSource::new(client, registry, bus, devices);
     tracing::info!("WLED source running: {} device(s)", cfg.wled.devices.len());
-    Some(tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         if let Err(e) = source.run().await {
             tracing::error!("WledSource exited: {e}");
         }
-    }))
+    });
+    Some((handle, publisher))
 }
 
 /// Build an `MqttClient` connected to the broker described in

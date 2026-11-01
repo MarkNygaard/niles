@@ -217,6 +217,13 @@ impl Approvals {
         self.held.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// How many wait for somebody's yes now, everybody's: a restart
+    /// lapses them all.
+    pub(crate) fn waiting_count(&self) -> usize {
+        let now = Instant::now();
+        self.lock().values().filter(|h| h.lapses > now).count()
+    }
+
     /// Keep `tool` called with `args` for `asker`'s yes. `label` names
     /// what it is for: "Linear", "Mail". `allow` is where it may be
     /// answered. Answers the card as it is to be shown.
@@ -1025,6 +1032,18 @@ mod tests {
         for _ in 0..10 {
             tokio::task::yield_now().await;
         }
+    }
+
+    #[test]
+    fn waiting_count_leaves_out_what_lapsed() {
+        let approvals = Approvals::new(EventBus::default(), None);
+        let (live, _) = held_for(&approvals, "person:mark", None);
+        let (lapsed, _) = held_for(&approvals, "person:majse", None);
+        approvals.lock().get_mut(&lapsed).expect("held").lapses =
+            Instant::now() - Duration::from_secs(1);
+        assert_eq!(approvals.waiting_count(), 1, "only the live one counts");
+        approvals.lock().remove(&live);
+        assert_eq!(approvals.waiting_count(), 0);
     }
 
     #[tokio::test]

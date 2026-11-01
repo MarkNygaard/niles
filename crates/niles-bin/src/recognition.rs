@@ -340,10 +340,12 @@ impl SpeakerIdentifier for EcapaIdentifier {
 
 /// Build a speaker identifier from config. Returns `None` when disabled.
 ///
-/// Enrolled voices are read once, here: matching is a cosine similarity
-/// against a handful of vectors, so the hot path holds them in memory
-/// and never touches storage. A voice enrolled afterwards is picked up
-/// on the next restart.
+/// Enrolled voices are read here, and again whenever this process
+/// enrols, forgets or edits one, so those apply at once. Matching is a
+/// cosine similarity against a handful of vectors, so the hot path
+/// holds them in memory and never touches storage. A voice enrolled
+/// from a terminal with `niles enroll` is picked up on the next
+/// restart.
 pub(crate) async fn build_speaker_identifier(
     cfg: &RecognitionConfig,
     backend: Option<Arc<dyn EnrollmentBackend>>,

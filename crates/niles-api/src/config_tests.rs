@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tower::ServiceExt;
 
 #[derive(Clone)]
-struct NoopPublisher;
+pub(crate) struct NoopPublisher;
 
 #[async_trait]
 impl DevicePublisher for NoopPublisher {
@@ -263,9 +263,72 @@ async fn changing_a_boot_section_says_a_restart_is_needed() {
     assert_eq!(status, StatusCode::OK, "the write is accepted");
     assert_eq!(
         body["needs_restart"],
-        json!(["api"]),
-        "but the caller is told it won't take effect yet"
+        json!([{"what": "api", "label": "API address"}]),
+        "but the caller is told it won't take effect yet, by its Settings name"
     );
+}
+
+/// The app plus a restart handle, so a write's answer can say what still
+/// waits against what Niles started with.
+fn app_with_restart() -> (axum::Router, Arc<ConfigStore>) {
+    let store = Arc::new(ConfigStore::from_str_in_memory(&base_toml()).expect("fixture is valid"));
+    let bus = EventBus::default();
+    let (config, table) = store.current_and_table();
+    let restart = Arc::new(crate::Restart::new(
+        crate::Boot::start(),
+        niles_config::Booted::new(&table, &config),
+        store.clone(),
+        bus.clone(),
+        None,
+    ));
+    let state = AppState::new(
+        Arc::new(DeviceRegistry::new()),
+        Arc::new(NoopPublisher) as Arc<dyn DevicePublisher>,
+        Arc::new(niles_mqtt::CommandRouter::z2m_only("zigbee2mqtt")),
+        bus,
+    )
+    .with_config_store(Some(store.clone()))
+    .with_restart(Some(restart));
+    (router(state), store)
+}
+
+#[tokio::test]
+async fn a_boot_section_changed_back_needs_no_restart() {
+    let (app, _) = app_with_restart();
+    send(
+        &app,
+        patch(json!({"api": {"bind_address": "0.0.0.0:9090"}})),
+    )
+    .await;
+    let (status, body) = send(
+        &app,
+        patch(json!({"api": {"bind_address": "0.0.0.0:8080"}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["needs_restart"],
+        json!([]),
+        "a change put back before the write ends names nothing"
+    );
+}
+
+#[tokio::test]
+async fn undoing_a_boot_change_needs_no_restart() {
+    let (app, _) = app_with_restart();
+    send(
+        &app,
+        patch(json!({"api": {"bind_address": "0.0.0.0:9090"}})),
+    )
+    .await;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/config/undo")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["needs_restart"], json!([]));
 }
 
 #[tokio::test]

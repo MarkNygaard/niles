@@ -841,7 +841,47 @@ export interface Applied {
   changes: Change[];
   summary: string;
   noop: boolean;
-  needs_restart: string[];
+  /** What this write left waiting for a restart: touched, read only at
+      startup, and still different from what Niles started with. */
+  needs_restart: RestartItem[];
+}
+
+export interface RestartItem {
+  /** The top-level config section, e.g. "mqtt". */
+  what: string;
+  /** The name the Settings page gives it, e.g. "Zigbee & MQTT". */
+  label: string;
+}
+
+/** What waits for a restart, and the way to ask for one. */
+export interface RestartStatus {
+  boot: Boot;
+  pending: PendingRestart[];
+  /** What starts Niles again when it exits, or null when nothing does. */
+  supervisor: string | null;
+  /** Whether the overrides a restart would apply outlive the process. */
+  persistent: boolean;
+  /** A restart was asked for; this process is on its way down. */
+  restarting: boolean;
+  cut_short: CutShort;
+}
+
+export interface Boot {
+  id: string;
+  started_at: string;
+}
+
+export interface PendingRestart {
+  what: string;
+  label: string;
+  since: string;
+}
+
+/** What a restart would cut short, counted. */
+export interface CutShort {
+  jobs: number;
+  wake_ups: number;
+  approvals: number;
 }
 
 export interface Revision {
@@ -2037,6 +2077,12 @@ export const api = {
     request<Applied>(`/config/${encodeURIComponent(path)}`, {
       method: "DELETE",
     }),
+
+  /** What waits for a restart, this start's boot id, and what a restart
+      would cut short. Asked again on `restart_pending_changed`. */
+  restartStatus: () => request<RestartStatus>("/system/restart", { cache: "no-store" }),
+  /** Ask Niles to stop, so whatever runs it starts it again. */
+  restart: () => request<{ boot: Boot }>("/system/restart", { method: "POST" }),
 
   devices: () => request<Device[]>("/devices"),
 

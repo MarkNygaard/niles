@@ -105,6 +105,17 @@ pub enum Event {
         /// The person key, `person:{slug}` or `email:{address}`.
         person: String,
     },
+    /// What waits for a restart changed: something read only at startup
+    /// was changed, or changed back. The house's, so it goes to everybody.
+    RestartPendingChanged,
+    /// A restart was asked for. This process, `boot_id`, is on its way
+    /// down, and whatever runs it starts another.
+    RestartStarted {
+        /// The boot id of the process that is stopping, from
+        /// `GET /system/restart`: the app waits for an answer from any
+        /// other id.
+        boot_id: String,
+    },
 }
 
 /// Bounded pub/sub bus backed by `tokio::sync::broadcast`.
