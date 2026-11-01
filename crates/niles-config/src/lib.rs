@@ -16,7 +16,6 @@ pub mod catalogue;
 pub mod database;
 mod env;
 pub mod error;
-pub mod history;
 pub mod home;
 pub mod integrations;
 pub mod lamp_plugs;
@@ -58,7 +57,6 @@ pub use blinds::{BlindOverride, BlindsConfig, BlindsTargets, FULLY_OPEN, OPEN_TO
 pub use capture::CaptureConfig;
 pub use database::DatabaseConfig;
 pub use error::{Error, Result};
-pub use history::HistoryConfig;
 pub use home::{HomeConfig, Units};
 pub use integrations::{
     Assistant, ChatGptConfig, ChatGptSignIn, ClaudeCodeConfig, IntegrationsConfig, NemligConfig,
@@ -273,7 +271,6 @@ pub const SECTIONS: &[&str] = &[
     "ambient_lights",
     "lamp_plugs",
     "blinds",
-    "history",
     "memory",
     "notifications",
     "presence",
@@ -338,8 +335,11 @@ pub struct Config {
     pub lamp_plugs: LampPlugsConfig,
     #[serde(default)]
     pub blinds: BlindsConfig,
+    /// Retired: the history is kept in Postgres, with nothing to set.
+    /// Still read so a stored config that has it loads rather than
+    /// being refused whole, then dropped as the config settles.
     #[serde(default)]
-    pub history: HistoryConfig,
+    pub history: Option<toml::Table>,
     #[serde(default)]
     pub memory: MemoryConfig,
     #[serde(default)]
@@ -442,7 +442,6 @@ impl Config {
         self.ambient_lights.validate()?;
         self.lamp_plugs.validate()?;
         self.blinds.validate()?;
-        self.history.validate()?;
         self.memory.validate()?;
         self.notifications.validate()?;
         self.presence.validate()?;
@@ -1298,93 +1297,19 @@ exclude_devices = ["wled:living_room/tv_light"]
         assert!(Config::load_from_str(&bad).is_err());
     }
 
-    // ------------------------------------------------------------------
-    // History section tests
-    // ------------------------------------------------------------------
-
     #[test]
-    fn history_section_absent_defaults_to_none() {
-        let cfg = Config::load_from_str(valid_toml()).unwrap();
-        cfg.validate().unwrap();
-        assert!(cfg.history.directory.is_none());
-        assert_eq!(cfg.history.retention_days, 14);
-    }
-
-    #[test]
-    fn history_directory_parses_into_pathbuf() {
+    fn a_stored_history_section_still_loads_and_is_retired() {
+        // The history is in Postgres now. A config that named a
+        // directory for it keeps every other setting beside it.
         let toml = format!(
-            "{}\n[history]\ndirectory = \"/var/niles/history\"\n",
+            "{}\n[history]\ndirectory = \"/var/niles/history\"\nretention_days = 30\n",
             valid_toml().trim_end_matches('\n')
         );
         let cfg = Config::load_from_str(&toml).unwrap();
         cfg.validate().unwrap();
-        assert_eq!(
-            cfg.history.directory.as_deref(),
-            Some(std::path::Path::new("/var/niles/history"))
-        );
-        assert_eq!(cfg.history.retention_days, 14);
-    }
-
-    #[test]
-    fn history_retention_days_explicit() {
-        let toml = format!(
-            "{}\n[history]\ndirectory = \"/tmp\"\nretention_days = 30\n",
-            valid_toml().trim_end_matches('\n')
-        );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        cfg.validate().unwrap();
-        assert_eq!(cfg.history.retention_days, 30);
-    }
-
-    #[test]
-    fn rejects_empty_history_directory() {
-        let toml = format!(
-            "{}\n[history]\ndirectory = \"\"\n",
-            valid_toml().trim_end_matches('\n')
-        );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        let err = cfg.validate().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidSection {
-                section: "history",
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn rejects_history_retention_days_zero() {
-        let toml = format!(
-            "{}\n[history]\ndirectory = \"/tmp\"\nretention_days = 0\n",
-            valid_toml().trim_end_matches('\n')
-        );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        let err = cfg.validate().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidSection {
-                section: "history",
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn rejects_history_retention_days_too_large() {
-        let toml = format!(
-            "{}\n[history]\ndirectory = \"/tmp\"\nretention_days = 366\n",
-            valid_toml().trim_end_matches('\n')
-        );
-        let cfg = Config::load_from_str(&toml).unwrap();
-        let err = cfg.validate().unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidSection {
-                section: "history",
-                ..
-            }
-        ));
+        assert!(cfg.history.is_none());
+        assert!(cfg.retired.contains(&Retired::History));
+        assert!(!SECTIONS.contains(&"history"));
     }
 
     // ------------------------------------------------------------------

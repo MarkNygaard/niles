@@ -61,9 +61,9 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 | Feature | Summary | Since |
 | --- | --- | --- |
-| `tool-command-history` | Query the command-history log for past user requests | [#70](https://github.com/MarkNygaard/niles/pull/70) |
+| `tool-command-history` | Ask what was said to Niles and when, from 14 days of spoken turns kept in Postgres | [#508](https://github.com/MarkNygaard/niles/pull/508) |
 | `tool-datetime` | Return the current date and time in the configured timezone | [#84](https://github.com/MarkNygaard/niles/pull/84) |
-| `tool-device-history` | Query the device-state history log for past state changes | [#71](https://github.com/MarkNygaard/niles/pull/71) |
+| `tool-device-history` | Ask how devices were at a past time and set them back, from 14 days of history in Postgres | [#508](https://github.com/MarkNygaard/niles/pull/508) |
 | `tool-explain-device-state` | Provide a natural-language explanation of a device's current state | [#70](https://github.com/MarkNygaard/niles/pull/70) |
 | `tool-light-control` | Turn lights on or off and set brightness or color temperature | [#3](https://github.com/MarkNygaard/niles/pull/3) |
 | `tool-look-up-capability` | Retrieve a capability reference document by name for the LLM context | [#84](https://github.com/MarkNygaard/niles/pull/84) |
@@ -73,6 +73,17 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `tool-tv-volume` | tv_volume sets, steps, mutes or unmutes the TV's own speakers; music_volume turns the TV in a room with no Sonos | [#403](https://github.com/MarkNygaard/niles/pull/403) |
 | `tool-weather` | Fetch current weather and forecast via Open-Meteo | [#81](https://github.com/MarkNygaard/niles/pull/81) |
 | `tool-web-search` | Search the web via SearXNG and return summarized results; offered while the SearXNG add-on is set up | [#83](https://github.com/MarkNygaard/niles/pull/83) |
+
+### `tool-command-history` — example phrasings
+
+- what did I ask you this morning
+- turn it off again
+
+### `tool-device-history` — example phrasings
+
+- set the lights like yesterday at eight
+- make it like last night
+- when did the kitchen light go off
 
 ## runtime
 
@@ -98,8 +109,8 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `notifications-kept` | Every notification to a person kept, pushed or not: the newest 200, a newer one about the same thing replacing the last | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `push-artifact-ready` | A notification on your phone or computer when a document written in the background is ready; a tap opens it | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `push-artifact-shared` | A notification when someone shares an artifact with you, from the app or by asking: Mark shared “Thailand trip” with you | [#452](https://github.com/MarkNygaard/niles/pull/452) |
-| `observability-command-log` | Structured command-history log for every voice and API request | [#70](https://github.com/MarkNygaard/niles/pull/70) |
-| `observability-state-log` | Structured device-state history log for every state change | [#71](https://github.com/MarkNygaard/niles/pull/71) |
+| `observability-command-log` | Every spoken turn kept in Postgres for 14 days, on whenever there is a database | [#508](https://github.com/MarkNygaard/niles/pull/508) |
+| `observability-state-log` | Each device's whole state after every change kept in Postgres for 14 days, on with a database | [#508](https://github.com/MarkNygaard/niles/pull/508) |
 | `persistence-json-store` | JSON file persistence for timers, scenes, and morning-routine claims | [#64](https://github.com/MarkNygaard/niles/pull/64) |
 | `plugins-check-listing` | `niles plugin check` lists a plugin's permissions; `--listing` also checks the marker the add-on library needs | [#469](https://github.com/MarkNygaard/niles/pull/469) |
 | `plugins-dev-check` | `niles plugin check` validates a plugin as an install would; `niles plugin dev` runs one against a stand-in house | [#388](https://github.com/MarkNygaard/niles/pull/388) |

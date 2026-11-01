@@ -2936,6 +2936,8 @@ dependencies = [
  "niles-artifacts",
  "niles-calendar",
  "niles-config",
+ "niles-core",
+ "niles-history",
  "niles-presence",
  "niles-recognition",
  "niles-training",
@@ -2966,13 +2968,12 @@ dependencies = [
 name = "niles-history"
 version = "0.6.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "niles-core",
  "serde",
- "serde_json",
- "tempfile",
  "thiserror 2.0.21",
- "tracing",
+ "tokio",
 ]
 
 [[package]]

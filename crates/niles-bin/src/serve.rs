@@ -27,9 +27,8 @@ use crate::wiring::automations::{
 };
 use crate::wiring::llm::{build_llm_client, build_tier2_client, build_tool_registry};
 use crate::wiring::memory::{
-    append_state_history, build_approval_log, build_chat_log, build_conversation_memory,
-    build_journal, build_memory_store, build_skill_store, build_state_reader, build_state_writer,
-    spawn_skill_curator,
+    build_approval_log, build_chat_log, build_conversation_memory, build_history, build_journal,
+    build_memory_store, build_skill_store, spawn_skill_curator, spawn_state_recorder,
 };
 use crate::wiring::mqtt::{command_router, connect_with_config, spawn_wled_source};
 use crate::wiring::notifications::{WyomingDelivery, build_notification_center};
@@ -50,7 +49,6 @@ use niles_api::{AppState, DevicePublisher};
 use niles_automations::AutomationEngine;
 use niles_config::{Config, ConfigStore, LoadOutcome};
 use niles_core::{DeviceId, DeviceRegistry, DeviceState, Event, EventBus, RoomName};
-use niles_history::{CommandReader, CommandWriter};
 use niles_mqtt::Z2mSource;
 use niles_scheduler::{
     ManualModeTracker, SwitchEffect, WeekInstant, brightness_at, classify_action, color_temp_at,
@@ -228,7 +226,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // the early DeviceStateChanged events that seed the observer's
     // last-seen on/off map — broadcast channels only deliver messages
     // sent after a receiver is bound.
-    let state_writer = build_state_writer(&cfg)?;
+    let history = build_history(&cfg);
     // Off→on transitions spotted by the observer are forwarded here so the
     // curve loop can re-assert the curve on the light straight away instead
     // of leaving it at its restored level until the next tick.
@@ -242,7 +240,9 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let observer_publisher = publisher.clone();
     let observer_router = router.clone();
     let observer_dry_run = args.dry_run;
-    let observer_state_writer = state_writer.clone();
+    let observer_recorder = history
+        .as_ref()
+        .map(|h| spawn_state_recorder(h.states.clone()));
     let mut bus_rx = bus.subscribe();
     let source = Z2mSource::new(
         mqtt_client,
@@ -280,7 +280,15 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     if state.on == Some(false) && observer_wake_ups.owns(&id) {
                         observer_wake_ups.let_go(&id).await;
                     }
-                    append_state_history(&observer_state_writer, &id, &state);
+                    if let (Some(recorder), Some(device)) =
+                        (&observer_recorder, observer_registry.get(&id))
+                    {
+                        let _ = recorder.send(niles_history::StateEntry {
+                            ts: chrono::Utc::now(),
+                            device_id: id.clone(),
+                            state: device.state,
+                        });
+                    }
                 }
                 Ok(Event::DeviceAdded { device }) => {
                     if device.is_light() {
@@ -518,25 +526,9 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         niles_tools::register_nemlig_tools(&mut tools, client.clone(), store.clone());
     }
 
-    let command_writer = match &cfg.history.directory {
-        Some(dir) => {
-            let w = CommandWriter::new(dir).context("opening command history writer")?;
-            if let Err(e) = w.prune(cfg.history.retention_days) {
-                tracing::warn!("history prune failed: {e:#}");
-            }
-            w
-        }
-        None => CommandWriter::disabled(),
-    };
-    let command_writer = Arc::new(command_writer);
-    let command_reader = match &cfg.history.directory {
-        Some(dir) => Arc::new(CommandReader::new(dir)),
-        None => Arc::new(CommandReader::disabled()),
-    };
-    niles_tools::register_history_tools(&mut tools, command_reader);
-
-    let state_reader = build_state_reader(&cfg);
-    niles_tools::register_state_history_tools(&mut tools, state_reader, registry.clone());
+    if let Some(history) = &history {
+        history.register_tools(&mut tools, registry.clone());
+    }
 
     let tier2 = build_tier2_client(&cfg)?;
     if tier2.is_some() {
@@ -955,7 +947,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         presence: presence_agg,
         satellites: satellites.clone(),
         device_index,
-        history: command_writer,
+        history: history.map(Arc::new),
         memory: memory_store,
         skill_store,
         home: Arc::new(cfg.home.clone()),
