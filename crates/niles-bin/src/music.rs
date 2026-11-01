@@ -161,6 +161,33 @@ impl Music {
         self.find(room, &players, query, from_spotify).await
     }
 
+    /// "Play Gravity with John Mayer": a song, its title and artist told
+    /// apart by the model however it was said. That track when Spotify
+    /// has it; otherwise a search, as if it had been said.
+    pub async fn play_song(&self, room: &RoomName, title: &str, artist: Option<&str>) -> Outcome {
+        let players = self.speakers.in_room(room).await;
+        if players.is_empty() {
+            return Outcome::NoSpeaker;
+        }
+        if let (Some(artist), Some((credentials, market))) = (artist, self.spotify_keys()) {
+            match self
+                .spotify_track(&credentials, market.as_deref(), title, artist)
+                .await
+            {
+                Ok(Some(Pick::Play { title, items })) => {
+                    return self.play_spotify(&players, items, &title).await;
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("[music] looking up {title:?} by {artist:?} failed: {e}"),
+            }
+        }
+        let query = match artist {
+            Some(artist) => format!("{title} by {artist}"),
+            None => title.to_string(),
+        };
+        self.find(room, &players, &query, false).await
+    }
+
     /// Something picked from a [`Outcome::Choose`] by its Spotify URI.
     /// `name` is needed for an artist, which plays as tracks found by it.
     pub async fn spotify_uri(&self, room: &RoomName, uri: &str, name: &str) -> Outcome {
@@ -640,19 +667,11 @@ impl Music {
         let query = query.trim();
         let query = query.strip_prefix("some ").unwrap_or(query);
         if let Some((title, artist)) = query.rsplit_once(" by ")
-            && let Some(track) = self
-                .spotify
-                .track(credentials, title, artist, market)
-                .await
-                .map_err(|e| e.to_string())?
+            && let Some(pick) = self
+                .spotify_track(credentials, market, title, artist)
+                .await?
         {
-            let title = format!(
-                "{} by {}",
-                track.name,
-                track.by.as_deref().unwrap_or(artist)
-            );
-            let items = self.spotify_run(credentials, market, &track).await?;
-            return Ok(Pick::Play { title, items });
+            return Ok(pick);
         }
         let (kind, query) = kind_named(query);
         let found = self
@@ -700,6 +719,31 @@ impl Music {
     /// them, a song followed by more of its artist, an album or a
     /// playlist as itself. An artist's songs come shuffled, so "play
     /// John Mayer" does not start with the same song every time.
+    /// `title` by `artist` on Spotify, to play, when it has that song.
+    async fn spotify_track(
+        &self,
+        credentials: &Credentials,
+        market: Option<&str>,
+        title: &str,
+        artist: &str,
+    ) -> Result<Option<Pick>, String> {
+        let Some(track) = self
+            .spotify
+            .track(credentials, title, artist, market)
+            .await
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(None);
+        };
+        let title = format!(
+            "{} by {}",
+            track.name,
+            track.by.as_deref().unwrap_or(artist)
+        );
+        let items = self.spotify_run(credentials, market, &track).await?;
+        Ok(Some(Pick::Play { title, items }))
+    }
+
     async fn spotify_run(
         &self,
         credentials: &Credentials,
@@ -1103,7 +1147,8 @@ fn reported(outcome: Outcome, room: Option<&RoomName>) -> Value {
             })).collect::<Vec<_>>(),
             "next": "Pick the one meant and play it: a station with play_radio and its station_id \
                 (prefer the household's own country), Spotify with play_music and its spotify_uri \
-                and name. Ask which when it is not clear.",
+                and name. Entries with the same name and the same artist are the same song: play \
+                the first, never ask which. Ask only when what was meant is not clear.",
         }),
         Outcome::NotFound(what) => json!({ "error": format!("found nothing called {what:?}") }),
         Outcome::WhichStation => {
@@ -1165,16 +1210,21 @@ impl Tool for PlayMusic {
         ToolDescriptor {
             name: "play_music".into(),
             description: "Play something by name on the Sonos in a room: a Sonos favorite, a \
-                radio station, or an artist, song (\"Gravity by John Mayer\"), album or playlist \
-                on Spotify. Every speaker in the room plays it together, and it replaces what \
-                was playing, the TV included. When several things could be meant, the result \
-                lists them; call again with the spotify_uri and name of the one meant."
+                radio station, or an artist, song, album or playlist on Spotify. A song goes in \
+                title and artist, told apart however it was said: \"play Gravity with John \
+                Mayer\", \"John Mayer's Gravity\" and \"Gravity by John Mayer\" are all title \
+                Gravity, artist John Mayer. Anything else goes in query. Every speaker in the \
+                room plays it together, and it replaces what was playing, the TV included. When \
+                several things could be meant, the result lists them; call again with the \
+                spotify_uri and name of the one meant."
                 .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "room": { "type": "string" },
-                    "query": { "type": "string", "description": "What was asked for, as said." },
+                    "title": { "type": "string", "description": "A song's title, without its artist." },
+                    "artist": { "type": "string", "description": "The song's artist, when said." },
+                    "query": { "type": "string", "description": "Anything but a song, as said: a station, an artist, an album, a playlist." },
                     "from_spotify": { "type": "boolean", "description": "True when the person said Spotify: skip favorites and radio." },
                     "spotify_uri": { "type": "string", "description": "A spotify_uri from an earlier result." },
                     "name": { "type": "string", "description": "The name that went with that spotify_uri." }
@@ -1194,14 +1244,21 @@ impl Tool for PlayMusic {
                 Some(&room),
             ));
         }
-        let query = args
-            .get("query")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim();
-        if query.is_empty() {
-            return Ok(json!({ "error": "what should I play?" }));
+        let said = |key: &str| {
+            args.get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        };
+        if let Some(title) = said("title") {
+            return Ok(reported(
+                self.0.play_song(&room, title, said("artist")).await,
+                Some(&room),
+            ));
         }
+        let Some(query) = said("query") else {
+            return Ok(json!({ "error": "what should I play?" }));
+        };
         let from_spotify = args
             .get("from_spotify")
             .and_then(Value::as_bool)
@@ -1384,6 +1441,54 @@ mod tests {
     use niles_config::ConfigStore;
     use niles_speakers::SonosTransport;
     use std::collections::HashMap as Map;
+
+    #[tokio::test]
+    async fn a_song_is_asked_for_by_title_and_artist_however_it_was_said() {
+        let tool = PlayMusic(Arc::new(music(&House::new()).await));
+        let descriptor = tool.descriptor();
+        assert!(
+            descriptor
+                .description
+                .contains("\"play Gravity with John Mayer\""),
+            "{}",
+            descriptor.description
+        );
+        assert!(
+            descriptor
+                .description
+                .contains("title Gravity, artist John Mayer")
+        );
+        let properties = &descriptor.parameters["properties"];
+        assert!(properties["title"].is_object() && properties["artist"].is_object());
+    }
+
+    #[tokio::test]
+    async fn nothing_to_play_is_asked_about() {
+        let tool = PlayMusic(Arc::new(music(&House::new()).await));
+        for args in [
+            json!({ "room": "living_room" }),
+            json!({ "room": "living_room", "title": " ", "query": "" }),
+        ] {
+            let answer = tool.execute(args).await.unwrap();
+            assert_eq!(answer["error"], "what should I play?");
+        }
+    }
+
+    #[test]
+    fn the_same_song_twice_is_no_choice() {
+        let choose = reported(
+            Outcome::Choose {
+                stations: Vec::new(),
+                spotify: Vec::new(),
+            },
+            None,
+        );
+        let next = choose["next"].as_str().unwrap();
+        assert!(
+            next.contains("same song: play the first, never ask which"),
+            "{next}"
+        );
+    }
 
     /// A household of three: a soundbar and a speaker at the back of
     /// the living room, and a Move in the kitchen. Answers each action

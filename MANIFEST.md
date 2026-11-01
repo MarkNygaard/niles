@@ -242,6 +242,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `media-duck` | Temporarily lower volume for voice responses | [#73](https://github.com/MarkNygaard/niles/pull/73) |
 | `media-next-previous` | Skip to the next or previous track | [#75](https://github.com/MarkNygaard/niles/pull/75) |
 | `media-play-pause` | Play or pause media playback on the active speaker | [#65](https://github.com/MarkNygaard/niles/pull/65) |
+| `media-play-song` | A song by name and artist, however it is said, plays straight from Spotify | [#509](https://github.com/MarkNygaard/niles/pull/509) |
 | `media-volume-set` | Set the speaker volume to a specific level | [#65](https://github.com/MarkNygaard/niles/pull/65) |
 | `media-volume-step` | Raise or lower the speaker volume by one step | [#65](https://github.com/MarkNygaard/niles/pull/65) |
 | `podcasts` | A researched two-host episode, voiced by the house's own Kokoro, played in the app or on a Sonos | [#457](https://github.com/MarkNygaard/niles/pull/457) |
@@ -325,6 +326,12 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 - play music
 - pause the music
+
+### `media-play-song` — example phrasings
+
+- play Gravity by John Mayer
+- play She Was Just a Stranger with Benny G
+- put on John Mayer's Gravity
 
 ### `media-volume-set` — example phrasings
 

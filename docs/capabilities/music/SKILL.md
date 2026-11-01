@@ -17,7 +17,7 @@ music:
   tv: "turn on the TV" | "TV off" | "put on Netflix on the TV" | "switch the TV to HDMI 2" | "pause the TV"
   tv_volume: "set the TV volume to <n>" | "turn the TV up" | "TV volume down" | "mute the TV" | "unmute the TV"   # ±10
   tools:
-    play_music: room + query; Sonos favorite, radio station, or Spotify artist/song/album/playlist; from_spotify when they said Spotify
+    play_music: room + title and artist for a song, however it was said ("X with Y", "Y's X", "X by Y"); room + query for anything else (Sonos favorite, radio station, Spotify artist/album/playlist); from_spotify when they said Spotify
     play_radio: room + station; no station = what that room played last; favorites, then TuneIn
     play_elsewhere: room to add, or none for every room; from_room = where it plays now
     pause_music: room optional; without one, stops the music wherever it plays
@@ -26,6 +26,7 @@ music:
     tv_volume: action set (with level 0-100) / up / down / mute / unmute; the TV's own speakers
   notes:
     - play_music and play_radio list choices when several match; call again with spotify_uri+name or station_id
+    - the same name by the same artist twice in the choices is one song (a single and its album): play the first, don't ask
     - the whole room plays together and replaces what was playing, the TV included
     - no room said: the room of the satellite; "play X" with no room in the app's chat has no room, so ask
     - "stop" with no timer to stop means the music; the TV's sound is not the music
@@ -35,7 +36,9 @@ music:
     - TV apps and inputs are matched by name against what the TV lists (Netflix, YouTube, DR TV, TV 2 Play, Disney+)
     - tv_message shows a short text on the screen over whatever is on
   examples:
-    - User: "play Gravity by John Mayer in the kitchen" → play_music room=kitchen query="Gravity by John Mayer"
+    - User: "play Gravity by John Mayer in the kitchen" → play_music room=kitchen title="Gravity" artist="John Mayer"
+    - User: "play She Was Just a Stranger with Benny G" → play_music title="She Was Just a Stranger" artist="Benny G" in this room
+    - User: "play some Nina Simone" → play_music query="Nina Simone" in this room
     - User: "put on P1 in the bedroom" → play_radio room=bedroom station=P1
     - User: "a bit louder" → music_volume change=+10 in this room
     - User: "put YouTube on" → tv_open_app app=YouTube
