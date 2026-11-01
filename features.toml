@@ -95,6 +95,13 @@ phrasings = ["play music", "pause the music"]
 since_pr = 65
 
 [[feature]]
+id = "media-play-song"
+category = "voice.media"
+summary = "A song by name and artist, however it is said, plays straight from Spotify"
+phrasings = ["play Gravity by John Mayer", "play She Was Just a Stranger with Benny G", "put on John Mayer's Gravity"]
+since_pr = 509
+
+[[feature]]
 id = "media-volume-set"
 category = "voice.media"
 summary = "Set the speaker volume to a specific level"
