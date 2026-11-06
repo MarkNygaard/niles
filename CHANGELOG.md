@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.7.0](https://github.com/MarkNygaard/niles/compare/v0.6.0...v0.7.0) (2026-11-06)
+
+
+### Features
+
+* **add-ons:** no Custom badge on Niles's own add-ons, and a Devices group (NIL-57) ([#494](https://github.com/MarkNygaard/niles/issues/494)) ([b5edfb1](https://github.com/MarkNygaard/niles/commit/b5edfb12d2fdb08d6aead3296ebd6481d9eae5d8))
+* **artifacts:** a new trip or training plan comes with its own page, the built-in view only a fallback (NIL-66) ([#506](https://github.com/MarkNygaard/niles/issues/506)) ([8de9a90](https://github.com/MarkNygaard/niles/commit/8de9a905dd16b5eb7bbbb6776fd213f897239700))
+* **firmware:** wake word round 3, trained on the film false wakes (NIL-69) ([#515](https://github.com/MarkNygaard/niles/issues/515)) ([a632392](https://github.com/MarkNygaard/niles/commit/a632392696af8235f03af1f1b5027077f4489f2b))
+* **history:** device and command history in Postgres, on by default (NIL-67) ([#508](https://github.com/MarkNygaard/niles/issues/508)) ([c629f75](https://github.com/MarkNygaard/niles/commit/c629f755b0efb6450f4f722748739cfafd95d5d1))
+* say when a restart waits, and restart Niles from the app (NIL-14) ([#507](https://github.com/MarkNygaard/niles/issues/507)) ([4ef789a](https://github.com/MarkNygaard/niles/commit/4ef789a8b6fb8da6e1148a096f347b7f8d9a88da))
+
+
+### Fixes
+
+* **music:** a song is asked for by title and artist, however it was said (NIL-68) ([#509](https://github.com/MarkNygaard/niles/issues/509)) ([f9d8a7c](https://github.com/MarkNygaard/niles/commit/f9d8a7cceb357668a318cebf9db81c5660aa28ce))
+* **niles-plugins:** link speech-stream at 0.6.0 under its WIT name (NIL-62) ([#500](https://github.com/MarkNygaard/niles/issues/500)) ([14d0945](https://github.com/MarkNygaard/niles/commit/14d09452ecfca01467e97c1f8cc7a0a06ec155f4))
+* **web:** the header stays at the top on a phone, as on a desk (NIL-63) ([#502](https://github.com/MarkNygaard/niles/issues/502)) ([2734887](https://github.com/MarkNygaard/niles/commit/2734887c54687381e9d03ea84d81678e4e5a1337))
+
 ## [0.6.0](https://github.com/MarkNygaard/niles/compare/v0.5.0...v0.6.0) (2026-10-24)
 
 
