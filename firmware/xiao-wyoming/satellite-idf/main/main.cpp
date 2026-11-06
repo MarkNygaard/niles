@@ -168,6 +168,19 @@ static constexpr int WINDOW_AVG = 5;
 //
 // The one real wake round 2 lost was already round 1's weakest (0.80).
 // Round 1's model is kept at wake-data/models/nyles_home_v1.tflite.
+// 2026-11-01, round 3: a month in the living room, most false wakes now film
+// and TV dialogue (249 of them, 159 real "Niles", some said over a film).
+// Trained on round 2's recipe it heard more but woke more on plain talk, so
+// false wakes were weighted harder. Held-out clips, all three rounds:
+//
+//                        film false   all false   real "Niles"
+//   round 2 at 0.75      17 / 41      19 / 86     29 / 31
+//   round 3 at 0.75       9 / 41      10 / 86     27 / 31
+//
+// The two lost were a slurred "Niles" and one in a Danish sentence. Five
+// days on the satellite: 2.9 false wakes a day, from 7.7. A few clips score
+// ~1.00 on every model with nothing in the transcript; the trigger is in
+// the pre-roll, so they need listening to before a round 4.
 static constexpr float AVG_CUTOFF = 0.75f;
 
 // ~1 s of audio kept before the wake word, in PSRAM.

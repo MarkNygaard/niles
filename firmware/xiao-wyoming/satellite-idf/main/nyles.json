@@ -1,13 +1,13 @@
 {
   "type": "micro",
   "wake_word": "nyles",
-  "author": "niles (retrained 2026-10-02, round 2: office + living room)",
+  "author": "niles (retrained 2026-11-01, round 3: office + living room + films)",
   "website": "https://github.com/OHF-Voice/micro-wake-word",
   "model": "./nyles.tflite",
   "trained_languages": [
     "en"
   ],
-  "version": 2,
+  "version": 3,
   "micro": {
     "probability_cutoff": 0.75,
     "sliding_window_size": 5,
