@@ -37,6 +37,7 @@ export function AboutCard() {
   // Opening the page is asking: the kept answer may be hours old.
   const { mutate } = check;
   useEffect(() => mutate(), [mutate]);
+  const build = update.data?.running ?? restart.data?.build;
 
   return (
     <Card>
@@ -47,13 +48,13 @@ export function AboutCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
+        {build && <BuildRows build={build} />}
         {update.isPending && !update.data ? (
           <AboutSkeleton />
         ) : update.isError && !update.data ? (
           <p role="status">Niles can't say whether a newer one is published here.</p>
         ) : update.data ? (
           <>
-            <BuildRows build={update.data.running} />
             <StatusLine update={update.data} checking={check.isPending} />
             {update.data.failed && update.data.checked_at && (
               <p className="text-muted-foreground text-sm" role="status">
@@ -75,8 +76,8 @@ export function AboutCard() {
             {update.data.state === "update_available" && (
               <WhatsNew update={update.data} />
             )}
-            {update.data.state === "update_available" && restart.data && (
-              <HowTo update={update.data} supervisor={restart.data.supervisor} restart={restart.data} />
+            {update.data.state === "update_available" && (
+              <HowTo update={update.data} supervisor={restart.data?.supervisor ?? null} restart={restart.data} />
             )}
           </>
         ) : null}
@@ -242,7 +243,7 @@ function HowTo({
 }: {
   update: UpdateStatus;
   supervisor: string | null;
-  restart: RestartStatus;
+  restart: RestartStatus | undefined;
 }) {
   return (
     <section className="flex flex-col gap-2" aria-label="How to update">
@@ -250,7 +251,7 @@ function HowTo({
       {howToUpdate(update, supervisor).map((step, index) => (
         <div key={index} className="flex flex-col gap-2">
           <p>{step.text}</p>
-          {step.restart && <RestartButton status={restart} />}
+          {step.restart && restart && <RestartButton status={restart} />}
           {step.command && <CopyField label={step.label ?? "Command"} value={step.command} />}
         </div>
       ))}

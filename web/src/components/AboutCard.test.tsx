@@ -168,4 +168,36 @@ describe("AboutCard", () => {
       `https://github.com/MarkNygaard/niles/compare/${SHA}...${NEWER}`,
     );
   });
+
+  it("keeps the running build visible when update checking is unavailable", async () => {
+    vi.spyOn(api, "restartStatus").mockResolvedValue(restart({ build: update().running }));
+    vi.spyOn(api, "updateStatus").mockRejectedValue(new Error("unavailable"));
+    vi.spyOn(api, "checkForUpdate").mockRejectedValue(new Error("unavailable"));
+    renderCard();
+    expect(await screen.findByText(/Niles can't say whether/)).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: SHA.slice(0, 7) })).toHaveAttribute(
+      "href",
+      `https://github.com/MarkNygaard/niles/commit/${SHA}`,
+    );
+    expect(screen.getByText("0.6.0")).toBeInTheDocument();
+  });
+
+  it("offers the image digest even when restart status is unavailable", async () => {
+    vi.spyOn(api, "restartStatus").mockRejectedValue(new Error("unavailable"));
+    mockUpdate(update({
+      state: "update_available",
+      newest: {
+        digest: DIGEST,
+        image: `ghcr.io/marknygaard/niles@${DIGEST}`,
+        commit: NEWER,
+        created: null,
+        version: null,
+      },
+    }));
+    renderCard();
+    expect(await screen.findByRole("region", { name: "How to update" })).toHaveTextContent(
+      `ghcr.io/marknygaard/niles@${DIGEST}`,
+    );
+    expect(screen.queryByRole("button", { name: "Restart now" })).toBeNull();
+  });
 });
