@@ -75,6 +75,9 @@ pub enum WireEvent {
     RestartStarted {
         boot_id: String,
     },
+    /// A check for a newer Niles finished; the app asks
+    /// `/system/update` again.
+    UpdateChecked {},
     Ping {
         ts: String,
     },
@@ -133,6 +136,7 @@ impl WireEvent {
             }
             Event::RestartPendingChanged => Some(WireEvent::RestartPendingChanged {}),
             Event::RestartStarted { boot_id } => Some(WireEvent::RestartStarted { boot_id }),
+            Event::UpdateChecked => Some(WireEvent::UpdateChecked {}),
             _ => None,
         }
     }
@@ -151,6 +155,8 @@ impl WireEvent {
 ///   `notifications_read`, each only to the person it is about
 /// - `restart_pending_changed` and `restart_started`, to everybody:
 ///   what waits for a restart changed, and Niles is on its way down
+/// - `update_checked`, to everybody: a check for a newer Niles
+///   finished, which About Niles and the Settings dot follow
 /// - A 30-second application-level heartbeat (`{"type":"ping"}`)
 /// - Slow-consumer detection: if the cumulative number of dropped events
 ///   reaches 256, the connection is closed with `{"type":"close"}`
@@ -331,6 +337,10 @@ mod tests {
             pending,
             serde_json::json!({"type": "restart_pending_changed"})
         );
+        let checked =
+            serde_json::to_value(WireEvent::for_viewer(Event::UpdateChecked, "person:x").unwrap())
+                .unwrap();
+        assert_eq!(checked, serde_json::json!({"type": "update_checked"}));
     }
 
     #[test]

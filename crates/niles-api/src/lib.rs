@@ -62,6 +62,7 @@ pub mod system;
 pub mod tool_servers;
 pub mod training;
 pub mod tv;
+pub mod update;
 pub mod voices;
 #[cfg(feature = "ui")]
 pub mod web;

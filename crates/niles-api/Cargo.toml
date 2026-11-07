@@ -37,6 +37,7 @@ niles-artifacts.workspace = true
 niles-podcasts.workspace = true
 niles-webpush.workspace = true
 niles-websearch.workspace = true
+niles-update.workspace = true
 async-trait.workspace = true
 urlencoding.workspace = true
 serde_json.workspace = true

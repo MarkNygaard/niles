@@ -1074,7 +1074,7 @@ since_pr = 507
 [[feature]]
 id = "api-system-restart"
 category = "api.write"
-summary = "GET /system/restart says what waits, the boot id and what a restart cuts short; POST /system/restart restarts Niles"
+summary = "GET /system/restart says what waits, the boot id, the build and what a restart cuts short; POST restarts Niles"
 since_pr = 507
 
 [[feature]]
@@ -1094,3 +1094,45 @@ id = "config-live-speaking-integrations"
 category = "ui.settings"
 summary = "Speaking and integration settings say they apply at once, as they always did, and the voice lock asks for no restart"
 since_pr = 507
+
+[[feature]]
+id = "ui-about-niles"
+category = "ui.settings"
+summary = "About Niles in Settings: version, commit and build date; Update available lists what's new and how to update"
+since_pr = 516
+
+[[feature]]
+id = "ui-update-dot"
+category = "ui.settings"
+summary = "While a newer Niles is published, Settings and its About Niles entry carry a dot"
+since_pr = 516
+
+[[feature]]
+id = "runtime-update-check"
+category = "runtime.lifecycle"
+summary = "Every six hours and when About Niles opens, Niles asks GitHub anonymously for a newer image; offline it says so"
+since_pr = 516
+
+[[feature]]
+id = "runtime-build-info"
+category = "runtime.lifecycle"
+summary = "A workflow-built image knows its commit and build date and logs them at start; any other build is a dev build"
+since_pr = 516
+
+[[feature]]
+id = "ui-reload-on-new-build"
+category = "runtime.lifecycle"
+summary = "An open app, the iPhone Home Screen one included, reloads itself once when Niles comes back as another build"
+since_pr = 516
+
+[[feature]]
+id = "api-system-update"
+category = "api.write"
+summary = "GET /system/update says which build runs and what is newest without waiting; POST /system/update/check checks now"
+since_pr = 516
+
+[[feature]]
+id = "api-events-update"
+category = "api.events"
+summary = "update_checked on /events/stream, to everyone"
+since_pr = 516

@@ -12,8 +12,9 @@ export interface TabBarProps {
   menu?: MenuItem[];
   /** The plugins' pages, for the entries that are theirs. */
   pages?: PluginPageEntry[];
-  /** A restart waits: the Settings entry carries a dot. */
-  settingsDot?: boolean;
+  /** Why the Settings entry carries a dot, for a screen reader: a
+      restart is waiting, an update is available. */
+  settingsDot?: string;
 }
 
 const UNARRANGED: MenuItem[] = MOVABLE.filter(
@@ -35,7 +36,7 @@ export function TabBar({
   route,
   menu = UNARRANGED,
   pages = [],
-  settingsDot = false,
+  settingsDot,
 }: TabBarProps) {
   const tabs: Destination[] = [
     HOME,
@@ -59,13 +60,13 @@ export function TabBar({
       <ul className="mx-auto flex max-w-md sm:max-w-none sm:gap-1">
         {tabs.map((tab) => {
           const active = tab.owns(route);
-          const dotted = settingsDot && tab.href === DESTINATIONS.settings.href;
+          const dotted = Boolean(settingsDot) && tab.href === DESTINATIONS.settings.href;
           return (
             <li key={tab.href} className="flex-1 sm:flex-none">
               <a
                 href={tab.href}
                 aria-current={active ? "page" : undefined}
-                aria-label={dotted ? `${tab.label}, a restart is waiting` : undefined}
+                aria-label={dotted ? `${tab.label}, ${settingsDot}` : undefined}
                 className={cn(
                   // Held 8px off the bar's top edge rather than centred:
                   // centred, the icons sat right against it. The bar keeps

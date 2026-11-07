@@ -1,5 +1,9 @@
 //! Restarting Niles from the app, and saying when a restart waits.
 //!
+//! The answer also says which build runs, which is how an open app
+//! notices a new build: a commit other than the first one it saw means
+//! its script is stale, and it reloads.
+//!
 //! What waits is worked out by comparing what this process started with
 //! ([`niles_config::Booted`]) with the store now, never by remembering
 //! writes: a change from the app, by voice or over the API counts the
@@ -299,6 +303,9 @@ struct StatusView {
     persistent: bool,
     restarting: bool,
     cut_short: CutShort,
+    /// Which build answered; an open app reloads itself when it
+    /// changes.
+    build: &'static niles_update::Build,
 }
 
 #[derive(Serialize)]
@@ -343,6 +350,7 @@ pub async fn status(State(state): State<AppState>) -> Response {
         persistent: restart.is_persistent(),
         restarting: restart.is_requested(),
         cut_short: restart.cut_short(),
+        build: niles_update::Build::current(),
     })
     .into_response()
 }
@@ -483,6 +491,16 @@ mod tests {
         );
         assert_eq!(body["persistent"], false, "the in-memory fixture store");
         assert_eq!(body["restarting"], false);
+        assert_eq!(
+            body["build"]["version"],
+            env!("CARGO_PKG_VERSION"),
+            "the version of the crate this test is compiled into"
+        );
+        assert_eq!(
+            body["build"]["commit"],
+            serde_json::Value::Null,
+            "a test build is a dev build"
+        );
     }
 
     #[tokio::test]

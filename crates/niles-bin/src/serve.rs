@@ -69,6 +69,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // Who this start is: the restart route serves the id, and the app
     // knows the next Niles is up when another one answers.
     let boot = niles_api::Boot::start();
+    tracing::info!("[update] {}", niles_update::Build::current());
     // Where the override document lives is deliberately *not* itself
     // overridable — it's how we find the overrides in the first place — so
     // it comes from a plain read of the base file.
@@ -807,6 +808,18 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         })),
     );
     let restart_watch = restart.clone().watch();
+    // Which build this is and whether a newer one is published. A
+    // failure to build the clients is not fatal: About Niles says it
+    // can't check.
+    let updates =
+        match niles_update::Updates::new(niles_update::Build::current().clone(), bus.clone()) {
+            Ok(updates) => Some(Arc::new(updates)),
+            Err(e) => {
+                tracing::warn!("[update] {e}; About Niles can't check for a newer one");
+                None
+            }
+        };
+    let update_loop = updates.clone().and_then(|updates| updates.spawn());
     match restart.supervisor() {
         Some(s) => tracing::info!(
             "[restart] {} starts Niles again when it exits, so the app offers Restart now",
@@ -825,6 +838,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     )
     .with_config_store(Some(store.clone()))
     .with_restart(Some(restart.clone()))
+    .with_updates(updates.clone())
     .with_logs(LOG_BUFFER.get().cloned())
     // Mounted always and answering only once its signing secret is
     // saved, which is what switching it on is.
@@ -1187,6 +1201,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         restart_watch,
     ];
     rest.extend(presence_handle);
+    rest.extend(update_loop);
     shutdown::stop(shutdown::Parts {
         api: api_handle,
         api_stop,

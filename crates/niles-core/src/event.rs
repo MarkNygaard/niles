@@ -116,6 +116,9 @@ pub enum Event {
         /// other id.
         boot_id: String,
     },
+    /// A check for a newer Niles finished. The house's, so it goes to
+    /// everybody: the app asks `/system/update` again.
+    UpdateChecked,
 }
 
 /// Bounded pub/sub bus backed by `tokio::sync::broadcast`.

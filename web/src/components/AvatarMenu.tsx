@@ -19,8 +19,9 @@ export interface AvatarMenuProps {
   pages?: PluginPageEntry[];
   theme: Theme;
   onTheme: (theme: Theme) => void;
-  /** A restart waits: the trigger and the Settings entry carry a dot. */
-  settingsDot?: boolean;
+  /** Why the trigger and the Settings entry carry a dot, for a screen
+      reader: a restart is waiting, an update is available. */
+  settingsDot?: string;
 }
 
 /**
@@ -40,7 +41,7 @@ export function AvatarMenu({
   pages = [],
   theme,
   onTheme,
-  settingsDot = false,
+  settingsDot,
 }: AvatarMenuProps) {
   const [open, setOpen] = useState(false);
   const entries: Destination[] = [
@@ -52,11 +53,11 @@ export function AvatarMenu({
   ];
 
   const dotted =
-    settingsDot && entries.some((entry) => entry.href === DESTINATIONS.settings.href);
+    Boolean(settingsDot) && entries.some((entry) => entry.href === DESTINATIONS.settings.href);
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
-        aria-label={dotted ? "Your menu, a restart is waiting" : "Your menu"}
+        aria-label={dotted ? `Your menu, ${settingsDot}` : "Your menu"}
         className={cn(
           "flex size-9 shrink-0 items-center justify-center rounded-full",
           "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
@@ -88,7 +89,7 @@ export function AvatarMenu({
                 key={entry.href}
                 href={entry.href}
                 onClick={() => setOpen(false)}
-                aria-label={entryDotted ? `${entry.label}, a restart is waiting` : undefined}
+                aria-label={entryDotted ? `${entry.label}, ${settingsDot}` : undefined}
                 className={cn(
                   "flex items-center gap-3 rounded-md px-2 py-2 text-sm transition-colors",
                   "hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",

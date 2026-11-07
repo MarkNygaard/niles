@@ -37,6 +37,9 @@ import { RESTART } from "@/lib/restart";
 import { RestartBar } from "@/components/RestartBar";
 import { RestartButton } from "@/components/RestartButton";
 import { useRestartStatus } from "@/hooks/useRestartStatus";
+import { useUpdateStatus } from "@/hooks/useUpdateStatus";
+import { AboutCard } from "@/components/AboutCard";
+import { UPDATE_AVAILABLE } from "@/lib/update";
 import { WledCard } from "@/components/WledCard";
 import { BlindsCard } from "@/components/BlindsCard";
 import { HomeCard } from "@/components/HomeCard";
@@ -339,6 +342,7 @@ function overridesAt(root: unknown): BlindOverride[] {
 export function ConfigPanel() {
   const queryClient = useQueryClient();
   const restart = useRestartStatus();
+  const update = useUpdateStatus();
   const [lastApplied, setLastApplied] = useState<Applied | null>(null);
   const [rowError, setRowError] = useState<{ row: string; message: string } | null>(null);
 
@@ -736,6 +740,7 @@ export function ConfigPanel() {
               current={phone ? null : section}
               onPick={setSection}
               todo={todoByPage(setup.data)}
+              dots={update.data?.state === "update_available" ? { about: UPDATE_AVAILABLE } : undefined}
             />
           )}
           <div className={cn("min-w-0 flex-1", !showSection && "hidden")}>
@@ -1304,6 +1309,10 @@ export function ConfigPanel() {
         <TabsContent value="api" className="flex flex-col gap-4">
           <ApiAccessCard />
           <PublicAddressCard />
+        </TabsContent>
+
+        <TabsContent value="about">
+          <AboutCard />
         </TabsContent>
 
         <TabsContent value="history">
