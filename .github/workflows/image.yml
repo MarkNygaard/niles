@@ -72,7 +72,13 @@ jobs:
           # and a secret would be masked out of the build log at
           # exactly the moment somebody is working out why it failed.
           # Unset is the normal case and builds an image without it.
+          # The commit and the image's own `created` label tell the
+          # binary which build it is, so About Niles can say so and
+          # compare it exactly with `latest`'s labels. No comment lines
+          # inside the block: they would become build args.
           build-args: |
+            NILES_GIT_SHA=${{ github.sha }}
+            NILES_BUILD_TIME=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
             ECAPA_URL=${{ vars.ECAPA_URL }}
             ECAPA_SHA256=${{ vars.ECAPA_SHA256 }}
           cache-from: type=gha

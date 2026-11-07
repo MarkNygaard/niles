@@ -133,6 +133,10 @@ pub struct AppState {
     /// subcommands that serve the API without a config store;
     /// `/system/restart` says so rather than 500ing.
     pub restart: Option<Arc<crate::system::Restart>>,
+    /// Which build runs and whether a newer one is published. Absent
+    /// for subcommands that don't check; `/system/update` says so
+    /// rather than 500ing.
+    pub updates: Option<Arc<niles_update::Updates>>,
 }
 
 impl AppState {
@@ -180,6 +184,7 @@ impl AppState {
             captures: None,
             secrets: None,
             restart: None,
+            updates: None,
         }
     }
 
@@ -341,6 +346,11 @@ impl AppState {
 
     pub fn with_restart(mut self, restart: Option<Arc<crate::system::Restart>>) -> Self {
         self.restart = restart;
+        self
+    }
+
+    pub fn with_updates(mut self, updates: Option<Arc<niles_update::Updates>>) -> Self {
+        self.updates = updates;
         self
     }
 

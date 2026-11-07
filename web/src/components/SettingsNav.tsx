@@ -4,6 +4,7 @@ import {
   ChevronRight,
   Clock,
   House,
+  Info,
   KeyRound,
   LayoutGrid,
   Lightbulb,
@@ -101,6 +102,12 @@ export const SECTIONS: { group: string; items: Section[] }[] = [
         hint: "Who hears, who thinks, who speaks, and the assistant",
         icon: AudioLines,
       },
+      {
+        id: "about",
+        label: "About Niles",
+        hint: "Which Niles runs, and whether a newer one is published",
+        icon: Info,
+      },
     ],
   },
   {
@@ -164,6 +171,8 @@ export interface SettingsNavProps {
   counting?: string;
   /** The groups to list. Settings's own unless My profile lends its. */
   sections?: { group: string; items: Section[] }[];
+  /** Sections that carry a dot, and why, for a screen reader. */
+  dots?: Record<string, string>;
 }
 
 /**
@@ -183,6 +192,7 @@ export function SettingsNav({
   todo = {},
   counting = "to set up",
   sections = SECTIONS,
+  dots = {},
 }: SettingsNavProps) {
   return (
     <nav className="flex w-full shrink-0 flex-col gap-5 sm:w-64">
@@ -229,6 +239,14 @@ export function SettingsNav({
                       {todo[item.id]}
                       <span className="sr-only"> {counting}</span>
                     </span>
+                  )}
+                  {/* A dot names itself to a screen reader: why the
+                      section wants attention. */}
+                  {dots[item.id] && (
+                    <>
+                      <span aria-hidden className="bg-primary size-2 shrink-0 rounded-full" />
+                      <span className="sr-only">{dots[item.id]}</span>
+                    </>
                   )}
                   {/* Only on a phone, where tapping goes somewhere. Beside
                       the section it opened, it would point at itself. */}

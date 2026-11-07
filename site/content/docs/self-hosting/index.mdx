@@ -93,6 +93,32 @@ again.
 
 ## Upgrading
 
+Settings → **About Niles** shows which Niles runs: its version, the commit it
+was built from, and when. It then says **Up to date**, or **Update available**
+with the date of the newest image and what changed since yours, newest first.
+Each change links to its pull request. While an update is available, Settings
+has a dot.
+
+Niles checks two minutes after it starts, every six hours after that, and
+whenever About Niles opens. It asks GitHub, without signing in, for the
+`latest` image of `ghcr.io/marknygaard/niles` and for the commits between
+that image and the running one. The requests name the image and the running
+commit, and nothing about your house. Without a network the page says it
+couldn't check. A Niles built any other way, such as with `cargo run`, is a
+development build and doesn't check.
+
+The page shows how to update where Niles runs:
+
+- **Kubernetes** on `latest` with `imagePullPolicy: Always`, as the shipped
+  manifests run it: **Restart now** starts the newest image, and so does
+  `kubectl rollout restart deployment/niles`.
+- **A pinned tag**: change it to the newest version, or pin the digest the
+  page shows, then apply.
+- **Docker Compose**: `docker compose pull niles`, then `docker compose up -d niles`.
+
+An app left open, the one on an iPhone's Home Screen included, reloads
+itself once when Niles comes back as another build.
+
 An upgrade is a new image tag. The tags are `latest` (the newest release),
 each version (such as `0.4.0`) and `sha-<commit>`. Pin a version to choose
 when you upgrade. Niles creates the tables it needs by itself, so there is

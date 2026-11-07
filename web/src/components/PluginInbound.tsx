@@ -1,56 +1,10 @@
-import { useEffect, useState } from "react";
-import { Check, Copy, LogIn } from "lucide-react";
+import { useState } from "react";
+import { LogIn } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { CopyField } from "@/components/CopyField";
 import { api } from "@/lib/api";
 import type { PluginInbound as Inbound, PluginSummary } from "@/lib/api";
 import { connectHref, lastHookLine } from "@/lib/plugins";
-
-/**
- * An address to give a service, with a copy button. Shown in full: it is
- * meant to be pasted into that service's settings.
- */
-function Address({ label, value }: { label: string; value: string }) {
-  const [copied, setCopied] = useState(false);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = setTimeout(() => setCopied(false), 2000);
-    return () => clearTimeout(timer);
-  }, [copied]);
-
-  return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-2">
-        <code
-          aria-label={label}
-          className="bg-muted min-w-0 flex-1 rounded-md px-3 py-2 font-mono text-xs break-all select-all"
-        >
-          {value}
-        </code>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label={`Copy the ${label.toLowerCase()}`}
-          onClick={async () => {
-            setFailed(false);
-            try {
-              await navigator.clipboard.writeText(value);
-              setCopied(true);
-            } catch {
-              setFailed(true);
-            }
-          }}
-        >
-          {copied ? <Check /> : <Copy />}
-        </Button>
-      </div>
-      <span className="text-muted-foreground text-xs" role="status">
-        {copied ? "Copied" : failed ? "Could not copy; select it and copy it by hand" : ""}
-      </span>
-    </div>
-  );
-}
 
 const NO_PUBLIC_ADDRESS = (
   <p className="text-muted-foreground">
@@ -94,7 +48,7 @@ export function PluginInboundSection({
               <p className="text-muted-foreground">
                 Register this as the callback address in {plugin.name}'s developer settings.
               </p>
-              <Address label="Callback address" value={inbound.callback_url} />
+              <CopyField label="Callback address" value={inbound.callback_url} />
               <div>
                 {/* A navigation, not a request: it ends on the service's
                     sign-in page and comes back here. */}
@@ -123,7 +77,7 @@ export function PluginInboundSection({
                 <code className="text-xs">/plugins/*/hook/*</code> has to be reachable from the
                 internet.
               </p>
-              <Address label="Webhook address" value={inbound.hook_url} />
+              <CopyField label="Webhook address" value={inbound.hook_url} />
               <p className="text-muted-foreground">{lastHookLine(inbound.last_hook)}</p>
               {confirming ? (
                 <div className="flex flex-wrap items-center gap-2">

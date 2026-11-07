@@ -7,6 +7,7 @@ import { closeWaitingLater } from "@/lib/pwa";
 import { ARTIFACTS, ARTIFACT_LIST } from "@/lib/artifacts";
 import { NOTIFICATIONS } from "@/lib/notifications";
 import { RESTART, startWaiting } from "@/lib/restart";
+import { UPDATE } from "@/lib/update";
 import type { Artifact, ArtifactList, ArtifactStatus, Device, DeviceState, RestartStatus } from "@/lib/api";
 
 /**
@@ -27,7 +28,9 @@ import type { Artifact, ArtifactList, ArtifactStatus, Device, DeviceState, Resta
  * device after Niles's own push had its chance to replace it — and
  * when a notification of theirs is kept or read, which the bell follows
  * — and when what waits for a restart changed, which Settings follows,
- * or a restart was asked for, which starts the waiting here.
+ * or a restart was asked for, which starts the waiting here, and when
+ * a check for a newer Niles finished, which About Niles and the dot
+ * follow.
  *
  * One socket however many components ask: the bell in the header asks
  * on every page, and so does the page under it.
@@ -71,9 +74,14 @@ function stream(queryClient: QueryClient): () => void {
     socket.onopen = () => {
       // A change made while the socket was down sent its frame to
       // nobody, so whatever the server would have said is stale: ask
-      // for the restart answer again. Only a reconnect, not the first
-      // connect: the query itself is fresh then.
-      if (opened) void queryClient.invalidateQueries({ queryKey: RESTART });
+      // for the restart and update answers again. Only a reconnect,
+      // not the first connect: the queries themselves are fresh then.
+      // A reconnect may be a new Niles, whose update answer starts
+      // afresh.
+      if (opened) {
+        void queryClient.invalidateQueries({ queryKey: RESTART });
+        void queryClient.invalidateQueries({ queryKey: UPDATE });
+      }
       opened = true;
       attempt = 0;
     };
@@ -128,6 +136,11 @@ function stream(queryClient: QueryClient): () => void {
         case "restart_pending_changed":
           void queryClient.invalidateQueries({ queryKey: RESTART });
           break;
+        // A check for a newer Niles finished: About Niles and the dot
+        // ask for the kept answer again.
+        case "update_checked":
+          void queryClient.invalidateQueries({ queryKey: UPDATE });
+          break;
         // Every open app waits for the new Niles, not only the one
         // whose button it was.
         case "restart_started":
@@ -170,6 +183,7 @@ type WireEvent =
   | { type: "notifications_read" }
   | { type: "restart_pending_changed" }
   | { type: "restart_started"; boot_id: string }
+  | { type: "update_checked" }
   | { type: "ping" | "close" };
 
 interface ArtifactChanged {

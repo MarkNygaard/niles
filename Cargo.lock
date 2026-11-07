@@ -2743,6 +2743,7 @@ dependencies = [
  "niles-skills",
  "niles-speakers",
  "niles-training",
+ "niles-update",
  "niles-webos",
  "niles-webpush",
  "niles-websearch",
@@ -2839,6 +2840,7 @@ dependencies = [
  "niles-tools",
  "niles-training",
  "niles-tts",
+ "niles-update",
  "niles-weather",
  "niles-webos",
  "niles-webpush",
@@ -3305,6 +3307,26 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "niles-update"
+version = "0.6.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "http 1.5.0",
+ "niles-core",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
  "wiremock",
 ]
 

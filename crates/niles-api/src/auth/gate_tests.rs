@@ -317,7 +317,13 @@ async fn the_config_routes_are_behind_the_gate_too() {
     // The allowlist itself lives there, so leaving it open would mean
     // anybody could add themselves.
     let app = app_allowing(ONE_PERSON, None);
-    for path in ["/config", "/config/history", "/logs", "/system/restart"] {
+    for path in [
+        "/config",
+        "/config/history",
+        "/logs",
+        "/system/restart",
+        "/system/update",
+    ] {
         assert_eq!(
             send(&app, get(path)).await.0,
             StatusCode::UNAUTHORIZED,
@@ -388,6 +394,7 @@ async fn every_route_this_api_serves_is_either_named_public_or_refused() {
         "/logs",
         "/events/stream",
         "/system/restart",
+        "/system/update",
     ] {
         assert_eq!(
             send(&app, get(path)).await.0,
@@ -403,6 +410,7 @@ async fn every_route_this_api_serves_is_either_named_public_or_refused() {
         ("POST", "/config/undo"),
         ("POST", "/auth/api-token/rotate"),
         ("POST", "/system/restart"),
+        ("POST", "/system/update/check"),
         ("PATCH", "/config"),
         ("DELETE", "/config/lighting.daytime_brightness"),
     ] {
