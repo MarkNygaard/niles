@@ -864,8 +864,9 @@ export interface RestartStatus {
   /** A restart was asked for; this process is on its way down. */
   restarting: boolean;
   cut_short: CutShort;
-  /** Which build answered; an open app reloads when it changes. */
-  build: BuildInfo;
+  /** Which build answered; an open app reloads when it changes.
+      Absent from a Niles older than About Niles. */
+  build?: BuildInfo;
 }
 
 /** Which build a Niles is: its version, and the commit and time the

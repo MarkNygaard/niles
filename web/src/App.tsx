@@ -108,8 +108,10 @@ export function App() {
   const restart = useRestartStatus(!auth.isLoading && !refused);
   const update = useUpdateStatus(!auth.isLoading && !refused);
   // A page's script is the build that served it: when another one
-  // answers, load its own, once.
-  useReloadOnNewBuild(restart.data ? restart.data.build.commit : undefined);
+  // answers, load its own, once. A Niles from before builds were named
+  // answers without one (a rollback under an open page); that is no
+  // answer here, not a crash.
+  useReloadOnNewBuild(restart.data?.build?.commit);
   const settingsDot = settingsDotFor(restart.data, update.data);
 
   // A new page starts at its top. `#root` is what scrolls, not the
