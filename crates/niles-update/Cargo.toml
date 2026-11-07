@@ -1,0 +1,29 @@
+[package]
+name = "niles-update"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono.workspace = true
+hex.workspace = true
+niles-core.workspace = true
+reqwest.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+wiremock = "0.6"
+# Building a response with no Content-Length, which wiremock cannot
+# serve, to test the read cap on arriving bytes.
+http = "1"
