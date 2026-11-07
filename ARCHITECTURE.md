@@ -31,7 +31,7 @@ What Niles is not:
 
 ## The crate map
 
-A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the rest together.
+A Cargo workspace of 37 crates; `niles-bin` is the only binary and wires the rest together.
 
 **Core and state**
 
@@ -90,13 +90,14 @@ A Cargo workspace of 36 crates; `niles-bin` is the only binary and wires the res
 
 | Crate | What it is |
 |---|---|
-| `niles-api` | The HTTP API, sign-in, `/events/stream`, `/system/restart`, and the web app's routes. |
+| `niles-api` | The HTTP API, sign-in, `/events/stream`, `/system/restart`, `/system/update`, and the web app's routes. |
 | `niles-webpush` | Web Push to a person's devices, RFC 8291 and 8292 in pure Rust, and the record of what each person was told, for their Notifications page. |
 | `niles-websearch` | The SearXNG client, and the fetcher that goes only to the public internet. |
 | `niles-mcp` | Niles as an MCP client, for remote tool servers such as Linear's. |
 | `niles-plugins` | Third-party plugins: WebAssembly components run in wasmtime, installed from GitHub releases and found in the add-on library. |
 | `niles-integration-linear` | Linear's webhook, turned into notifications. |
 | `niles-tls` | TLS to devices that sign their own certificate (an LG TV). |
+| `niles-update` | Which build runs, and whether a newer image of Niles is published: the `latest` manifest on GHCR and GitHub's compare API, asked anonymously. |
 | `niles-bin` | The `niles` binary: `serve`, the dev subcommands, all the wiring, and the orderly stop (`shutdown.rs`). |
 
 **Outside `crates/`:** `web/` (the React app, served by `niles-api`), `firmware/xiao-wyoming/satellite-idf/` (the satellite firmware), `hardware/satellite-v2/` (the custom satellite board), `schemas/` (the plugin WIT), `site/` (getniles.app: the landing page, the add-on library, the user guide in `site/content/docs/` and the plugin author guide in `site/content/docs/writing-add-ons/`), `docs/capabilities/` (capability references), `deploy/kustomize/` and `deploy/README.md` (deployment), and `examples/niles.example.toml`.
@@ -175,6 +176,33 @@ A step that runs over its budget is left behind, so a stop takes at most about t
 
 **In the app:** the bar at the top of Settings and a dot on its menu entry while something waits. The confirmation names what is cut short. Then "Restarting…" until `/system/restart` answers with another boot id, and a reload. After two minutes it says Niles hasn't come back and where to look (`kubectl logs deploy/niles`).
 
+## Updating Niles
+
+**Which Niles runs.** `image.yml` passes the commit and the image's `created` label to the build as `NILES_GIT_SHA` and `NILES_BUILD_TIME`, and `niles_update::Build` reads them with `option_env!`. `niles serve` logs them at start, and `GET /system/restart` and `GET /system/update` answer with them. A build without them, `cargo run` or a `docker build` without the arguments, is a dev build. It says so and never checks for a newer one.
+
+**Whether a newer one is published.** `niles_update::Updates` asks GitHub without signing in. It checks two minutes after a start, every six hours after that (thirty minutes after a failure), and whenever About Niles opens. A check from the last half minute is reused.
+
+1. An anonymous pull token from `ghcr.io`, then a `HEAD` of the `latest` manifest for its digest. A digest it already has ends the check, so a quiet check is two requests.
+2. For a new digest, the manifest, the linux/amd64 image's config, and its `org.opencontainers.image.revision`, `.created` and `.version` labels.
+3. For a revision other than this build's, GitHub's compare API between the two commits, once per pair. A failure is tried again after fifteen minutes. Its commits that aren't merges, newest first, are what's new. `development` is squash-merged, so they are pull request titles. Compare's `ahead_by` decides Update available. Without a comparison the later build date decides.
+
+The answer is kept in memory. A failed check keeps the last answer and says how old it is. Offline is "couldn't check", never an error. Nothing in `niles.toml` switches it. The requests name Niles's public image and this build's public commit, and nothing about the house, which is why rule 26 allows them.
+
+**`GET /system/update`** answers what is kept and never waits on the network. **`POST /system/update/check`** checks now. Both are behind sign-in. `update_checked` on `/events/stream` tells open apps to ask again.
+
+**In the app.** Settings → System → About Niles shows the version, the commit (linked) and the build date. Then it says Up to date, or Update available with the newest image's date, What's new (newest first, each linked) and how to update where Niles runs. Settings and its About Niles entry carry a dot while an update is available. An open app reloads itself once when `/system/restart` answers with a commit other than the first one it saw. Its script is the old build's, and the app on an iPhone's Home Screen would otherwise keep it.
+
+**For now, updating happens where Niles runs.** Niles has no permission to change its own Deployment, so About Niles shows how. On `latest` with `imagePullPolicy: Always`, a restart starts the newest image (see Restarting Niles), and so does `kubectl rollout restart deployment/niles`. A pinned tag is changed to the newest version or digest. Docker Compose pulls and starts again.
+
+**The Update button is the second part of NIL-13, and is not built yet.**
+
+- Optional manifests in `deploy/kustomize`, a component, give Niles a ServiceAccount and a Role with `get` and `patch` on the Deployment named `niles` in its own namespace, and nothing else. Without them there is no button, and the page shows the commands. That is the default and every GitOps setup. The permission is the switch.
+- With them, Niles reads its own Deployment. On `:latest` with `Always` it sets the `kubectl.kubernetes.io/restartedAt` annotation, which is a rollout restart. On a pinned tag or digest it sets the image to the digest the page offered (`ghcr.io/marknygaard/niles@sha256:…`), so what runs is what was shown. A Deployment that Flux or Argo CD manages, known by their labels and annotations, gets no button, because they would revert the change. The page shows the line to change in git instead.
+- The confirmation is Restart's. Niles is away for about a minute, satellites reconnect by themselves, and delays in automations are kept. It names what is cut short: background jobs, wake-up ramps and approvals waiting.
+- A rollout keeps the old pod until the new one is ready. So after a bad image the old Niles keeps running, and the page says the update didn't take and how to see why. The new pod's log is not on the page, because reading it needs `list` on pods and `get` on their logs across the namespace.
+- The same patch records the image it replaced in an annotation on the Deployment, and the page offers to go back to it. Schema changes stay additive (`create … if not exists`, `add column if not exists`), so going back one version is safe. A pull request whose migration isn't additive says so.
+- Only the button updates Niles, never a timer. Who may press it is who may restart.
+
 ## House rules
 
 Every change keeps these. Each is one rule and, in italics, its reason.
@@ -221,7 +249,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 23. No plugin code runs in the web app (its UI is declarative); a plugin reaches only what its manifest declares and the household approved; nothing outside `niles-plugins` knows about WebAssembly. *The sandbox is one crate wide.*
 24. Plugin-facing names stay as they are: `niles:integration`, `niles-integration.toml`, `/integrations`, `/plugins/…`, `integrations.*`. *Published plugins depend on them.*
 25. No OpenSSL in the build: rustls and RustCrypto. *One build on every platform.*
-26. No telemetry. If it is ever added, opt-in only. A download a person's own action starts, from the host that action already reaches, and carrying nothing that action didn't, is not telemetry: the add-on library's install count (one `niles-installed` per add-on per house, at install) is the one such download. *Local-first is the point.*
+26. No telemetry. If it is ever added, opt-in only. Two fetches carry nothing about the house and are not telemetry. The add-on library's install count is one `niles-installed` download per add-on per house, at install, from the host that install already reached. The update check reads Niles's own public image and the commits since this build from GitHub, and names only that image and this build's public commit. *Local-first is the point.*
 
 **Code**
 
@@ -232,6 +260,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 - Postgres, not embedded SQLite (#16); stores create their own tables, and the database is just `NILES_DATABASE_URL` (#367).
 - Layered config: a ConfigMap base plus overrides in Postgres, with history and undo, edited from the UI, by voice or over the API (#153, #154, #158; spec #168). Why Postgres: see Operations notes.
 - Restarting from the app (NIL-14): Niles exits cleanly with code 0 and whatever runs it starts it again, offered only under Kubernetes or a supervisor `NILES_SUPERVISOR` names. What waits for a restart is a comparison with what Niles started with. **Rejected:** a remembered list of changes, which an undo or a change made elsewhere leaves wrong; and restarting through the Kubernetes API, which needs permissions this does not.
+- Updating Niles (NIL-13). The image build bakes its commit and date into the binary. Niles asks GitHub without signing in whether `latest` is a newer build, every six hours and when About Niles opens, and lists the pull requests in between from GitHub's compare API. An open app reloads itself when the server's commit changes. The Update button, next, patches only Niles's own Deployment through an optional Role and pins the digest it offered. **Rejected:** updating unattended, which cuts jobs and approvals short with nobody watching and fights a GitOps setup; a Role wider than one Deployment, such as one that reads pod logs; and a server of Niles's own to say what's newest, which someone would have to run.
 - Credentials typed into the app and sealed in Postgres (#209, #210); tado connected from the app by device flow (#203, #204).
 - Custom ESP-IDF satellite firmware streaming raw PCM over Wyoming, not ESPHome, MQTT or wyoming-satellite (#103, #122, #123, #127); an on-device "Niles" wake word (#128).
 - ElevenLabs Scribe for hearing (#281) and Cerebras for the fast model (#261); Groq removed, and the base system split from add-ons (#394). The optional Tier 2 is OpenAI (`gpt-5.5`) by default (#87).
@@ -305,6 +334,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 - **Capability reference**: a `SKILL.md` in `docs/capabilities/` that tells the model how a feature works, chosen by topic for each turn.
 - **Hot / boot section**: a config section re-read while running, or one read only at startup. A few settings inside boot sections are re-read (`path_reload`).
 - **Boot id**: a random id each start of Niles gets, in `GET /system/restart`; the app knows Niles is back when it changes.
+- **Build**: the commit and time an image was built from, which the binary knows (`niles_update::Build`). A binary built any other way is a dev build.
 - **Approval**: a tool call or mail Niles holds until the person answers.
 - **Artifact**: something the assistant makes for one person and keeps, with every version: a document, a training plan, a trip.
 - **Personal reference**: "my calendar", "wake me up": resolved to the speaker's own resource, as opposed to a preference.
