@@ -14,6 +14,7 @@ const NOTHING_WAITS: RestartStatus = {
   persistent: true,
   restarting: false,
   cut_short: { jobs: 0, wake_ups: 0, approvals: 0 },
+  build: { version: "0.6.0", commit: null, built_at: null },
 };
 
 /**
@@ -65,6 +66,18 @@ function stubApi() {
     presence_enabled: false,
   });
   vi.spyOn(api, "restartStatus").mockResolvedValue(NOTHING_WAITS);
+  vi.spyOn(api, "updateStatus").mockResolvedValue({
+    running: { version: "0.6.0", commit: null, built_at: null },
+    state: "up_to_date",
+    checked_at: "2026-11-06T10:00:00Z",
+    failed: null,
+    newest: null,
+    newer_than_published: false,
+    changes: null,
+    changes_failed: null,
+    compare_url: null,
+    namespace: null,
+  });
   return vi.spyOn(api, "patchConfig").mockResolvedValue({
     revision: 1,
     noop: false,

@@ -308,7 +308,9 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/system/restart",
             get(crate::system::status).post(crate::system::restart),
-        );
+        )
+        .route("/system/update", get(crate::update::status))
+        .route("/system/update/check", post(crate::update::check));
     if state.linear_webhook.is_some() {
         r = r.route("/webhooks/linear", post(crate::webhook::handle_linear));
     }

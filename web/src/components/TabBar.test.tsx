@@ -28,9 +28,28 @@ describe("TabBar", () => {
   });
 
   it("says on the Settings entry when a restart is waiting", () => {
-    render(<TabBar route="/" menu={[{ id: "settings", hidden: false }]} settingsDot />);
+    render(
+      <TabBar
+        route="/"
+        menu={[{ id: "settings", hidden: false }]}
+        settingsDot="a restart is waiting"
+      />,
+    );
     expect(
       screen.getByRole("link", { name: "Settings, a restart is waiting" }),
+    ).toBeInTheDocument();
+  });
+
+  it("says on the Settings entry when an update is available", () => {
+    render(
+      <TabBar
+        route="/"
+        menu={[{ id: "settings", hidden: false }]}
+        settingsDot="an update is available"
+      />,
+    );
+    expect(
+      screen.getByRole("link", { name: "Settings, an update is available" }),
     ).toBeInTheDocument();
   });
 

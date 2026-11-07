@@ -25,6 +25,9 @@ import type { PluginPageEntry } from "@/lib/plugins";
 import { useRoute } from "@/lib/route";
 import { useTheme } from "@/lib/theme";
 import { useRestartStatus } from "@/hooks/useRestartStatus";
+import { useUpdateStatus } from "@/hooks/useUpdateStatus";
+import { useReloadOnNewBuild } from "@/hooks/useReloadOnNewBuild";
+import { settingsDotFor } from "@/lib/update";
 import { cn } from "@/lib/utils";
 
 // Its own chunk: React Flow and dagre are a quarter of the app,
@@ -103,6 +106,11 @@ export function App() {
     retry: false,
   });
   const restart = useRestartStatus(!auth.isLoading && !refused);
+  const update = useUpdateStatus(!auth.isLoading && !refused);
+  // A page's script is the build that served it: when another one
+  // answers, load its own, once.
+  useReloadOnNewBuild(restart.data ? restart.data.build.commit : undefined);
+  const settingsDot = settingsDotFor(restart.data, update.data);
 
   // A new page starts at its top. `#root` is what scrolls, not the
   // document — see globals.css.
@@ -227,7 +235,7 @@ export function App() {
           route={screen.at}
           menu={layout?.main ?? []}
           pages={pages}
-          settingsDot={(restart.data?.pending.length ?? 0) > 0}
+          settingsDot={settingsDot}
         />
         {/* Notifications are someone's own, so only with someone signed in. */}
         {email && <NotificationBell current={screen.at === "/notifications"} />}
@@ -238,7 +246,7 @@ export function App() {
           pages={pages}
           theme={theme}
           onTheme={setTheme}
-          settingsDot={(restart.data?.pending.length ?? 0) > 0}
+          settingsDot={settingsDot}
         />
       </header>
 

@@ -63,6 +63,7 @@ niles-recognition.workspace = true
 niles-training.workspace = true
 niles-artifacts.workspace = true
 niles-webpush.workspace = true
+niles-update.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
 iana-time-zone.workspace = true

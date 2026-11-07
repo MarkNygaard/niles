@@ -14,8 +14,24 @@ describe("SettingsNav", () => {
 
   it("splits the base system from the add-ons", () => {
     expect(SECTIONS.map((g) => g.group)).toEqual(["The house", "System", "Add-ons", "Advanced"]);
-    expect(SECTIONS[1].items.map((i) => i.label)).toEqual(["Devices", "Voice & AI"]);
+    expect(SECTIONS[1].items.map((i) => i.label)).toEqual([
+      "Devices",
+      "Voice & AI",
+      "About Niles",
+    ]);
     expect(SECTIONS[2].items.map((i) => i.label)).toEqual(["Add-ons"]);
+  });
+
+  it("names the dot's reason on the section that carries it", () => {
+    render(
+      <SettingsNav current={null} onPick={vi.fn()} dots={{ about: "an update is available" }} />,
+    );
+    expect(screen.getByRole("button", { name: /an update is available/ })).toHaveTextContent(
+      "About Niles",
+    );
+    expect(screen.getByRole("button", { name: /Devices/ })).not.toHaveTextContent(
+      "an update is available",
+    );
   });
 
   it("has no page called Integrations any more", () => {

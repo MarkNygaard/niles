@@ -21,6 +21,7 @@ function status(overrides: Partial<RestartStatus> = {}): RestartStatus {
     persistent: true,
     restarting: false,
     cut_short: { jobs: 0, wake_ups: 0, approvals: 0 },
+    build: { version: "0.6.0", commit: null, built_at: null },
     ...overrides,
   };
 }
