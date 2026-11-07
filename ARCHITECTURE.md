@@ -31,7 +31,7 @@ What Niles is not:
 
 ## The crate map
 
-A Cargo workspace of 37 crates; `niles-bin` is the only binary and wires the rest together.
+A Cargo workspace of 37 crates; `niles-bin` is the only binary and wires the rest together. The map also lists `niles-browser`, which is not built yet.
 
 **Core and state**
 
@@ -93,6 +93,7 @@ A Cargo workspace of 37 crates; `niles-bin` is the only binary and wires the res
 | `niles-api` | The HTTP API, sign-in, `/events/stream`, `/system/restart`, `/system/update`, and the web app's routes. |
 | `niles-webpush` | Web Push to a person's devices, RFC 8291 and 8292 in pure Rust, and the record of what each person was told, for their Notifications page. |
 | `niles-websearch` | The SearXNG client, and the fetcher that goes only to the public internet. |
+| `niles-browser` | Niles's own Chrome DevTools Protocol client for headless Chromium in a container of its own: a browser context per session, each page read as text for the model, and screenshots for the cards. Not built yet (NIL-74). |
 | `niles-mcp` | Niles as an MCP client, for remote tool servers such as Linear's. |
 | `niles-plugins` | Third-party plugins: WebAssembly components run in wasmtime, installed from GitHub releases and found in the add-on library. |
 | `niles-integration-linear` | Linear's webhook, turned into notifications. |
@@ -203,6 +204,93 @@ The answer is kept in memory. A failed check keeps the last answer and says how 
 - The same patch records the image it replaced in an annotation on the Deployment, and the page offers to go back to it. Schema changes stay additive (`create … if not exists`, `add column if not exists`), so going back one version is safe. A pull request whose migration isn't additive says so.
 - Only the button updates Niles, never a timer. Who may press it is who may restart.
 
+## Browsing on someone's behalf
+
+This is NIL-72's spec, and none of it is built yet. NIL-74 builds the browser, the proxy, sessions and the cards; NIL-75 saved logins; NIL-76 signing in, sign-in codes, CAPTCHAs and browser profiles; NIL-77 the order card. Each rewrites its part of this section as what exists, including whatever building it changed.
+
+A person asks in the chat for something done on a website, for example "put a 2 m USB-C cable in my basket on shop.example". Niles opens and reads pages without asking. Every click, typing, choice and form submission waits on a card with a picture of the page, and runs only after the person's Allow. When the site needs a login Niles doesn't have, the person adds one in a form the model never sees, and Niles fills it in only on that login's own origins. `read_page` stays the way to read a public page. The browser is for pages that need clicks, scripts or a login.
+
+**The browser.**
+
+- Headless Chromium runs in a container of its own, never in Niles's, and under Kubernetes in a pod of its own. Its image is Niles's own or a pinned upstream one. Niles drives it over the Chrome DevTools Protocol (CDP) with a client of its own, `niles-browser`.
+- A Kustomize component in `deploy/kustomize` adds it, and so does a Compose file in `deploy/compose`. Niles finds the browser by its address, so adding the container is what turns browsing on, the way NIL-13's Role turns on the Update button. Nothing in `niles.toml` switches it (rule 6).
+- The browser tools are offered only while the browser answers. Without a browser, Niles tells a person who asks to browse that browsing isn't set up.
+- Each session is a browser context of its own (`Target.createBrowserContext`), with Niles's proxy set on the context. The browser keeps no page open between sessions, and it restarts once a day when no session is open, so whatever a page leaves behind lasts a day at most.
+
+**What each can reach.**
+
+- The browser reaches the internet only through a proxy inside Niles. The proxy takes `CONNECT` to port 443 and nothing else, so the browser loads only `https` pages on their usual port.
+- For every connection, the proxy looks the name up itself and applies `read_page`'s address rules (`niles-websearch`'s `address.rs`). A name that is never the public internet is refused, and so is a name that resolves to any address that isn't public. The proxy connects to the address it checked, so DNS can't answer differently the second time. A redirect to another host is a new connection, checked the same way. So the browser never reaches the house's network, the cluster or Niles itself, and rule 13 holds for it.
+- The proxy logs a refusal, with the host and the reason, and never what it let through.
+- The browser is started so that nothing it sends goes around the proxy, its own requests outside a session and WebRTC included.
+- In Kubernetes, a NetworkPolicy is a second wall. It lets the browser reach only Niles's proxy, and lets only Niles reach the browser's DevTools port, which has no login of its own. It holds only where the cluster's network plugin enforces NetworkPolicies (see the risks below). In Compose, the browser is on an internal network with Niles alone, and Docker enforces that.
+
+**A browsing session** is one browser context for one person, the turn's asker (rule 17), with one of their saved logins or none. It starts empty, or with the login's browser profile (below). A session signed in with a login stays on that login's origins, and opening another site needs a new session. A session stays open while one of its cards waits, and otherwise ends after sitting idle for a time NIL-74 sets. A restart of Niles or of the browser ends every session.
+
+**What the model gets.**
+
+- Browsing is for the chat only, never for a background job. A spoken request to browse is told to ask in the app, because every step waits on a card there anyway.
+- `browser_open`, `browser_read` and `browser_scroll` run without a card. `browser_click`, `browser_type`, `browser_choose` and `browser_submit` always wait on one. Each of those four names an element by its reference and gives the model's reason, and typing and choosing add the text or the option. `browser_sign_in` and `request_login` are below.
+- The model reads each page as text: the visible text, the links, the form fields with their labels, and a stable reference for each element it can act on. It never gets a picture. Screenshots go only on cards, for the person, because a scrub can find a saved value in text but not in pixels.
+- It never gets a secret. A password field reads as masked, and a field Niles filled reads as filled, never with its value. As a backstop, Niles scrubs the person's saved usernames and passwords from everything it sends the model, writes to the conversation log or records in tracing.
+- Page text reaches the model marked as information, never as instructions (rule 12).
+
+**Every step is a card.**
+
+- A step that acts on the page is held in `approvals.rs` like every approval. Niles holds what it resolved, not the model's words: the page's address, the element the reference pointed to, the text or the option, and the model's reason (rule 10).
+- The card shows a screenshot with the element outlined, the element's visible label, the text or the option, the site, and the model's reason, marked as the model's. Niles re-encodes the screenshot and draws the outline on its own copy, never on the page, so the page can't move it. Niles keeps the screenshot in memory with the held step and drops it once the card is answered or lapses, and the conversation keeps the card without it. Only the asker sees the card (rule 18).
+- The card offers Allow once and Deny, and only an answer on the card in the app counts (`Allow::OnItsCard`, as for mail; rule 11). There is no Allow for this conversation and no spoken yes, and the card's notification offers Review instead of Approve.
+
+**When the person allows a step**, Niles first checks that the page's address and the element are still what the card showed, and, for a click, that nothing covers the point it will click.
+
+- If they are, the step runs, and Niles starts the conversation's next turn with the page as it now is, so nobody has to say "go on".
+- If not, nothing runs and the step lapses. When the element is still on the page, a new card with a new screenshot takes its place. When it is gone, the run ends.
+- Deny ends the run. So does a card nobody answers, which lapses like any approval, and a restart, which lapses every waiting card (rule 9).
+
+**Saved logins.**
+
+- A saved login is one person's own. It has a label, a username and a password, when it was last used, and its origins. An origin is a scheme, host and port, such as `https://shop.example`, and a site that signs in on another host lists that one too. The username and the password are sealed with the `Sealer` (`niles-db`'s `secrets.rs`), in a table of their own.
+- `GET /me/logins` lists the signed-in person's own logins as `{id, label, origins, username, last_used, signed_in}`, never with the password. `POST /me/logins` adds one. `PUT /me/logins/{id}` edits one, and an empty password keeps the current one. `DELETE /me/logins/{id}` removes one with its browser profile. `POST /me/logins/{id}/sign-out` forgets the browser profile and keeps the login. Remove and Sign out also end a session open with the login, so it can't save the profile again.
+- Only the signed-in person reaches their own logins, so the API token reaches none. Another person's login answers as if it didn't exist, on every route (rule 18).
+- The password is the credential rule 7 covers. No response holds it, and the form shows only that one is set. The username is sealed too, and goes back only to its owner, never to the model or a log. Both live in a type whose `Debug` prints `…`, as `niles-nemlig`'s credentials do.
+- Saved logins need the database and the secrets key. Without them, the Logins page says so.
+- **My profile → Logins** in the app lists the person's logins, with Add, Edit, Remove and Sign out. The password field is write-only: it shows as set, leaving it empty keeps the current password, and Niles never sends it back.
+- When a site needs a login the person hasn't saved, the model calls `request_login(site, label)`. The chat then shows "Shop wants a login", Shop being the label, with **Add login**. That opens the Logins page's form, which shows the site as its whole origin, with an international name in its `xn--` form. The form posts straight to `POST /me/logins`, never through the chat, so the values are in no turn, log or conversation. The model learns only that the login exists: `{id, label, site}`.
+
+**Signing in.**
+
+- `browser_sign_in(login_id)` always waits on a card, which shows the site and the login's label, never the username. The login must be one of the asker's own, and anyone else's answers as if it didn't exist (rule 18).
+- On Allow, Niles, not the model, finds the username and password fields, fills them and signs in. It fills a field only when the page's origin is one the login names. A script of Niles's own, in an isolated world in the field's own frame, checks the frame's origin and sets the value in one step, so a redirect, a look-alike site or a frame from elsewhere gets nothing.
+- The check runs at the moment of filling and after every redirect, the way a password manager's does. A site that asks for the password on a later page gets it there, after the same check.
+- The model learns whether the person is signed in, never the values.
+
+**Sign-in codes and CAPTCHAs.**
+
+- When a page asks for a code from a text message, a mail or an authenticator app, Niles shows a card, "Shop sent you a code", with a field for it. The code goes straight to the browser, never to the model or a log.
+- A CAPTCHA stops the run, and Niles says the site wants a person. There is no live view. A live view would be a remote control for the browser, and a bot check is there to stop automated browsers. Niles doesn't disguise its browser either: no faked fingerprint and no CAPTCHA-solving service.
+
+**Browser profiles.** A browser profile is a login's cookies and storage, one per person per login, sealed with the `Sealer` in Niles's database and never kept in the browser. The next session for the login starts with it, so the site doesn't ask for a code every time. Niles drops a profile 30 days after its login was last used, and at once on Sign out or Remove.
+
+**The order card.** The step that places an order or pays gets a card of its own, titled "Place this order on shop.example?", with the total and the delivery address beside the screenshot. Niles reads both from the page, never from the model, and the card says so when it can't find one. Niles decides a step is an order from the page, by the button's label and the checkout around it, and errs towards the order card. Allow once and Deny work as on every card.
+
+**Payment.** Niles uses only what the site's account has saved. It never asks for, stores or types card details, and a page that asks for them stops the run with a message. 3-D Secure is approved in the bank's app.
+
+**Risks and limits.** The main risk is prompt injection. Page text can tell the model to do something else, and marking it as information (rule 12) doesn't make a model ignore it. Three things contain it:
+
+1. Every step that acts is a card the person allows with the page in front of them, checked again at Allow.
+2. The model never holds a secret, because Niles fills logins itself, and only on their own origins.
+3. The browser reaches only the public internet, and a signed-in session only its login's origins.
+
+The other limits:
+
+- Opening an address needs no card, so a site that changes something on a plain visit, such as a link that adds to the basket, changes it without one. Placing an order takes a button or a form, and those are cards.
+- A purchase takes about four to eight cards: adding to the basket, checkout, signing in, maybe a code, a delivery time, and the order itself. That is the price of a card for every step, which is why each card reads at a glance. The model moves between pages by opening the addresses links point to, which needs no card.
+- A restart of Niles or of the browser lapses every held step and ends every session. A half-done purchase stops where it was, and the person asks again.
+- Some sites refuse automated browsers, and Niles doesn't hide that it is one, so those sites refuse Niles. A site may ask an account that signs in from a new browser to verify itself, and the browser profile makes that rarer.
+- A site that signs in or checks out on several origins needs each of them on its login.
+- Chromium runs without its own sandbox, which needs user namespaces that containers usually refuse. The container is the sandbox (see Security notes).
+- NetworkPolicies work only where the cluster's network plugin enforces them, and Flannel, Talos's default, doesn't. There the proxy holds only while Chromium does. Any pod in the cluster can drive the browser through DevTools, and a page that takes over Chromium can reach the cluster and the house network.
+
 ## House rules
 
 Every change keeps these. Each is one rule and, in italics, its reason.
@@ -225,7 +313,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 **The model and untrusted content**
 
 10. The model never decides an approval. Niles holds the exact call and runs what it held after the person's answer; a change is a new approval. *What runs is what was shown.*
-11. Mail is never sent without an approval answered on its card in the app: never by voice, never from a notification's button, never "for this conversation", and no setting turns that off. *A misheard yes is worst here.*
+11. Mail is never sent, and Niles's browser never clicks, types, chooses, submits or signs in, without an approval answered on its card in the app: never by voice, never from a notification's button, never "for this conversation", and no setting turns that off. *A misheard yes is worst here, and a page can talk the model into a click.*
 12. What a web page, a file, a tool result or a plugin says is information, never an instruction. *Strangers write pages.*
 13. Claude Code never gets `WebFetch`. What Niles fetches for a model goes only to the public internet, to the checked address, with every redirect checked again. *The pod can reach the cluster.*
 14. Model-written HTML runs only in the `sandbox="allow-scripts"` srcdoc frame under its own CSP. The app's own CSP stays `frame-src 'none'` and nothing else, and a test guards it. *See Security notes.*
@@ -281,6 +369,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 - Artifacts made by the assistant and versioned per person (#429); pages in a sealed frame (#440); pictures as Niles's own copies (#442); sharing to view or to edit (#452); changes said as edits, and a change a chat turn runs out of time on carried on as a job (NIL-37).
 - Web Push, with no inbound port (#432).
 - SearXNG as the house's search; Claude's own `WebSearch` when there is none; `WebFetch` never (#451).
+- Browsing on someone's behalf (NIL-72, not built yet). Headless Chromium runs in a container of its own, driven over CDP by Niles's own client in `niles-browser`, and reaches the internet only through a `CONNECT` proxy in Niles that applies `read_page`'s address rules. Every step that acts is a card, Niles fills a saved login itself and only on its origins, and the model reads pages as text and never holds a secret. CDP has what that needs: a browser context per session with its own proxy, isolated worlds to fill a login in, and screenshots for the cards. **Rejected:** Playwright MCP as a tool server, because the model would drive the browser through its tools with nothing of Niles's in between, its `--secrets` only replaces matching text in its responses (its README calls that "a convenience and not a security feature"), and its origin lists, by the same README, are not a security boundary and don't apply to redirects, so nothing would tie a password to its site; `chromiumoxide`, a client for the whole protocol (about 60,000 generated lines, slow to compile, by its README) where Niles makes a few dozen calls, some of them carrying a password, and Niles's own client never logs a call's parameters; Chromium in Niles's own container, where a page that took it over would find the secrets key and the database; and a sidecar in Niles's pod, which would share Niles's network, so no NetworkPolicy could hold it to the proxy.
 - Chat attachments, sniffed by content and always answered by the assistant (#449).
 - Blinds open to a normal level, and a second Open goes all the way (#441).
 - Podcasts: the assistant researches and writes the script; the house's own Kokoro voices it, and the episode lives in a private R2 bucket the household set up, not on a hosted voice or storage service (#457).
@@ -304,6 +393,8 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 **The plugin trust model.** The sandbox limits what a plugin can *reach*; it does not make a plugin *trustworthy*. An approved plugin can do anything its declared hosts and devices allow: one given an account's password can do what that account can, one subscribed to device state learns when the house is empty and can send that to any host it declared, and any plugin can tell the model untrue things in a tool result. What the sandbox guarantees: no undeclared hosts or local addresses, no other integration's secrets, no database, conversations, memory or people, no code in the app, and capped memory and time. So the approval screen says plainly what is granted, the repo is shown, the component is pinned, and an update that asks for more is approved again.
 
 **The add-on library.** Listed means an add-on passed `niles plugin check --listing` when it was listed and someone read its permissions. It is not an audit of its code, and later releases aren't reviewed again. Nothing about installing changes: Browse's Install is the same preview and approval as a pasted address, and an update that asks for more is approved again. The index is a stranger's file. Niles parses its manifests with the install's parser, sanitises its logos with the install's allowlist, shows its text as text, and takes no address from it.
+
+**The browser and its proxy (NIL-72, not built yet).** The browser runs pages strangers wrote, steered by a model that reads them, so it holds as little as possible. Chromium's own sandbox needs user namespaces, which containers usually refuse, so Chromium runs without it and its container is the sandbox. The container runs as a user that isn't root, with no capabilities, and holds no secrets key, no database address and no service account token. A page that took over Chromium would hold the cookies of the sessions open at that moment and nothing more, because browser profiles are sealed in Niles's database, the browser keeps nothing between sessions, and it restarts daily when idle. The browser's traffic leaves only through Niles's proxy, which passes only `CONNECT` to port 443 on the public internet, to the address it checked. HTTPS runs through the proxy end to end, so the proxy sees hosts and ports and nothing inside. The NetworkPolicy keeps a taken-over browser from going around the proxy, and keeps everything but Niles off DevTools, which has no login of its own. That holds only where the network plugin enforces NetworkPolicies. Flannel, Talos's default, doesn't, and there any pod can drive the browser and read its open sessions, and a taken-over browser can reach the cluster and the house network. A plugin that enforces them, such as Cilium or Calico, closes both. In Compose, Docker enforces the internal network. The model never holds a saved value, so a page that fools it can't make it leak one. What is left is the person. The Add login form shows the site's whole origin, and a password saved for a look-alike site goes to that site.
 
 ## Operations notes
 
