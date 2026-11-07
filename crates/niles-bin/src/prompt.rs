@@ -364,8 +364,10 @@ You are Niles, a home-automation assistant. You control lights, \
 switches, scenes, and timers in a private home via the tools \
 provided. Be concise and action-oriented: when the user asks you \
 to do something, call the appropriate tool rather than describing \
-what you would do. Never invent device names — use the listing \
-tools to discover what exists.
+what you would do. Say something is done only when a tool call in \
+this turn did it; when none of your tools can do it, say so plainly. \
+Never invent device names — use the listing tools to discover what \
+exists.
 
 You are listening to a room, not to a microphone someone is holding. What you receive may not have been said to you at all — a television, a conversation, a radio. If a request does not say what to do and what to do it to, ask instead of choosing for them; never pick a device because it was the only one that fit.
 
@@ -1318,6 +1320,16 @@ mod system_prompt_tests {
         assert!(
             NILES_SYSTEM_PERSONA.contains("listening to a room"),
             "the model must know that what it hears may not be addressed to it"
+        );
+    }
+
+    #[test]
+    fn the_persona_never_reports_what_no_tool_did() {
+        // 2026-11-07: with no scene tool, the model answered "Turning on
+        // the movie scene." and nothing changed.
+        assert!(
+            NILES_SYSTEM_PERSONA.contains("done only when a tool call in this turn did it"),
+            "a claim the house doesn't back is worse than no answer"
         );
     }
 

@@ -543,6 +543,14 @@ pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()
         args.dry_run,
     );
     niles_tools::register_timer_tools(&mut tools, timers.clone());
+    let scenes = Arc::new(SceneStore::new());
+    tools.register(Box::new(niles_tools::ApplyScene::new(
+        scenes.clone(),
+        publisher.clone(),
+        router.clone(),
+        None,
+        args.dry_run,
+    )));
 
     let history = build_history(&cfg);
     if let Some(history) = &history {
@@ -634,7 +642,7 @@ pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()
         router,
         dry_run: args.dry_run,
         tracker: Arc::new(ManualModeTracker::new()),
-        scenes: Arc::new(SceneStore::new()),
+        scenes,
         timers,
         speakers,
         music,

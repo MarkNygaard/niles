@@ -20,6 +20,7 @@ pub mod nemlig;
 pub mod presence;
 pub mod registry;
 pub mod relevance;
+pub mod scenes;
 pub mod skill;
 pub mod tool;
 pub mod weather;
@@ -58,6 +59,7 @@ pub fn register_notification_tools(
     register_list_recent_notifications_tool(reg, center);
 }
 pub use registry::{DynamicTools, ToolRegistry};
+pub use scenes::ApplyScene;
 pub use skill::{
     DeleteSkillTool, ListSkillsTool, MintSkillTool, PatchSkillTool, RetireSkillTool, ViewSkillTool,
     Viewed, register_background_skill_tools, register_skill_tools,

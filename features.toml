@@ -292,8 +292,9 @@ since_pr = 3
 [[feature]]
 id = "tool-scene-control"
 category = "llm.tools"
-summary = "Apply or delete saved scenes via structured tool calls"
-since_pr = 43
+summary = "Apply a saved scene however it was asked for, through the model's apply_scene tool"
+phrasings = ["turn on the movie scene", "movie time, please"]
+since_pr = 517
 
 [[feature]]
 id = "curve-brightness"
