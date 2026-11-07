@@ -157,8 +157,7 @@ impl Registry {
         Self::labels(digest, &config)
     }
 
-    /// The anonymous pull token. GHCR answers a token or an
-    /// `access_token`; both are the bearer.
+    /// The anonymous pull token.
     async fn token(&self) -> Result<String> {
         let mut url = self.base.clone();
         if let Ok(mut path) = url.path_segments_mut() {
@@ -181,16 +180,7 @@ impl Registry {
             });
         }
         let bytes = http::read_capped(response, MAX_TOKEN, WHAT).await?;
-        #[derive(Deserialize)]
-        struct TokenAnswer {
-            #[serde(alias = "access_token")]
-            token: String,
-        }
-        let answer: TokenAnswer = serde_json::from_slice(&bytes).map_err(|e| Error::Malformed {
-            what: WHAT,
-            reason: format!("its token answer doesn't read: {e}"),
-        })?;
-        Ok(answer.token)
+        token_from(&bytes)
     }
 
     /// The digest `latest` points at, by HEAD. `None` when the registry
@@ -376,6 +366,31 @@ impl Registry {
         }
         url
     }
+}
+
+/// The bearer out of a token answer. The token spec allows `token`,
+/// `access_token` or both, so they are two fields: a serde alias would
+/// refuse an answer carrying both as a duplicate.
+fn token_from(bytes: &[u8]) -> Result<String> {
+    #[derive(Deserialize)]
+    struct TokenAnswer {
+        #[serde(default)]
+        token: Option<String>,
+        #[serde(default)]
+        access_token: Option<String>,
+    }
+    let answer: TokenAnswer = serde_json::from_slice(bytes).map_err(|e| Error::Malformed {
+        what: WHAT,
+        reason: format!("its token answer doesn't read: {e}"),
+    })?;
+    answer
+        .token
+        .or(answer.access_token)
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| Error::Malformed {
+            what: WHAT,
+            reason: "its token answer has no token".to_string(),
+        })
 }
 
 struct ManifestBody {
@@ -860,6 +875,27 @@ mod tests {
         let registry = index_registry(&server, SHA, "v0.7.0").await;
         let newest = registry.newest(None).await.expect("the check works");
         assert_eq!(newest.version.as_deref(), Some("0.7.0"));
+    }
+
+    #[test]
+    fn a_token_answer_may_name_either_field_or_both() {
+        for body in [
+            r#"{"token":"t"}"#,
+            r#"{"access_token":"t"}"#,
+            r#"{"token":"t","access_token":"t","expires_in":300}"#,
+        ] {
+            assert_eq!(token_from(body.as_bytes()).expect(body), "t");
+        }
+    }
+
+    #[test]
+    fn a_token_answer_without_a_token_is_malformed() {
+        for body in [r#"{}"#, r#"{"token":""}"#, "not json"] {
+            assert!(
+                matches!(token_from(body.as_bytes()), Err(Error::Malformed { .. })),
+                "{body} has no bearer"
+            );
+        }
     }
 
     #[test]
