@@ -101,7 +101,13 @@ impl IntentRouter {
     pub fn parse_with_context(&self, transcript: &str, ctx: RouterContext<'_>) -> Option<Intent> {
         // Existing patterns take precedence so behaviour doesn't change.
         if let Some(intent) = self.parse(transcript) {
-            return Some(scene_in_a_room(intent, &ctx));
+            match scene_in_a_room(intent, &ctx) {
+                // A scene that isn't saved is not an answer to give: "turn
+                // on the movie scene" read as a scene called "turn on the
+                // movie". The model makes sense of it and can apply one.
+                Intent::SceneApply { name, .. } if !is_saved(&name, &ctx) => {}
+                intent => return Some(intent),
+            }
         }
 
         let t = normalize(transcript);
@@ -998,9 +1004,11 @@ fn match_scene_by_name(t: &str, ctx: &RouterContext<'_>) -> Option<Intent> {
     let Intent::SceneApply { name, .. } = &applied else {
         return None;
     };
-    ctx.scenes
-        .contains(&niles_core::canonicalize_name(name))
-        .then_some(applied)
+    is_saved(name, ctx).then_some(applied)
+}
+
+fn is_saved(name: &str, ctx: &RouterContext<'_>) -> bool {
+    ctx.scenes.contains(&niles_core::canonicalize_name(name))
 }
 
 /// "save this as cosy in the living room" names a scene cosy for the
@@ -1021,7 +1029,7 @@ fn scene_in_a_room(intent: Intent, ctx: &RouterContext<'_>) -> Intent {
             None => Intent::SceneSave { name, room: None },
         },
         Intent::SceneApply { name, room: None } => {
-            let saved = |n: &str| ctx.scenes.contains(&niles_core::canonicalize_name(n));
+            let saved = |n: &str| is_saved(n, ctx);
             match named_room(&name, ctx).filter(|(short, _)| !saved(&name) && saved(short)) {
                 Some((short, room)) => Intent::SceneApply {
                     name: short.to_string(),
@@ -3859,6 +3867,36 @@ mod context_tests {
         let idx = fixture_multi();
         assert_eq!(parse_with("turn on kitchen", ctx_with(&idx, None)), None);
         assert_eq!(parse_with("turn on floor lamp", ctx_with(&idx, None)), None);
+    }
+
+    #[test]
+    fn a_scene_sentence_naming_no_saved_scene_goes_to_the_model() {
+        // 2026-11-07: "turn on the movie scene" was answered "I don't
+        // have a scene called turn on the movie", with movie saved.
+        let idx = fixture_multi();
+        let scenes = vec!["movie".to_string()];
+        for said in [
+            "turn on the movie scene",
+            "turn on the scene movie",
+            "apply the film",
+            "scene for watching a film",
+        ] {
+            assert_eq!(
+                parse_with(said, ctx_with_scenes(&idx, &scenes)),
+                None,
+                "{said}"
+            );
+        }
+        for said in ["movie scene", "apply movie", "scene movie", "turn on movie"] {
+            assert_eq!(
+                parse_with(said, ctx_with_scenes(&idx, &scenes)),
+                Some(Intent::SceneApply {
+                    name: "movie".into(),
+                    room: None,
+                }),
+                "{said}"
+            );
+        }
     }
 
     #[test]

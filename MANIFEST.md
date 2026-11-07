@@ -71,7 +71,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `tool-explain-device-state` | Provide a natural-language explanation of a device's current state | [#70](https://github.com/MarkNygaard/niles/pull/70) |
 | `tool-light-control` | Turn lights on or off and set brightness or color temperature | [#3](https://github.com/MarkNygaard/niles/pull/3) |
 | `tool-look-up-capability` | Retrieve a capability reference document by name for the LLM context | [#84](https://github.com/MarkNygaard/niles/pull/84) |
-| `tool-scene-control` | Apply or delete saved scenes via structured tool calls | [#43](https://github.com/MarkNygaard/niles/pull/43) |
+| `tool-scene-control` | Apply a saved scene however it was asked for, through the model's apply_scene tool | [#43](https://github.com/MarkNygaard/niles/pull/43) |
 | `tool-sonos-transport` | Control Sonos speaker transport state via the speakers subsystem | [#65](https://github.com/MarkNygaard/niles/pull/65) |
 | `tool-timer` | Set, cancel, and list timers via structured tool calls | [#3](https://github.com/MarkNygaard/niles/pull/3) |
 | `tool-tv-volume` | tv_volume sets, steps, mutes or unmutes the TV's own speakers; music_volume turns the TV in a room with no Sonos | [#403](https://github.com/MarkNygaard/niles/pull/403) |
@@ -88,6 +88,11 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 - set the lights like yesterday at eight
 - make it like last night
 - when did the kitchen light go off
+
+### `tool-scene-control` — example phrasings
+
+- turn on the movie scene
+- movie time, please
 
 ## runtime
 

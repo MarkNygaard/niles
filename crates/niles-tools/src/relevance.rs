@@ -22,8 +22,10 @@
 ///
 /// The ones a sentence can need without announcing it: acting on a
 /// device, reading its state, knowing what exists, and the memory the
-/// persona is told it has.
+/// persona is told it has. A scene too: it is asked for by its name
+/// ("turn on the movie"), which no keyword can know.
 const ALWAYS: &[&str] = &[
+    "apply_scene",
     "current_datetime",
     "get_device_state",
     "list_all_devices",
