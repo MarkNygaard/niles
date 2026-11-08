@@ -125,6 +125,32 @@ async fn references_stay_the_same_across_reads() {
 
 #[tokio::test]
 #[ignore = "needs a Chromium's DevTools at NILES_TEST_CHROMIUM, such as 127.0.0.1:9222"]
+async fn a_read_starts_at_the_view_so_scrolling_matters() {
+    let (tab, _) = session().await;
+    tab.open(&page(
+        r#"<h1>Top</h1><p>first</p><h1 id="later" style="margin-top:1500px">Later</h1>"#,
+    ))
+    .await
+    .unwrap();
+
+    let top = tab.read().await.unwrap();
+    assert!(top.text.contains("# Top"), "{}", top.text);
+    // Below the view is read too; only what is scrolled past is not.
+    assert!(top.text.contains("Later"), "{}", top.text);
+    assert!(!top.more_above, "at the top: {:?}", top);
+
+    // Far enough that the first heading is wholly above the view; the
+    // read starts where the view starts, and says there is more above.
+    tab.scroll(Scroll::Down).await.unwrap();
+    tab.scroll(Scroll::Down).await.unwrap();
+    let below = tab.read().await.unwrap();
+    assert!(!below.text.contains("# Top"), "{}", below.text);
+    assert!(below.text.contains("Later"), "{}", below.text);
+    assert!(below.more_above, "scrolled down: {:?}", below);
+}
+
+#[tokio::test]
+#[ignore = "needs a Chromium's DevTools at NILES_TEST_CHROMIUM, such as 127.0.0.1:9222"]
 async fn an_element_is_found_again_until_it_is_gone() {
     let (tab, _) = session().await;
     tab.open(&page(

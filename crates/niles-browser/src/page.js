@@ -185,11 +185,6 @@
     const view = {
       top: 0,
       bottom: window.innerHeight,
-      // An item wholly above the view is out of sight; remember that
-      // there is more above.
-      note(rect) {
-        if (rect.bottom <= this.top) above = true;
-      },
     };
 
     const rectOf = (el) => el.getBoundingClientRect();
@@ -225,7 +220,6 @@
         line += ' = "' + cap(chosenText, 200) + '" (options: ' + opts + ")";
       }
       if (el.disabled || el.getAttribute("aria-disabled") === "true") line += " (disabled)";
-      view.note(rectOf(el));
       prefix = "";
       current = line;
       flush();
@@ -234,12 +228,16 @@
     const walkText = (node) => {
       const s = squeeze(node.textContent || "");
       if (!s) return;
-      // A text node's rect marks where it sits on the page.
+      // A text node's rect marks where it sits on the page; wholly
+      // above the view it is out of the read, and says there is more.
       const range = document.createRange();
       range.selectNodeContents(node);
       const rects = range.getClientRects();
       range.detach();
-      if (rects.length) view.note(rects[0]);
+      if (rects.length && rects[0].bottom <= view.top) {
+        above = true;
+        return;
+      }
       current += (current ? " " : "") + s;
     };
 
@@ -253,6 +251,13 @@
       const el = n;
       if (SKIP.has(el.tagName)) return;
       if (!shown(el)) return;
+      // Wholly above the view an element is out of the read, and says
+      // there is more above. Fixed elements stay: their rect is the
+      // view's own.
+      if (rectOf(el).bottom <= view.top) {
+        above = true;
+        return;
+      }
       if (el.tagName === "IFRAME") {
         const r = rectOf(el);
         if (r.width >= 50 && r.height >= 50) {
