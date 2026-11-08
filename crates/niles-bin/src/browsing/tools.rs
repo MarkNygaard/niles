@@ -41,7 +41,7 @@ pub(super) fn in_the_chat() -> Option<Asker> {
 
 /// Refuse with a note, not an error: the model should say this to the
 /// person, not treat it as a failed call.
-fn note(why: &'static str) -> Value {
+pub(super) fn note(why: &'static str) -> Value {
     json!({ "note": why })
 }
 

@@ -115,6 +115,9 @@ pub(crate) struct DispatchCtx {
     )>,
     /// What is waiting for somebody's yes.
     pub(crate) approvals: Arc<approvals::Approvals>,
+    /// The saved logins, and the add-login cards on their way to the
+    /// turn that keeps them.
+    pub(crate) logins: Arc<crate::browsing::Logins>,
     /// Each person's artifacts, and the jobs that write them. Absent
     /// without a database, and outside `serve`.
     pub(crate) artifacts: Option<Arc<artifacts::Artifacts>>,
@@ -231,6 +234,7 @@ pub(crate) async fn handle_transcript(
                 approval: ctx
                     .approvals
                     .for_turn(&chat_log::person(Some(slug), ""), started),
+                login_request: None,
                 artifacts: Vec::new(),
                 attachments: Vec::new(),
             };

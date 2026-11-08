@@ -860,7 +860,7 @@ fn first_line(text: &str) -> String {
     out
 }
 
-fn new_id() -> String {
+pub(crate) fn new_id() -> String {
     format!("{:024x}", rand::random::<u128>() >> 32)
 }
 

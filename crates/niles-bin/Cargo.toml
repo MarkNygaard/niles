@@ -62,6 +62,7 @@ niles-calendar.workspace = true
 niles-plugins.workspace = true
 niles-recognition.workspace = true
 niles-training.workspace = true
+niles-logins.workspace = true
 niles-artifacts.workspace = true
 niles-webpush.workspace = true
 niles-update.workspace = true

@@ -219,10 +219,11 @@ pub(crate) async fn run_tool_calling_chat_with_messages(
 }
 
 /// What `tool_result` logs as a call's outcome: the result, except a
-/// browser result, which is named by its size only — its text is a
-/// page a person browses, and /logs is read by everyone signed in.
+/// browser result or a login request, which is named by its size only —
+/// its text is a page a person browses, or the site they asked for, and
+/// /logs is read by everyone signed in.
 fn logged_result(name: &str, result: &serde_json::Value) -> String {
-    if name.starts_with("browser_") {
+    if name.starts_with("browser_") || name == "request_login" {
         format!("{} bytes", result.to_string().len())
     } else {
         result.to_string()
@@ -719,6 +720,21 @@ mod chat_loop_tests {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_login_request_result_is_logged_by_its_size() {
+        let asked = json!({
+            "waiting_for_the_person": true,
+            "shown_to_the_person": "Shop wants a login",
+            "note": "End your turn now.",
+        });
+        let logged = logged_result("request_login", &asked);
+        assert_eq!(logged, format!("{} bytes", asked.to_string().len()));
+        assert!(
+            !logged.contains("Shop"),
+            "the site the person was asked for never reaches the log"
+        );
+    }
 
     #[test]
     fn a_browser_result_is_logged_by_its_size_never_its_text() {

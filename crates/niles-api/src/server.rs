@@ -62,6 +62,10 @@ pub fn router(state: AppState) -> Router {
             post(crate::chat::decide),
         )
         .route(
+            "/chat/conversations/{id}/login-requests/{request}",
+            post(crate::chat::login_added),
+        )
+        .route(
             "/chat/conversations/{id}/attachments/{a}",
             get(crate::chat_attachments::serve),
         )
@@ -286,6 +290,15 @@ pub fn router(state: AppState) -> Router {
         .route("/me/strava/callback", get(crate::training::callback))
         .route("/me/strava/sync", post(crate::training::sync_now))
         .route("/me/strava/connection", delete(crate::training::disconnect))
+        .route(
+            "/me/logins",
+            get(crate::logins::list).post(crate::logins::add),
+        )
+        .route(
+            "/me/logins/{id}",
+            put(crate::logins::update).delete(crate::logins::remove),
+        )
+        .route("/me/logins/{id}/sign-out", post(crate::logins::sign_out))
         .route("/presence/device", get(crate::presence::device_status))
         .route("/presence/device", post(crate::presence::pair_device))
         .route("/presence/tado", get(crate::presence::tado_status))
