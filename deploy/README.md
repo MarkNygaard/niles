@@ -182,6 +182,18 @@ example with `pg_dump`, and keep the secret key beside it. The pod's
 `/data` is working space for Claude Code and pi, and an `emptyDir` is
 enough.
 
+## Browsing
+
+Niles can drive a headless Chromium of its own, for reading pages and
+acting on a site on a card. Add
+`components: [../../components/browser]` to an overlay's
+`kustomization.yaml` to start the browser beside Niles, with a Service and
+a NetworkPolicy that let it reach nothing but Niles's proxy port, and let
+no one but Niles reach its DevTools port. The NetworkPolicy holds only
+where the cluster's network plugin enforces NetworkPolicies: Cilium and
+Calico do, Flannel doesn't. Niles finds the browser by its Service's name,
+`niles-browser`, and turns browsing on by itself once it answers.
+
 ## Layout
 
 ```
@@ -191,6 +203,8 @@ deploy/kustomize/
 │   ├── deployment.yaml     # Niles, its probes and the Secret's keys
 │   ├── service.yaml        # ClusterIP: 8080 and 10300
 │   └── configmap.yaml      # Placeholder niles.toml
+├── components/
+│   └── browser/            # Chromium, its Service and NetworkPolicy (opt-in)
 └── overlays/
     ├── dev/                # namespace niles-dev, :latest
     └── production/         # namespace niles, a pinned version, resource limits

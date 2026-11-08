@@ -36,6 +36,6 @@ chrono.workspace = true
 chrono-tz.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 tempfile.workspace = true
 parking_lot.workspace = true

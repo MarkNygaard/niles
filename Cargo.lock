@@ -2815,6 +2815,7 @@ dependencies = [
  "niles-api",
  "niles-artifacts",
  "niles-automations",
+ "niles-browser",
  "niles-calendar",
  "niles-capabilities",
  "niles-config",
@@ -2856,7 +2857,27 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "url",
  "wiremock",
+]
+
+[[package]]
+name = "niles-browser"
+version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "futures-util",
+ "image",
+ "niles-websearch",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tracing",
+ "url",
 ]
 
 [[package]]

@@ -14,7 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useDeviceStream } from "@/hooks/useDeviceStream";
 import { api } from "@/lib/api";
 import type { Artifact, ArtifactPatch, Conversation, ConversationSummary, Decision } from "@/lib/api";
-import { APPROVALS, PENDING, approvalTag } from "@/lib/approvals";
+import { APPROVALS, PENDING, answerSaid, approvalTag } from "@/lib/approvals";
 import { ARTIFACTS, ARTIFACT_LIST, workingLine } from "@/lib/artifacts";
 import { closeWaiting } from "@/lib/pwa";
 import { thisDevice } from "@/lib/push";
@@ -383,12 +383,21 @@ export function ChatPage() {
           ...fallbacks[`${current}:${i}`],
         }));
 
+  // An Allow on a browser step runs the next turn before it answers, so
+  // the chat shows the answer and Niles working, as for a message.
+  const pendingBubble =
+    send.isPending && send.variables.to === current
+      ? send.variables.text
+      : decide.isPending && decide.variables?.id === current
+        ? answerSaid(decide.variables.decision)
+        : undefined;
+
   return (
     <>
       <ChatView
         turns={turns}
         loading={current !== null && conversation.isLoading}
-        pending={send.isPending && send.variables.to === current ? send.variables.text : undefined}
+        pending={pendingBubble}
         pendingAttachments={
           send.isPending && send.variables.to === current ? send.variables.files : undefined
         }

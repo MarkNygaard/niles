@@ -1,0 +1,10 @@
+# A Chromium for Niles's browsing, with its Service and NetworkPolicy.
+# Add it to an overlay with `components: [../../components/browser]`.
+# NetworkPolicies hold only where the cluster's network plugin enforces
+# them (Cilium and Calico do; Flannel doesn't).
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - deployment.yaml
+  - service.yaml
+  - networkpolicy.yaml
