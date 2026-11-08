@@ -688,6 +688,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_covered_field_still_types_when_it_is_allowed() {
+        let h = harness();
+        h.open("https://shop.example/").await;
+        h.tab()
+            .state
+            .lock()
+            .unwrap()
+            .elements
+            .insert(2, fake::textbox(2, 200, "Quantity"));
+        // A banner covers the field: coverage decides a click's point,
+        // not typing. The step holds as it is and runs as it held.
+        h.tab().state.lock().unwrap().covered.insert(200);
+        h.as_mark(act(
+            &h.browsing,
+            step::ActKind::Type,
+            json!({ "ref": 2, "text": "2", "reason": "two of them" }),
+        ))
+        .await
+        .unwrap();
+        let (card, reply) = h.answer(Decision::Once).await;
+        assert_eq!(card.status, ApprovalStatus::Allowed);
+        assert_eq!(reply, "Done. Typed it.");
+        assert_eq!(h.tab().state.lock().unwrap().done, ["type 200 2"]);
+    }
+
+    #[tokio::test]
     async fn a_closed_session_lapses_it() {
         let h = harness();
         h.open("https://shop.example/").await;

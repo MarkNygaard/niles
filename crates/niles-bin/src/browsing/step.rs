@@ -418,6 +418,11 @@ impl BrowserStep {
         let Some(opened) = browsing.session_of(&self.asker.person, self.serial) else {
             return Err(lapsed(SESSION_ENDED));
         };
+        // Answering touches the session before anything else: the card
+        // it waited on no longer counts as waiting, and without this
+        // the watcher could reap the quarter-hour-idle session and
+        // close its tab under the step and its settle.
+        browsing.touch(&self.asker.person, opened.serial);
         let _guard = opened.lock.lock().await;
         let now = match opened.tab.address().await {
             Ok(now) => now,
@@ -445,14 +450,13 @@ impl BrowserStep {
             Ok(aim) => aim,
             Err(_) => return Err(self.recard(&browsing, &opened, now, again).await),
         };
-        match (aim, &self.action) {
-            // A click must land where the card showed it would.
-            (Aim::Clear { at, .. }, Action::Click) => {
-                self.act(&browsing, &opened, &again, Some(at)).await
-            }
-            (Aim::Clear { .. }, _) => self.act(&browsing, &opened, &again, None).await,
-            _ => Err(lapsed(CANT_NOW)),
-        }
+        // Only a click lands on a point, so only a click minds coverage:
+        // a covered text field still types, as at hold time.
+        let at = match (aim, &self.action) {
+            (Aim::Clear { at, .. }, Action::Click) => Some(at),
+            _ => None,
+        };
+        self.act(&browsing, &opened, &again, at).await
     }
 
     /// The held choice must still be one of the list's options, by its
