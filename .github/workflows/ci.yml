@@ -166,12 +166,16 @@ jobs:
       - name: Niles reached the browser
         run: |
           for _ in $(seq 1 30); do
-            if docker compose \
+            docker compose \
               -f deploy/compose/compose.yaml \
               -f deploy/compose/browser.yaml \
               -f "$RUNNER_TEMP/compose.ci.yaml" \
               --env-file "$RUNNER_TEMP/ci.env" \
-              logs niles 2>/dev/null | grep -q '\[browser\] reached'; then
+              logs niles > "$RUNNER_TEMP/niles-logs.txt" 2>/dev/null || true
+            # Captured before grep: grep -q closing the pipe early can
+            # SIGPIPE docker compose, and pipefail would then mask the
+            # match as a failure.
+            if grep -q '\[browser\] reached' "$RUNNER_TEMP/niles-logs.txt"; then
               exit 0
             fi
             sleep 2
