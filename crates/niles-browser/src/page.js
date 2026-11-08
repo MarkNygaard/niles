@@ -67,6 +67,9 @@
       // A combobox role on an input is a text box with suggestions.
       return "textbox";
     }
+    // A combobox that isn't an input is a custom drop-down: clicked,
+    // and choose refuses it as not a <select>.
+    if (role === "combobox") return "button";
     if (el.tagName === "SELECT") return "select";
     return "other";
   }

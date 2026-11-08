@@ -660,6 +660,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_element_disabled_before_it_is_allowed_lapses_it_and_ends_the_run() {
+        let h = harness();
+        h.open("https://shop.example/").await;
+        h.tab()
+            .state
+            .lock()
+            .unwrap()
+            .elements
+            .insert(1, fake::button(1, 100, "Add to basket"));
+        h.click(1).await.unwrap();
+        // The same node, label and options, but no longer actionable:
+        // the Allow must not run the step.
+        h.tab()
+            .state
+            .lock()
+            .unwrap()
+            .elements
+            .get_mut(&1)
+            .unwrap()
+            .disabled = true;
+        let (card, reply) = h.answer(Decision::Once).await;
+        assert_eq!(card.status, ApprovalStatus::Lapsed);
+        assert!(reply.contains("can't be done"), "{reply}");
+        assert!(h.tab().state.lock().unwrap().done.is_empty());
+        assert!(h.approvals.pending("person:mark").is_empty());
+    }
+
+    #[tokio::test]
     async fn a_closed_session_lapses_it() {
         let h = harness();
         h.open("https://shop.example/").await;

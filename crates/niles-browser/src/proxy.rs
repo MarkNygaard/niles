@@ -93,7 +93,20 @@ impl Proxy {
             let network = Arc::clone(&self.network);
             let room = Arc::clone(&self.room);
             tokio::spawn(async move {
-                let Ok(_permit) = room.acquire().await else {
+                // Full is answered at once: a connection left waiting
+                // would look, to the browser, like a proxy gone silent.
+                let Ok(_permit) = room.try_acquire() else {
+                    tracing::warn!(
+                        "[browser] proxy refused a connection: all {ROOM} tunnels are in use"
+                    );
+                    let mut stream = stream;
+                    refuse(
+                        &mut stream,
+                        "503 Service Unavailable",
+                        None,
+                        "all tunnels are in use",
+                    )
+                    .await;
                     return;
                 };
                 serve_conn(stream, network).await;
@@ -662,6 +675,54 @@ mod tests {
                 .is_empty(),
             "nothing was dialed"
         );
+    }
+
+    #[tokio::test]
+    async fn a_full_proxy_answers_503_and_tunnels_again_once_free() {
+        use tokio::io::AsyncWriteExt;
+        let echo = echo_server().await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let fake = Arc::new(Fake {
+            answers: Mutex::new(
+                [("shop.example:443", vec![ip("93.184.216.34")])]
+                    .into_iter()
+                    .map(|(name, ips)| (name.to_string(), ips))
+                    .collect(),
+            ),
+            echo: Mutex::new(Some(echo)),
+            ..Fake::default()
+        });
+        // One tunnel only: the second connection must be refused at once.
+        let proxy = Proxy {
+            listener,
+            network: fake,
+            room: Arc::new(Semaphore::new(1)),
+        };
+        tokio::spawn(proxy.serve());
+
+        let (head, _, mut held) = ask(addr, "shop.example:443", &[]).await;
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+
+        let (head, _, _) = ask(addr, "shop.example:443", &[]).await;
+        assert!(head.starts_with("HTTP/1.1 503"), "{head}");
+
+        // Closing the tunnel end to end frees its permit: the FIN makes
+        // the proxy shut the far side, and the echo's close ends the
+        // task that held the permit.
+        held.shutdown().await.expect("shutdown");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let (head, _, _) = ask(addr, "shop.example:443", &[]).await;
+            if head.starts_with("HTTP/1.1 200") {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the freed tunnel was not used again: {head}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     #[tokio::test]

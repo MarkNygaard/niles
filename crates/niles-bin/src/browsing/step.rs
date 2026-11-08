@@ -438,16 +438,21 @@ impl BrowserStep {
         {
             return Err(self.recard(&browsing, &opened, now, again).await);
         }
-        if matches!(self.action, Action::Click) {
+        // The page is as the card showed it. The element must still be
+        // actionable, though: a page can disable a field or hide it
+        // while the node, the label and the options stay the same.
+        let aim = match checked(&opened.tab, &again, &self.action).await {
+            Ok(aim) => aim,
+            Err(_) => return Err(self.recard(&browsing, &opened, now, again).await),
+        };
+        match (aim, &self.action) {
             // A click must land where the card showed it would.
-            return match opened.tab.aim(&again).await {
-                Ok(Aim::Clear { at, .. }) => self.act(&browsing, &opened, &again, Some(at)).await,
-                Ok(_) => Err(self.recard(&browsing, &opened, now, again).await),
-                Err(niles_browser::Error::Closed) => Err(lapsed(SESSION_ENDED)),
-                Err(e) => Err(remote(e)),
-            };
+            (Aim::Clear { at, .. }, Action::Click) => {
+                self.act(&browsing, &opened, &again, Some(at)).await
+            }
+            (Aim::Clear { .. }, _) => self.act(&browsing, &opened, &again, None).await,
+            _ => Err(lapsed(CANT_NOW)),
         }
-        self.act(&browsing, &opened, &again, None).await
     }
 
     /// The held choice must still be one of the list's options, by its
