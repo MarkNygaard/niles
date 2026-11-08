@@ -106,7 +106,7 @@ export function LoginForm({
         </div>
       )}
       {previews.map((p) => (
-        <p key={p.line} className="text-muted-foreground text-xs">
+        <p key={p.key} className="text-muted-foreground text-xs">
           Saved as {p.origin}
         </p>
       ))}
