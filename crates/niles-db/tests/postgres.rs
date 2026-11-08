@@ -1185,6 +1185,69 @@ async fn removing_a_login_takes_its_secrets_and_profile() {
 
 #[tokio::test]
 #[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn an_edit_that_changes_the_account_forgets_the_profile() {
+    use niles_logins::{LoginEdit, LoginStore, NewLogin, Secret};
+    let Some((store, _pool, person)) = logins() else {
+        return;
+    };
+    let login = store
+        .add(
+            &person,
+            &NewLogin::new(
+                "Shop",
+                &["shop.example".to_string(), "mail.example".to_string()],
+                Secret::new("majse@example.com"),
+                Secret::new("correct horse battery staple"),
+            )
+            .expect("valid login"),
+        )
+        .await
+        .expect("add");
+    assert!(
+        store
+            .save_profile(&person, login.id, &Secret::new("sealed cookies"))
+            .await
+            .expect("save profile"),
+        "the login is the person's"
+    );
+
+    // The same sites in another order keep it: the comparison is a set.
+    let reordered = LoginEdit::new(
+        "Shop",
+        &["mail.example".to_string(), "shop.example".to_string()],
+        Secret::new("majse@example.com"),
+        None,
+    )
+    .expect("valid edit");
+    let after = store
+        .update(&person, login.id, &reordered)
+        .await
+        .expect("update")
+        .expect("the login");
+    assert!(after.signed_in, "another order is the same set of sites");
+
+    // A different set forgets it, in the same transaction as the edit.
+    let fewer = LoginEdit::new(
+        "Shop",
+        &["shop.example".to_string()],
+        Secret::new("majse@example.com"),
+        None,
+    )
+    .expect("valid edit");
+    store
+        .update(&person, login.id, &fewer)
+        .await
+        .expect("update")
+        .expect("the login");
+    assert_eq!(
+        store.profile(&person, login.id).await.expect("profile"),
+        None,
+        "a profile signed in elsewhere is not kept"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
 async fn another_persons_login_answers_as_missing() {
     use niles_logins::{LoginStore, NewLogin, Secret};
     let Some((store, _pool, person)) = logins() else {

@@ -300,6 +300,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_origins_change_drops_the_profile_a_reorder_keeps_it() {
+        let store = MemoryLogins::new();
+        let both = NewLogin::new(
+            "Shop",
+            &["shop.example".to_string(), "mail.example".to_string()],
+            crate::Secret::new("majse.private@example.com"),
+            crate::Secret::new("correct horse battery staple 42"),
+        )
+        .unwrap();
+        let login = store.add(MAJSE, &both).await.unwrap();
+        store
+            .save_profile(MAJSE, login.id, &crate::Secret::new("cookies"))
+            .await
+            .unwrap();
+
+        // The same set in another order: the profile is kept.
+        let reordered = LoginEdit::new(
+            "Shop",
+            &["mail.example".to_string(), "shop.example".to_string()],
+            crate::Secret::new("majse.private@example.com"),
+            None,
+        )
+        .unwrap();
+        let after = store
+            .update(MAJSE, login.id, &reordered)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            after.signed_in,
+            "the sites read as a set: another order keeps the profile"
+        );
+
+        // A different set, even a smaller one: the profile is forgotten.
+        let fewer = LoginEdit::new(
+            "Shop",
+            &["shop.example".to_string()],
+            crate::Secret::new("majse.private@example.com"),
+            None,
+        )
+        .unwrap();
+        store.update(MAJSE, login.id, &fewer).await.unwrap();
+        assert!(store.profile(MAJSE, login.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn remove_drops_the_profile_and_the_credentials() {
         let store = MemoryLogins::new();
         let login = store.add(MAJSE, &new_login()).await.unwrap();
