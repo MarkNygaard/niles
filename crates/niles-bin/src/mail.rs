@@ -356,6 +356,7 @@ fn card(sender: &niles_calendar::Connection, draft: &Draft) -> ApprovalCard {
         fields,
         body: Some(draft.body.clone()),
         allow_conversation: false,
+        picture: false,
         status: ApprovalStatus::Pending,
         outcome: None,
     }

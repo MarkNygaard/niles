@@ -1424,6 +1424,11 @@ export function chatAttachmentUrl(conversation: number, attachment: number): str
   return `/chat/conversations/${conversation}/attachments/${attachment}`;
 }
 
+/** Where the app fetches the page a held browser step would act on. */
+export function approvalPictureUrl(approval: string): string {
+  return `/me/approvals/${encodeURIComponent(approval)}/picture`;
+}
+
 export interface ArtifactList {
   artifacts: Artifact[];
   /** Which assistant makes them now; null when neither is on. */
@@ -1463,6 +1468,8 @@ export interface ApprovalCard {
   allow_conversation: boolean;
   status: ApprovalStatus;
   outcome: string | null;
+  /** A page's screenshot goes with it while it waits. */
+  picture?: boolean;
 }
 
 /**

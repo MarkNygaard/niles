@@ -478,6 +478,17 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let (arrivals, mut arrived) = tokio::sync::mpsc::unbounded_channel();
     let strava = build_strava(&cfg, arrivals);
     let chat_log = build_chat_log(&cfg);
+    // Browsing needs the database its cards are kept with, so it is off
+    // without one.
+    let browsing = crate::browsing::start(
+        approvals.clone(),
+        if chat_log.is_some() {
+            crate::browsing::Conversations::Kept
+        } else {
+            crate::browsing::Conversations::NotKept
+        },
+    );
+    crate::browsing::register(&mut tools, browsing);
     // Made by the assistant, which runs their jobs: the runner is handed
     // the assistant once it has started serving the tools.
     let artifact_runner = Arc::new(artifacts::AssistantRunner {

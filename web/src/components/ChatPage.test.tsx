@@ -482,6 +482,22 @@ describe("ChatPage", () => {
     }
   });
 
+  it("shows the answer and Niles working while an Allow is on its way", async () => {
+    vi.spyOn(api, "decideApproval").mockReturnValue(new Promise(() => {}));
+    const asked = summary(7, "Email jakob", { last_at: ago(MINUTE) });
+    show([asked], {
+      7: conversationOf(asked, [
+        turn("email jakob", "It's ready for you to check.", { approval: CARD }),
+      ]),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Allow once" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Niles is answering")).toBeInTheDocument(),
+    );
+    // The answer bubble sits next to the still-waiting card's button.
+    expect(screen.getAllByText("Allow once")).toHaveLength(2);
+  });
+
   it("shows the job being written in the status line, as the stream says", async () => {
     const working = artifact(3, "Thailand travel plan", {
       status: "working",

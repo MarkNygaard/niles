@@ -1,0 +1,28 @@
+[package]
+name = "niles-browser"
+description = "Niles's own Chrome DevTools Protocol client and its CONNECT proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+futures-util.workspace = true
+image.workspace = true
+niles-websearch.workspace = true
+reqwest.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "sync", "time", "io-util", "rt", "macros"] }
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

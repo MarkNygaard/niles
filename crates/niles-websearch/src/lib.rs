@@ -1,6 +1,6 @@
 //! niles-websearch — SearXNG search client.
 
-mod address;
+pub mod address;
 pub mod client;
 pub mod error;
 pub mod fetch;
@@ -8,6 +8,7 @@ pub mod model;
 pub mod page;
 pub mod transport;
 
+pub use address::{public_ip, public_name};
 pub use client::{SearXngClient, SearXngConfig};
 pub use error::{Error, Result};
 pub use fetch::{Fetched, PublicFetcher};

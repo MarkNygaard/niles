@@ -393,6 +393,43 @@ const GROUPS: &[Group] = &[
             "automation_runs",
         ],
     },
+    Group {
+        keywords: &[
+            "website",
+            "websites",
+            "site",
+            "sites",
+            "webpage",
+            "web page",
+            "webshop",
+            "online shop",
+            "browse",
+            "browser",
+            "basket",
+            "cart",
+            "checkout",
+            "click",
+            "url",
+            "link",
+            "http",
+            "https",
+            "www",
+            "com",
+            "dk",
+            "org",
+            "net",
+            "io",
+        ],
+        tools: &[
+            "browser_open",
+            "browser_read",
+            "browser_scroll",
+            "browser_click",
+            "browser_type",
+            "browser_choose",
+            "browser_submit",
+        ],
+    },
 ];
 
 /// Whether `transcript` mentions any of `keywords`, by the same
@@ -629,5 +666,17 @@ mod tests {
         for core in ALWAYS {
             assert!(names.contains(core), "{core} should always be sent");
         }
+    }
+
+    #[test]
+    fn a_webshop_basket_brings_the_browser_tools_and_a_light_does_not() {
+        let names = relevant_tool_names("put a 2 m USB-C cable in my basket on shop.example")
+            .expect("matched");
+        assert!(names.contains(&"browser_click"));
+        let names = relevant_tool_names("turn on the kitchen light").unwrap_or_default();
+        assert!(
+            !names.iter().any(|n| n.starts_with("browser_")),
+            "a light command needs no browser tool: {names:?}"
+        );
     }
 }

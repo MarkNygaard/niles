@@ -123,6 +123,7 @@ mod tests {
             }],
             body: None,
             allow_conversation: true,
+            picture: false,
             status: ApprovalStatus::Pending,
             outcome: None,
         }
@@ -140,6 +141,7 @@ mod tests {
             }],
             body: Some("Hi Jakob.".into()),
             allow_conversation: false,
+            picture: false,
             status: ApprovalStatus::Pending,
             outcome: None,
         }

@@ -158,6 +158,11 @@ pub struct ApprovalCard {
     /// Whether "Allow for this conversation" is offered.
     #[serde(default)]
     pub allow_conversation: bool,
+    /// Whether a picture goes with it while it waits: a page's
+    /// screenshot, at `/me/approvals/{id}/picture`, gone once it is
+    /// answered or lapses.
+    #[serde(default)]
+    pub picture: bool,
     pub status: ApprovalStatus,
     /// What became of it, once it is not pending: "Sent", the error.
     #[serde(default)]
