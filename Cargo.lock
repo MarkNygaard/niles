@@ -2732,6 +2732,7 @@ dependencies = [
  "niles-groceries",
  "niles-integration-linear",
  "niles-llm",
+ "niles-logins",
  "niles-memory",
  "niles-mqtt",
  "niles-nemlig",
@@ -2825,6 +2826,7 @@ dependencies = [
  "niles-history",
  "niles-intent",
  "niles-llm",
+ "niles-logins",
  "niles-mcp",
  "niles-memory",
  "niles-mqtt",
@@ -2963,6 +2965,7 @@ dependencies = [
  "niles-config",
  "niles-core",
  "niles-history",
+ "niles-logins",
  "niles-presence",
  "niles-recognition",
  "niles-training",
@@ -3036,6 +3039,20 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
+]
+
+[[package]]
+name = "niles-logins"
+version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "niles-websearch",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
 ]
 
 [[package]]

@@ -498,6 +498,85 @@ describe("ChatPage", () => {
     expect(screen.getAllByText("Allow once")).toHaveLength(2);
   });
 
+  const LOGIN_REQUEST = {
+    id: "r1",
+    label: "Shop",
+    site: "https://shop.example",
+    status: "waiting" as const,
+    login: null,
+  };
+
+  const SAVED_LOGIN = {
+    id: 42,
+    label: "Shop",
+    origins: ["https://shop.example"],
+    username: "majse",
+    last_used: null,
+    signed_in: false,
+  };
+
+  /** The card's flow end to end: its form posts to /me/logins, and the
+      chat is told the new login's id — never its values. */
+  async function addLoginFromCard() {
+    const sendChat = vi.spyOn(api, "sendChat").mockRejectedValue(new Error("must not be called"));
+    const addLogin = vi.spyOn(api, "addLogin").mockResolvedValue(SAVED_LOGIN);
+    const loginAdded = vi.spyOn(api, "loginAdded").mockResolvedValue({ reply: "Added a login" });
+    const asked = summary(7, "Order printer ink", { last_at: ago(MINUTE) });
+    show([asked], {
+      7: conversationOf(asked, [
+        turn("order printer ink", "The shop wants a login before I can check out.", {
+          login_request: LOGIN_REQUEST,
+        }),
+      ]),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Add login" }));
+    fireEvent.change(await screen.findByLabelText("Username"), {
+      target: { value: "majse" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "hunter2-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(loginAdded).toHaveBeenCalledWith(7, "r1", 42),
+    );
+    expect(addLogin).toHaveBeenCalledWith({
+      label: "Shop",
+      origins: ["https://shop.example"],
+      username: "majse",
+      password: "hunter2-secret",
+    });
+    return { sendChat, loginAdded };
+  }
+
+  it("adds a login from its card without sending the values through the chat", async () => {
+    const { sendChat, loginAdded } = await addLoginFromCard();
+    expect(sendChat).not.toHaveBeenCalled();
+    // Ids alone reach the chat endpoint: neither value is anywhere in
+    // its calls.
+    const calls = JSON.stringify(vi.mocked(loginAdded).mock.calls);
+    expect(calls).not.toContain("majse");
+    expect(calls).not.toContain("hunter2-secret");
+  });
+
+  it("shows 'Added a login' while the next turn runs", async () => {
+    vi.spyOn(api, "loginAdded").mockReturnValue(new Promise(() => {}));
+    const asked = summary(7, "Order printer ink", { last_at: ago(MINUTE) });
+    vi.spyOn(api, "addLogin").mockResolvedValue(SAVED_LOGIN);
+    show([asked], {
+      7: conversationOf(asked, [
+        turn("order printer ink", "The shop wants a login before I can check out.", {
+          login_request: LOGIN_REQUEST,
+        }),
+      ]),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Add login" }));
+    fireEvent.change(await screen.findByLabelText("Username"), {
+      target: { value: "majse" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "hunter2-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByText("Added a login")).toBeInTheDocument());
+  });
+
   it("shows the job being written in the status line, as the stream says", async () => {
     const working = artifact(3, "Thailand travel plan", {
       status: "working",

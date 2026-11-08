@@ -428,6 +428,7 @@ const GROUPS: &[Group] = &[
             "browser_type",
             "browser_choose",
             "browser_submit",
+            "request_login",
         ],
     },
 ];
@@ -673,9 +674,15 @@ mod tests {
         let names = relevant_tool_names("put a 2 m USB-C cable in my basket on shop.example")
             .expect("matched");
         assert!(names.contains(&"browser_click"));
+        assert!(
+            names.contains(&"request_login"),
+            "a webshop basket needs request_login: {names:?}"
+        );
         let names = relevant_tool_names("turn on the kitchen light").unwrap_or_default();
         assert!(
-            !names.iter().any(|n| n.starts_with("browser_")),
+            !names
+                .iter()
+                .any(|n| n.starts_with("browser_") || n == &"request_login"),
             "a light command needs no browser tool: {names:?}"
         );
     }

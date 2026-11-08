@@ -1,5 +1,6 @@
 //! Browsing: Niles's own browser, found at `niles-browser:9222`, and the
-//! seven tools that work a page for the model. See ARCHITECTURE.md's
+//! seven tools that work a page for the model, and `request_login`,
+//! which asks the person for a saved login. See ARCHITECTURE.md's
 //! "Browsing on someone's behalf".
 //!
 //! There is no switch: Niles looks for the browser at
@@ -10,6 +11,7 @@
 
 #[cfg(test)]
 pub(crate) mod fake;
+mod login;
 mod step;
 mod tools;
 
@@ -119,10 +121,18 @@ pub(crate) fn with_driver(approvals: Arc<Approvals>, driver: Arc<dyn Driver>) ->
     })
 }
 
-/// Register the seven browsing tools.
-pub(crate) fn register(reg: &mut niles_tools::registry::ToolRegistry, browsing: Arc<Browsing>) {
-    tools::register(reg, browsing);
+/// Register the browsing tools: the seven that work a page, and
+/// `request_login`.
+pub(crate) fn register(
+    reg: &mut niles_tools::registry::ToolRegistry,
+    browsing: Arc<Browsing>,
+    logins: Arc<Logins>,
+) {
+    tools::register(reg, browsing.clone());
+    reg.register(Box::new(login::RequestLogin { browsing, logins }));
 }
+
+pub(crate) use login::{ADDED_A_LOGIN, Logins, added_from_card, added_text};
 
 impl Browsing {
     /// Tend what was found, and look again when there is nothing to

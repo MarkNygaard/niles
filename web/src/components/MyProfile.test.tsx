@@ -84,6 +84,7 @@ function show({ phone = false, me = ME }: { phone?: boolean; me?: Me } = {}) {
   vi.spyOn(api, "deviceStatus").mockResolvedValue(HOME);
   vi.spyOn(api, "calendars").mockResolvedValue({ providers: [], connections: [] });
   vi.spyOn(api, "strava").mockResolvedValue(NO_STRAVA);
+  vi.spyOn(api, "logins").mockResolvedValue({ logins: [] });
   vi.spyOn(api, "approvals").mockResolvedValue({ approvals: [WAITING] });
   vi.spyOn(api, "approvalHistory").mockResolvedValue({ entries: [], next: null, kept: true });
   render(
@@ -107,6 +108,7 @@ describe("profileSections", () => {
       "About you",
       "My phone",
       "Notifications",
+      "Logins",
     ]);
     expect(sections[1].items.map((s) => s.id)).toEqual(["calendars", "mail", "strava"]);
   });

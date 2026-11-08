@@ -18,8 +18,8 @@ use crate::speech_stream::{
 use crate::timers::spawn_timer_driver;
 use crate::voice::{hush_on_wake, spawn_dispatch_task};
 use crate::wiring::accounts::{
-    build_calendars, build_notify, build_push, build_secret_store, build_strava, build_tado_tokens,
-    build_weather_client, ensure_session_key, forget_retired_provider_keys,
+    build_calendars, build_logins, build_notify, build_push, build_secret_store, build_strava,
+    build_tado_tokens, build_weather_client, ensure_session_key, forget_retired_provider_keys,
 };
 use crate::wiring::automations::{
     CenterNotifier, MqttDeviceSink, automation_rules, automation_waits, build_automation_store,
@@ -478,6 +478,10 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let (arrivals, mut arrived) = tokio::sync::mpsc::unbounded_channel();
     let strava = build_strava(&cfg, arrivals);
     let chat_log = build_chat_log(&cfg);
+    // Each person's saved logins, sealed: without a database and its
+    // secrets key there are none, and the tool is not offered.
+    let logins = build_logins(&cfg);
+    let login_cards = Arc::new(crate::browsing::Logins::new(logins.clone()));
     // Browsing needs the database its cards are kept with, so it is off
     // without one.
     let browsing = crate::browsing::start(
@@ -488,7 +492,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             crate::browsing::Conversations::NotKept
         },
     );
-    crate::browsing::register(&mut tools, browsing);
+    crate::browsing::register(&mut tools, browsing, login_cards.clone());
     // Made by the assistant, which runs their jobs: the runner is handed
     // the assistant once it has started serving the tools.
     let artifact_runner = Arc::new(artifacts::AssistantRunner {
@@ -872,6 +876,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_automation_runs(Some(automation_runs.clone()))
     .with_calendars(calendars.clone())
     .with_strava(strava.clone())
+    .with_logins(logins)
     .with_push(push.clone())
     .with_notifications(notify.inbox())
     .with_artifacts(
@@ -1033,6 +1038,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         follow_ups: Arc::default(),
         automations: automations.clone().map(|store| (store, proposals.clone())),
         approvals: approvals.clone(),
+        logins: login_cards,
         artifacts: artifacts.clone(),
     };
     // The API is already up; from here on the chat has something to

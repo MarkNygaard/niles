@@ -7,6 +7,7 @@ import { ArtifactView } from "@/components/ArtifactView";
 import { ChatView } from "@/components/ChatView";
 import type { ShownTurn } from "@/components/ChatView";
 import { ConversationList } from "@/components/ConversationList";
+import { LOGINS } from "@/components/LoginsPanel";
 import { NilesPanel } from "@/components/NilesPanel";
 import type { PanelTab } from "@/components/NilesPanel";
 import { SavedList } from "@/components/SavedList";
@@ -16,6 +17,7 @@ import { api } from "@/lib/api";
 import type { Artifact, ArtifactPatch, Conversation, ConversationSummary, Decision } from "@/lib/api";
 import { APPROVALS, PENDING, answerSaid, approvalTag } from "@/lib/approvals";
 import { ARTIFACTS, ARTIFACT_LIST, workingLine } from "@/lib/artifacts";
+import { ADDED_A_LOGIN } from "@/lib/logins";
 import { closeWaiting } from "@/lib/pwa";
 import { thisDevice } from "@/lib/push";
 import { hashQuery } from "@/lib/route";
@@ -227,6 +229,18 @@ export function ChatPage() {
     },
   });
 
+  // The card was answered from its form, which saved the login straight
+  // to /me/logins; this only tells the chat the new login's id, and
+  // Niles carries the conversation on from there.
+  const loginAdded = useMutation({
+    mutationFn: ({ id, request, login }: { id: number; request: string; login: number }) =>
+      api.loginAdded(id, request, login),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: LOGINS });
+      return queryClient.invalidateQueries({ queryKey: CHAT });
+    },
+  });
+
   const changeArtifact = useMutation({
     mutationFn: ({ id, patch }: { id: number; patch: ArtifactPatch }) =>
       api.patchArtifact(id, patch),
@@ -384,13 +398,16 @@ export function ChatPage() {
         }));
 
   // An Allow on a browser step runs the next turn before it answers, so
-  // the chat shows the answer and Niles working, as for a message.
+  // the chat shows the answer and Niles working, as for a message. The
+  // same holds while the next turn after an added login runs.
   const pendingBubble =
     send.isPending && send.variables.to === current
       ? send.variables.text
       : decide.isPending && decide.variables?.id === current
         ? answerSaid(decide.variables.decision)
-        : undefined;
+        : loginAdded.isPending && loginAdded.variables?.id === current
+          ? ADDED_A_LOGIN
+          : undefined;
 
   return (
     <>
@@ -406,6 +423,7 @@ export function ChatPage() {
           send.error?.message ??
           answer.error?.message ??
           decide.error?.message ??
+          loginAdded.error?.message ??
           conversation.error?.message
         }
         onSend={(text, files) => send.mutate({ text, files, to: current })}
@@ -419,6 +437,10 @@ export function ChatPage() {
           current !== null && decide.mutate({ id: current, approval, decision })
         }
         deciding={decide.isPending}
+        onLoginAdded={(request, login) =>
+          current !== null && loginAdded.mutate({ id: current, request, login })
+        }
+        addingLogin={loginAdded.isPending}
         onDictate={async (audio) => (await api.dictate(audio)).text}
         onOpenArtifact={openArtifact}
         working={saved.data?.artifacts.filter((a) => a.status === "working").map((a) => a.id)}
