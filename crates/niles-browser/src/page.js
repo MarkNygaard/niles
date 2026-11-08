@@ -182,11 +182,8 @@
       lines.push(line);
     };
 
-    const view = {
-      top: 0,
-      bottom: window.innerHeight,
-    };
-
+    // Client coordinates: the view's top edge is 0, so an item whose
+    // bottom is at or above it lies wholly out of sight above.
     const rectOf = (el) => el.getBoundingClientRect();
 
     const emitActionable = (el) => {
@@ -234,7 +231,7 @@
       range.selectNodeContents(node);
       const rects = range.getClientRects();
       range.detach();
-      if (rects.length && rects[0].bottom <= view.top) {
+      if (rects.length && rects[0].bottom <= 0) {
         above = true;
         return;
       }
@@ -254,7 +251,7 @@
       // Wholly above the view an element is out of the read, and says
       // there is more above. Fixed elements stay: their rect is the
       // view's own.
-      if (rectOf(el).bottom <= view.top) {
+      if (rectOf(el).bottom <= 0) {
         above = true;
         return;
       }
