@@ -2,7 +2,8 @@
 //! the tools that work a page for the model; `browser_sign_in`, which
 //! signs a session in with a saved login, after which it stays on that
 //! login's sites; `request_login`, which asks the person for a saved
-//! login; the code cards a sign-in waits on; and the profile sweep.
+//! login; the code cards a sign-in waits on; the order card and the
+//! stop at card details; and the profile sweep.
 //! See ARCHITECTURE.md's "Browsing on someone's behalf".
 //!
 //! There is no switch: Niles looks for the browser at
@@ -16,6 +17,7 @@ mod ending;
 #[cfg(test)]
 pub(crate) mod fake;
 mod login;
+mod order;
 mod scrub;
 mod signin;
 mod step;

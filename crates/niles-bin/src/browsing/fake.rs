@@ -4,8 +4,8 @@
 //! it.
 
 use niles_browser::{
-    Aim, Asks, Choice, Driver, Element, Filled, Kind, NodeId, Point, Reading, Rect, Reference,
-    Result, Scroll, Tab,
+    Aim, Asks, Checkout, Choice, Driver, Element, Filled, Kind, NodeId, Point, Reading, Rect,
+    Reference, Result, Scroll, Tab,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -81,6 +81,8 @@ pub(crate) struct FakeState {
     /// What the reading reports.
     pub(crate) captcha: bool,
     pub(crate) asks_code: bool,
+    /// What `checkout` answers; its `card_details` is the reading's too.
+    pub(crate) checkout: Checkout,
 }
 
 /// What `asks` answers for the state: the standing ask. A submit moves
@@ -161,6 +163,7 @@ impl Tab for FakeTab {
             text,
             captcha: state.captcha,
             asks_code: state.asks_code,
+            card_details: state.checkout.card_details,
             more_above: false,
             more_below: false,
         })
@@ -171,6 +174,14 @@ impl Tab for FakeTab {
             true => Err(niles_browser::Error::Closed),
             false => Ok(()),
         }
+    }
+
+    async fn checkout(&self) -> Result<Checkout> {
+        let state = self.state();
+        if state.closed {
+            return Err(niles_browser::Error::Closed);
+        }
+        Ok(state.checkout.clone())
     }
 
     async fn address(&self) -> Result<String> {

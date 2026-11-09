@@ -132,8 +132,27 @@ pub struct Reading {
     /// The page asks for a code the site sent.
     #[serde(default)]
     pub asks_code: bool,
+    /// The page asks for card details, which Niles never types.
+    #[serde(default)]
+    pub card_details: bool,
     pub more_above: bool,
     pub more_below: bool,
+}
+
+/// What a page shows of an order, for the order card and the stop at
+/// card details: read by the page script from the page, never from
+/// the model.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct Checkout {
+    /// The page is a checkout: its https path, its title or a visible h1 says so.
+    pub at_checkout: bool,
+    /// The order's total as the page shows it, such as "412,50 kr.".
+    pub total: Option<String>,
+    /// The delivery address as the page shows it, its lines joined by commas.
+    pub delivery: Option<String>,
+    /// The page asks for card details: a field marked or named for them, or a payment provider's card frame.
+    pub card_details: bool,
 }
 
 /// A point in CSS pixels, the screenshot's pixels at device scale 1.
@@ -252,6 +271,10 @@ pub trait Tab: Send + Sync {
     /// The page as text with `[n]` references, from the top of the view.
     async fn read(&self) -> Result<Reading>;
 
+    /// What the page shows of an order: whether it is a checkout, its
+    /// total and delivery address, and whether it asks for card details.
+    async fn checkout(&self) -> Result<Checkout>;
+
     /// Scroll the page.
     async fn scroll(&self, way: Scroll) -> Result<()>;
 
@@ -355,6 +378,43 @@ mod tests {
         assert_eq!(Kind::try_from("textbox".to_string()), Ok(Kind::TextBox));
         assert_eq!(Kind::try_from("wibble".to_string()), Ok(Kind::Other));
         assert_eq!(Kind::try_from("".to_string()), Ok(Kind::Other));
+    }
+
+    #[test]
+    fn a_checkout_reads_the_page_scripts_shape() {
+        let checkout: Checkout = serde_json::from_value(json!({
+            "at_checkout": true,
+            "total": "412,50 kr.",
+            "delivery": null,
+            "card_details": false,
+        }))
+        .expect("the page script's shape");
+        assert_eq!(
+            checkout,
+            Checkout {
+                at_checkout: true,
+                total: Some("412,50 kr.".into()),
+                delivery: None,
+                card_details: false,
+            }
+        );
+        assert_eq!(
+            serde_json::from_value::<Checkout>(json!({})).unwrap(),
+            Checkout::default()
+        );
+    }
+
+    #[test]
+    fn a_reading_without_card_details_asks_for_none() {
+        let reading: Reading = serde_json::from_value(json!({
+            "address": "https://shop.example/",
+            "title": "",
+            "text": "",
+            "more_above": false,
+            "more_below": false,
+        }))
+        .expect("a reading");
+        assert!(!reading.card_details);
     }
 
     #[test]

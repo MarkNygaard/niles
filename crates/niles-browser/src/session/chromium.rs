@@ -19,7 +19,7 @@ use base64::Engine;
 use crate::browser::Browser;
 use crate::proxy::Proxy;
 use crate::session::Session;
-use crate::tab::{Asks, Filled, Reference, Tab};
+use crate::tab::{Asks, Checkout, Filled, Reference, Tab};
 
 /// Where the test Chromium's DevTools listens.
 fn devtools() -> SocketAddr {
@@ -753,5 +753,125 @@ async fn a_profile_keeps_the_logins_cookies_and_storage_only() {
         .await
         .unwrap();
     assert_eq!(value.get("value").and_then(Value::as_str), Some("v"));
+    Tab::close(&*session).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Chromium's DevTools at NILES_TEST_CHROMIUM, such as 127.0.0.1:9222"]
+async fn a_card_form_is_seen_and_a_gift_card_is_not() {
+    let session = session().await;
+    for (html, want) in [
+        (
+            r#"<form><input autocomplete="cc-number" name="n"></form>"#,
+            true,
+        ),
+        (r#"<label>Card number <input name="pan"></label>"#, true),
+        (r#"<label>CVC <input name="x" size="4"></label>"#, true),
+        (
+            r#"<iframe title="Secure card number input frame" width="300" height="40"></iframe>"#,
+            true,
+        ),
+        (
+            r#"<iframe name="braintree-hosted-field-number" width="300" height="40"></iframe>"#,
+            true,
+        ),
+        (
+            r#"<label>Gift card number <input name="giftcard"></label>"#,
+            false,
+        ),
+        (
+            r#"<label>Security code <input autocomplete="one-time-code" name="otp"></label>"#,
+            false,
+        ),
+        (
+            r#"<div hidden><input autocomplete="cc-number"></div><button>Place order</button>"#,
+            false,
+        ),
+    ] {
+        session.open(&page(html)).await.unwrap();
+        assert_eq!(session.read().await.unwrap().card_details, want, "{html}");
+        assert_eq!(
+            Tab::checkout(&*session).await.unwrap().card_details,
+            want,
+            "{html}"
+        );
+    }
+    Tab::close(&*session).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Chromium's DevTools at NILES_TEST_CHROMIUM, such as 127.0.0.1:9222"]
+async fn a_checkout_shows_its_total_and_delivery_address() {
+    let session = session().await;
+    session
+        .open(&page(
+            r#"<title>Checkout</title><h1>Checkout</h1>
+<section><h2>Delivery address</h2><p>Mark Nygaard<br>Street 1<br>2100 Copenhagen</p><button>Change</button></section>
+<table><tr><td>Subtotal</td><td>400,00 kr.</td></tr><tr><td>Delivery</td><td>12,50 kr.</td></tr><tr><th>Total</th><td>412,50 kr.</td></tr></table>
+<button>Place order</button>"#,
+        ))
+        .await
+        .unwrap();
+    let checkout = Tab::checkout(&*session).await.unwrap();
+    assert!(checkout.at_checkout);
+    assert_eq!(checkout.total.as_deref(), Some("412,50 kr."));
+    assert_eq!(
+        checkout.delivery.as_deref(),
+        Some("Mark Nygaard, Street 1, 2100 Copenhagen")
+    );
+    assert!(!checkout.card_details);
+    Tab::close(&*session).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Chromium's DevTools at NILES_TEST_CHROMIUM, such as 127.0.0.1:9222"]
+async fn an_address_in_fields_is_found_and_an_empty_basket_shows_nothing() {
+    let session = session().await;
+    session
+        .open(&page(
+            r#"<title>Your details</title>
+<input autocomplete="shipping address-line1" value="Street 1">
+<input autocomplete="shipping postal-code" value="2100">
+<input autocomplete="shipping address-level2" value="Copenhagen">
+<input autocomplete="billing address-line1" value="Elsewhere 9">"#,
+        ))
+        .await
+        .unwrap();
+    let checkout = Tab::checkout(&*session).await.unwrap();
+    assert_eq!(
+        checkout.delivery.as_deref(),
+        Some("Street 1, 2100 Copenhagen")
+    );
+    assert_eq!(checkout.total, None);
+    assert!(!checkout.at_checkout);
+    assert!(!checkout.card_details);
+
+    session
+        .open(&page(
+            r#"<title>Basket</title><p>Your basket is empty.</p>"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(Tab::checkout(&*session).await.unwrap(), Checkout::default());
+    Tab::close(&*session).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Chromium's DevTools at NILES_TEST_CHROMIUM, such as 127.0.0.1:9222"]
+async fn a_checkout_is_known_by_its_path() {
+    let session = session().await;
+    serve(
+        &session,
+        vec![(
+            "https://shop.example/checkout",
+            Page::html("<title>Shop</title><button>Fortsæt</button>"),
+        )],
+    )
+    .await;
+    session
+        .open(&Url::parse("https://shop.example/checkout").unwrap())
+        .await
+        .unwrap();
+    assert!(Tab::checkout(&*session).await.unwrap().at_checkout);
     Tab::close(&*session).await;
 }
