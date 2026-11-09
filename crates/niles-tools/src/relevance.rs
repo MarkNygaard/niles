@@ -408,6 +408,14 @@ const GROUPS: &[Group] = &[
             "basket",
             "cart",
             "checkout",
+            // Saying yes to the order ("buy it", "place the order") must
+            // keep the browser's tools in the turn; "buy" also stays in
+            // the grocery group.
+            "order",
+            "pay",
+            "buy",
+            "purchase",
+            "check out",
             "click",
             "url",
             "link",
@@ -667,6 +675,19 @@ mod tests {
         let names = relevant_tool_names("set a timer for five minutes").expect("matched");
         for core in ALWAYS {
             assert!(names.contains(core), "{core} should always be sent");
+        }
+    }
+
+    #[test]
+    fn placing_an_order_keeps_the_browser_tools() {
+        for sentence in [
+            "yes, buy it",
+            "place the order",
+            "go ahead and pay",
+            "check out and pay for it",
+        ] {
+            let names = relevant_tool_names(sentence).expect("matched");
+            assert!(names.contains(&"browser_click"), "{sentence}");
         }
     }
 

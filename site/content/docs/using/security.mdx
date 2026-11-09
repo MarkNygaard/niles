@@ -67,6 +67,7 @@ Strava or phone, and everything done with it shares one chat.
 | Your conversations | You. Your spoken turns join them only when Niles knew your voice. |
 | Your Saved items | You, and whoever you share one with. See [Saved](/docs/using/saved#sharing). |
 | Your approvals and their history | You |
+| Your saved logins and your browsing | You |
 | Your calendars and mail | You, when Niles hears your voice or you ask in the app |
 | Your Strava workouts and training plans | You |
 | Your notes, birthday and how Niles speaks to you | Niles, when it is talking to you |
@@ -133,6 +134,9 @@ history.
   **Delete all**. Off unless you switch it on.
 - Workouts fetched from Strava. They stay when you disconnect.
 - Files attached in the chat, with their conversation.
+- Saved logins, encrypted, and what a site stored in Niles's browser after
+  a sign-in, until 30 days after the login was last used. See [Browsing
+  for you](/docs/using/browsing).
 - The log: the last 5,000 lines, in memory only, gone at a restart. It
   includes what was said to Niles and what it answered. The app does not
   show it, but anyone signed in, or holding the API key, can fetch it.
@@ -155,6 +159,7 @@ its authors or anyone else. These are the outside services it does use:
 | OpenStreetMap | Map tiles and the address search under **Settings → Home** |
 | Apple, Google or Mozilla push | Phone notifications |
 | GitHub | Signing in and your profile picture; add-ons: their downloads and update checks, the add-on library's list, and one download of an add-on's `niles-installed` after you install it, which is how the library counts installs |
+| Websites you ask Niles to browse | What a browser sends any site, and your saved login on that login's own sites only |
 
 Speaking the replies (Piper), recognising voices and the fixed phrasings
 all run on your own Niles.

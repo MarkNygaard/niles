@@ -22,6 +22,10 @@
 //! checking the frame's origin as it sets each value; and a signed-in
 //! session's page is held to those origins by request interception
 //! (`Fetch`), so no main-frame navigation leaves them.
+//!
+//! The page script also reads what a checkout page shows, whether it is
+//! one, its total, its delivery address and whether it asks for card
+//! details, for niles-bin's order card and its stop at card details.
 
 mod browser;
 mod cdp;
@@ -37,8 +41,8 @@ pub use picture::picture;
 pub use proxy::Proxy;
 pub use session::Session;
 pub use tab::{
-    Aim, Asks, Choice, Driver, Element, Filled, Kind, NodeId, Point, Reading, Rect, Reference,
-    Scroll, Tab, on_sites,
+    Aim, Asks, Checkout, Choice, Driver, Element, Filled, Kind, NodeId, Point, Reading, Rect,
+    Reference, Scroll, Tab, on_sites,
 };
 
 /// Where Niles looks for the browser: the name both the Kustomize Service

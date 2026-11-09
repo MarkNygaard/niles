@@ -65,6 +65,8 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 | Feature | Summary | Since |
 | --- | --- | --- |
+| `browsing-sign-in` | Niles signs in with a saved login only on its own sites, asks for a sign-in code on a card, and stops at a CAPTCHA | [#526](https://github.com/MarkNygaard/niles/pull/526) |
+| `tool-browsing` | Do something on a website from the chat: Niles reads the pages, and each click, typing or submit waits on a card | [#520](https://github.com/MarkNygaard/niles/pull/520) |
 | `tool-command-history` | Ask what was said to Niles and when, from 14 days of spoken turns kept in Postgres | [#508](https://github.com/MarkNygaard/niles/pull/508) |
 | `tool-datetime` | Return the current date and time in the configured timezone | [#84](https://github.com/MarkNygaard/niles/pull/84) |
 | `tool-device-history` | Ask how devices were at a past time and set them back, from 14 days of history in Postgres | [#508](https://github.com/MarkNygaard/niles/pull/508) |
@@ -77,6 +79,11 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `tool-tv-volume` | tv_volume sets, steps, mutes or unmutes the TV's own speakers; music_volume turns the TV in a room with no Sonos | [#403](https://github.com/MarkNygaard/niles/pull/403) |
 | `tool-weather` | Fetch current weather and forecast via Open-Meteo | [#81](https://github.com/MarkNygaard/niles/pull/81) |
 | `tool-web-search` | Search the web via SearXNG and return summarized results; offered while the SearXNG add-on is set up | [#83](https://github.com/MarkNygaard/niles/pull/83) |
+
+### `tool-browsing` — example phrasings
+
+- put a 2 m USB-C cable in my basket on shop.example
+- book a delivery time on shop.example
 
 ### `tool-command-history` — example phrasings
 
@@ -99,6 +106,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | Feature | Summary | Since |
 | --- | --- | --- |
 | `approval-log` | Every approval logged when asked and answered, lapses included; one summary line, never the arguments | [#455](https://github.com/MarkNygaard/niles/pull/455) |
+| `browsing-order-card` | Placing an order waits on its own card with the page's total and delivery address; card details stop the run | [#527](https://github.com/MarkNygaard/niles/pull/527) |
 | `notify-approval-waiting` | Something waiting for your yes is on your page at once, on your devices at once or a minute later; a tap opens its card | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `push-approval-buttons` | On Android and computers an approval's notification has Deny, Approve where a spoken yes counts, Review for a mail | [#485](https://github.com/MarkNygaard/niles/pull/485) |
 | `push-approval-replaced` | Answered or lapsed, an approval's notification is replaced quietly on your other devices with what became of it | [#485](https://github.com/MarkNygaard/niles/pull/485) |
@@ -249,6 +257,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-push-notifications` | My profile → Notifications: on for this device, your devices, Send a test; iPhone asks for the Home Screen app | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `ui-restart-now` | Restart now under Kubernetes or a declared supervisor: says what a restart cuts short, waits for the new Niles, reloads | [#507](https://github.com/MarkNygaard/niles/pull/507) |
 | `ui-restart-pending` | While a change waits for a restart, the top of Settings names it and its menu has a dot; changing it back clears both | [#507](https://github.com/MarkNygaard/niles/pull/507) |
+| `ui-saved-logins` | My profile → Logins: a site's login for browsing, added there or from the chat; the password is never shown again | [#521](https://github.com/MarkNygaard/niles/pull/521) |
 | `ui-settings-system` | Settings splits the system (Devices: the broker; Voice & AI: hearing, thinking, speaking) from optional add-ons | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `ui-setup-checklist` | On a new install each System page leads with what it still needs, and the settings list counts it | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `ui-strava-connect` | My profile → Strava: set up your own Strava app, save its keys, connect, last sync, Sync now, disconnect | [#418](https://github.com/MarkNygaard/niles/pull/418) |

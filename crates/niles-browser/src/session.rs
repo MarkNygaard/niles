@@ -19,7 +19,8 @@ use url::Url;
 use crate::cdp::{Connection, Event};
 use crate::error::{Error, Result};
 use crate::tab::{
-    Aim, Asks, Choice, Element, Filled, Kind, NodeId, Point, Reading, Rect, Reference, Scroll, Tab,
+    Aim, Asks, Checkout, Choice, Element, Filled, Kind, NodeId, Point, Reading, Rect, Reference,
+    Scroll, Tab,
 };
 
 /// Niles's page script, installed in an isolated world the page can't
@@ -322,6 +323,18 @@ impl Tab for Session {
             Error::Answer {
                 method: "__niles.read",
                 reason: "the reading wasn't the expected shape".into(),
+            }
+        })
+    }
+
+    async fn checkout(&self) -> Result<Checkout> {
+        let answer = self
+            .evaluate("__niles.checkout()".to_string(), true)
+            .await?;
+        serde_json::from_value(answer.get("value").cloned().unwrap_or(Value::Null)).map_err(|_| {
+            Error::Answer {
+                method: "__niles.checkout",
+                reason: "the checkout wasn't the expected shape".into(),
             }
         })
     }

@@ -5,6 +5,9 @@
   // answers hit tests. It never reads a password's value. It also
   // fills a saved login or a code, only on the frame's own origin when
   // it is one of the login's, and never reads a filled value back.
+  // It also reads what a checkout shows, for the order card, and
+  // whether the page asks for card details, without reading a card
+  // field's value.
   if (globalThis.__niles) return;
 
   const refs = new Map(); // reference number -> WeakRef<Element>
@@ -321,6 +324,268 @@
     return false;
   }
 
+  // Whole words in any script: JS's \b knows only ASCII letters, and
+  // these words are Danish as well as English.
+  const words = (alternatives) =>
+    new RegExp("(?<![\\p{L}\\p{N}])(?:" + alternatives + ")(?![\\p{L}\\p{N}])", "iu");
+
+  // Names and addresses split into words, so "cardNumber",
+  // "card_number" and "/card-number.html" all read "card number".
+  const spaced = (s) =>
+    String(s || "")
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .replace(/[-_.:\/?=&#\[\]]+/g, " ");
+
+  // An element's own text, without its children's.
+  function ownText(el) {
+    let s = "";
+    for (const n of el.childNodes) {
+      if (n.nodeType === Node.TEXT_NODE) s += " " + n.textContent;
+    }
+    return squeeze(s);
+  }
+
+  // The text a box shows outside `skip` and outside anything that acts,
+  // such as a Change link, its pieces joined by commas.
+  function shownText(box, skip) {
+    const parts = [];
+    const walk = (n) => {
+      if (n === skip) return;
+      if (n.nodeType === Node.TEXT_NODE) {
+        const s = squeeze(n.textContent || "");
+        if (s) parts.push(s);
+        return;
+      }
+      if (n.nodeType !== Node.ELEMENT_NODE) return;
+      if (SKIP.has(n.tagName) || n.matches(ACT) || !shown(n)) return;
+      for (const child of n.childNodes) walk(child);
+    };
+    for (const child of box.childNodes) walk(child);
+    return parts.join(", ");
+  }
+
+  const tokensOf = (el) => (el.getAttribute("autocomplete") || "").toLowerCase().split(/\s+/);
+
+  const CARD_AUTOCOMPLETE = ["cc-number", "cc-csc", "cc-exp", "cc-exp-month", "cc-exp-year"];
+  const CARD_FIELD = words(
+    "card ?num(?:ber)?|card ?no|cardnumber|cc ?num(?:ber)?|ccnum|cc ?no|cvc2?|cvv2?|csc|kortnummer|kortnr|kontrolcifre",
+  );
+  const CARD_FRAME = words(
+    "cards?|credit ?cards?|debit ?cards?|cardnumber|cvc|cvv|csc|secured ?fields|hosted ?fields?|kortnummer|betalingskort",
+  );
+  const NOT_CARD = words(
+    "gift ?cards?|giftcards?|gift|vouchers?|coupons?|promo|loyalty|members?|membership|bonus|club|rewards?|library|gavekort|rabat|medlem",
+  );
+  const NOT_TYPED = ["hidden", "checkbox", "radio", "submit", "button", "image", "reset", "file"];
+
+  // A page asks for card details with a field marked or named for
+  // them, or with a payment provider's card frame, which names itself
+  // in its title, its name or its address. Only what shows counts, and
+  // no card field's value is read. A "security code" is left out: that
+  // is a sign-in code's label too.
+  function cardDetails() {
+    for (const el of deepAll("input, select")) {
+      if (!shown(el)) continue;
+      if (NOT_TYPED.includes((el.getAttribute("type") || "").toLowerCase())) continue;
+      if (tokensOf(el).some((token) => CARD_AUTOCOMPLETE.includes(token))) return true;
+      const said = spaced(
+        [
+          el.getAttribute("name"),
+          el.getAttribute("id"),
+          el.getAttribute("aria-label"),
+          el.getAttribute("placeholder"),
+          label(el),
+        ].join(" "),
+      );
+      if (CARD_FIELD.test(said) && !NOT_CARD.test(said)) return true;
+    }
+    for (const el of deepAll("iframe")) {
+      if (!shown(el)) continue;
+      // Only the frame's host and path: a query string can say "card"
+      // about anything, and an empty src would resolve to the page's
+      // own address.
+      let where = "";
+      const src = el.getAttribute("src");
+      if (src) {
+        try {
+          const url = new URL(src, location.href);
+          where = url.hostname + url.pathname;
+        } catch (_) {}
+      }
+      const said = spaced(
+        [el.getAttribute("title"), el.getAttribute("name"), el.getAttribute("aria-label"), where].join(" "),
+      );
+      if (CARD_FRAME.test(said) && !NOT_CARD.test(said)) return true;
+    }
+    return false;
+  }
+
+  const CHECKOUT_PATH = words(
+    "checkout|checkouts|check out|kasse|kassen|kassa|payment|payments|betaling|pay|bestilling",
+  );
+  const CHECKOUT_TITLE = words(
+    "checkout|review (?:your )?order|order review|place (?:your )?order|confirm (?:your )?order|payment|kasse|kassen|kassa|betaling|gennemfør (?:købet|ordren|bestillingen)",
+  );
+
+  // A checkout says so in its path, its title or its main heading.
+  // Lower headings don't count, because a shop's footer heads its
+  // payment methods on every page. A data: page's path is its whole
+  // text, so only an https path counts.
+  function atCheckout() {
+    if (location.protocol === "https:" && CHECKOUT_PATH.test(spaced(location.pathname))) return true;
+    if (CHECKOUT_TITLE.test(document.title || "")) return true;
+    for (const el of deepAll("h1")) {
+      if (!shown(el)) continue;
+      const text = squeeze(el.innerText || "");
+      if (text.length <= 80 && CHECKOUT_TITLE.test(text)) return true;
+    }
+    return false;
+  }
+
+  const TOTAL = words(
+    "total|grand total|order total|total to pay|total due|amount due|amount to pay|to pay|i alt|at betale|samlet pris|samlet",
+  );
+  const BEST_TOTAL = words(
+    "grand total|order total|total to pay|total due|amount due|amount to pay|to pay|at betale",
+  );
+  const NOT_TOTAL = words(
+    "sub ?total|subtotal|delsum|mellemsum|savings|you save|saved|discounts?|rabat|besparelse",
+  );
+  const LEADS_NOT_TOTAL =
+    /^(?:vat|tax|taxes|moms|heraf|shipping|delivery|fragt|levering|items?|varer|products?|produkter|basket|kurv)(?![\p{L}\p{N}])/iu;
+  // An amount with its currency before or after it: "412,50 kr.",
+  // "€41.25", "DKK 1.234,50", "412,-". Digits group by threes.
+  const MONEY =
+    /(?:[$€£¥]|(?<!\p{L})(?:kr|dkk|sek|nok|eur|usd|gbp|chf)\.?)\s?(?:\d{1,3}(?:[ .,']\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)|(?:\d{1,3}(?:[ .,']\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s?(?:[$€£¥]|(?:kr|dkk|sek|nok|eur|usd|gbp|chf)(?!\p{L})\.?|,-)/iu;
+  // An amount alone, with its two decimals: "412,50".
+  const AMOUNT = /(?:\d{1,3}(?:[ .,']\d{3})+|\d+)[.,]\d{2}(?!\d)/u;
+
+  function amountIn(text) {
+    const t = squeeze(text);
+    const found = t.match(MONEY) || t.match(AMOUNT);
+    return found ? cap(squeeze(found[0]), 40) : null;
+  }
+
+  // What a text says after its first total word, where the amount is.
+  function afterTotal(text) {
+    const t = squeeze(text);
+    const found = t.match(TOTAL);
+    return found ? t.slice(found.index + found[0].length) : t;
+  }
+
+  // The amount beside a total's label: in its own element, in its next
+  // siblings, or in up to three ancestors small enough to be its row.
+  function amountNear(el) {
+    const own = squeeze(el.innerText || "");
+    if (own.length <= 80) {
+      const found = amountIn(afterTotal(own));
+      if (found) return found;
+    }
+    let sibling = el.nextElementSibling;
+    for (let i = 0; sibling && i < 3; i++, sibling = sibling.nextElementSibling) {
+      const text = squeeze(sibling.innerText || "");
+      if (text.length > 80) break;
+      const found = amountIn(text);
+      if (found) return found;
+    }
+    let box = el.parentElement;
+    for (let i = 0; box && i < 3; i++, box = box.parentElement) {
+      const text = squeeze(box.innerText || "");
+      if (text.length > 200) break;
+      const found = amountIn(afterTotal(text));
+      if (found) return found;
+    }
+    return null;
+  }
+
+  // The order's total: an order total outranks a plain total, and of
+  // two of a rank the later one wins, as a summary ends with its total.
+  // A subtotal, a saving, a tax, shipping or an items total never counts.
+  function total() {
+    let best = null;
+    let rank = 0;
+    for (const el of deepAll("*")) {
+      if (SKIP.has(el.tagName)) continue;
+      const own = ownText(el);
+      if (!own || own.length > 60) continue;
+      if (!TOTAL.test(own) || NOT_TOTAL.test(own) || LEADS_NOT_TOTAL.test(own)) continue;
+      if (!shown(el)) continue;
+      const amount = amountNear(el);
+      if (!amount) continue;
+      const r = BEST_TOTAL.test(own) ? 2 : 1;
+      if (r >= rank) {
+        rank = r;
+        best = amount;
+      }
+    }
+    return best;
+  }
+
+  const DELIVERY_WORDS =
+    "delivery address|deliver to|delivering to|delivery details|shipping address|ship to|shipping to|send to|leveringsadresse|levering til|leveres til|leveringsoplysninger|leveringssted";
+  const LEADS_DELIVERY = new RegExp("^(?:" + DELIVERY_WORDS + ")(?![\\p{L}\\p{N}])", "iu");
+  const INLINE_DELIVERY = new RegExp("^(?:" + DELIVERY_WORDS + ")\\s*:\\s*(.+)$", "iu");
+
+  // A delivery address the page has in fields: those marked shipping,
+  // else those not marked billing.
+  function addressFields() {
+    const fields = deepAll("input, textarea, select").filter(shown);
+    const pick = (token) => {
+      const marked = fields.filter((el) => tokensOf(el).includes(token));
+      const el =
+        marked.find((f) => tokensOf(f).includes("shipping")) ||
+        marked.find((f) => !tokensOf(f).includes("billing"));
+      if (!el) return "";
+      if (el.tagName === "SELECT") {
+        const chosen = el.options[el.selectedIndex];
+        return chosen ? squeeze(chosen.text) : "";
+      }
+      return squeeze(el.value || "");
+    };
+    const street =
+      pick("street-address") ||
+      [pick("address-line1"), pick("address-line2")].filter(Boolean).join(", ");
+    const town = [pick("postal-code"), pick("address-level2")].filter(Boolean).join(" ");
+    return street && town ? cap(street + ", " + town, 200) : null;
+  }
+
+  // The delivery address a checkout shows: after "Delivery address:" on
+  // its line, in the field such a label names, or under such a heading;
+  // else the shipping address fields. A button or link that starts
+  // "Ship to" is an action, not a label.
+  function delivery() {
+    for (const el of deepAll("*")) {
+      if (SKIP.has(el.tagName) || el.matches(ACT)) continue;
+      const own = ownText(el);
+      if (!own || own.length > 300 || !LEADS_DELIVERY.test(own) || !shown(el)) continue;
+      const inline = own.match(INLINE_DELIVERY);
+      if (inline && squeeze(inline[1]).length >= 5) return cap(squeeze(inline[1]), 200);
+      if (own.length > 60) continue;
+      if (el.tagName === "LABEL" && el.control) {
+        const value = squeeze(el.control.value || "");
+        if (value.length >= 5) return cap(value, 200);
+        continue;
+      }
+      let box = el.parentElement;
+      for (let i = 0; box && i < 3; i++, box = box.parentElement) {
+        const text = shownText(box, el);
+        if (text.length > 300) break;
+        if (text.length >= 5) return cap(text, 200);
+      }
+    }
+    return addressFields();
+  }
+
+  // What a checkout shows, for the order card and the stop at card details.
+  function checkout() {
+    return {
+      at_checkout: atCheckout(),
+      total: total(),
+      delivery: delivery(),
+      card_details: cardDetails(),
+    };
+  }
+
   function set(el, value) {
     el.focus();
     el.value = value;
@@ -587,6 +852,7 @@
       title: document.title,
       text,
       captcha: captcha(),
+      card_details: cardDetails(),
       asks_code: passwordField() === null && codeFields().length > 0,
       more_above: above || window.scrollY > 0,
       more_below:
@@ -602,6 +868,7 @@
     hit,
     form,
     captcha,
+    checkout,
     fill,
     submit,
     code,
