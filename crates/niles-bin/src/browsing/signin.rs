@@ -441,9 +441,12 @@ impl SignInStep {
             )),
             Round::Code => {
                 let site = origin_of(&opened.tab.address().await.unwrap_or_default());
-                let bound = browsing
-                    .bound(&self.asker.person, opened.serial)
-                    .expect("bound above");
+                // The session can end mid-run (its login signed out or
+                // removed under it): a card for a session that isn't
+                // there would dangle, so the run lapses instead.
+                let Some(bound) = browsing.bound(&self.asker.person, opened.serial) else {
+                    return Err(lapsed(SESSION_ENDED));
+                };
                 browsing.ask_code(&self.asker.person, opened.serial, &bound, site);
                 Ok(Value::String(format!(
                     "{label} sent the person a code to finish signing in."

@@ -28,7 +28,8 @@ impl Scrub {
     }
 
     /// The person's saved values, in their page forms: exact,
-    /// whitespace-squeezed, percent-encoded and `+`-for-space.
+    /// whitespace-squeezed, form-urlencoded (`+` for a space, `*`
+    /// literal) and percent-encoded.
     pub(crate) fn new(credentials: Vec<Credentials>) -> Scrub {
         let mut values: Vec<String> = Vec::new();
         for creds in &credentials {
@@ -137,6 +138,12 @@ fn push_forms(value: &str, out: &mut Vec<String>) {
     if squeezed != value {
         out.push(squeezed);
     }
+    // As a form posts it: the alphanumerics and `*-._` stay, spaces
+    // become '+' (url::form_urlencoded::byte_serialize's set).
+    let form: String = url::form_urlencoded::byte_serialize(value.as_bytes()).collect();
+    if form != *value {
+        out.push(form);
+    }
     // Percent-encoded as a URL writes it: unreserved bytes stay, the
     // rest go uppercase %XX.
     let encoded: String = value
@@ -199,6 +206,12 @@ mod tests {
         assert_eq!(scrub.text("u=mark+scott@example.com"), "u=•••");
         // A plus inside the value encodes as %2B.
         assert_eq!(scrub.text("p%2Bss"), "•••");
+        // Form-encoding leaves a '*' literal where component-encoding
+        // goes %2A (and encodes '@' like the component form), so it is
+        // a form of its own.
+        let starred = scrub_with("jo*star@example.com", "irrelevant");
+        assert_eq!(starred.text("u=jo*star%40example.com"), "u=•••");
+        assert_eq!(starred.text("u=jo%2Astar%40example.com"), "u=•••");
     }
 
     #[test]
