@@ -8,7 +8,8 @@
 //! one's chat.
 
 use niles_api::chat::{
-    ApprovalCard, Conversation, LoginRequest, LoginRequestStatus, Summary, Turn, Where,
+    ApprovalCard, CodeRequest, CodeRequestStatus, Conversation, LoginRequest, LoginRequestStatus,
+    Summary, Turn, Where,
 };
 use niles_db::PostgresConversationLog;
 
@@ -239,6 +240,27 @@ impl ChatLog {
             .set_turn_field(person, id, turn, "login_request", &json)
             .await
     }
+
+    /// Mark a turn's code card answered or lapsed. False when the card
+    /// is already answered, so two codes from one card start one turn.
+    pub(crate) async fn claim_code_request(
+        &self,
+        person: &str,
+        id: i64,
+        card: &CodeRequest,
+    ) -> Result<bool, String> {
+        let _order = self.order.lock().await;
+        let Some(conversation) = self.conversation(person, id).await? else {
+            return Err("no such conversation".into());
+        };
+        let Some(turn) = waiting_code(&conversation.turns, &card.id) else {
+            return Ok(false);
+        };
+        let json = serde_json::to_string(card).map_err(|e| e.to_string())?;
+        self.table
+            .set_turn_field(person, id, turn, "code_request", &json)
+            .await
+    }
 }
 
 /// The index of the turn whose add-login card is still waiting on `id`.
@@ -247,6 +269,15 @@ pub(crate) fn waiting_request(turns: &[Turn], id: &str) -> Option<usize> {
         t.login_request
             .as_ref()
             .is_some_and(|card| card.id == id && card.status == LoginRequestStatus::Waiting)
+    })
+}
+
+/// The index of the turn whose code card is still waiting on `id`.
+pub(crate) fn waiting_code(turns: &[Turn], id: &str) -> Option<usize> {
+    turns.iter().position(|t| {
+        t.code_request
+            .as_ref()
+            .is_some_and(|card| card.id == id && card.status == CodeRequestStatus::Waiting)
     })
 }
 
@@ -298,6 +329,7 @@ mod tests {
                 status,
                 login: None,
             }),
+            code_request: None,
             artifacts: Vec::new(),
             attachments: Vec::new(),
         };
@@ -308,6 +340,36 @@ mod tests {
         assert_eq!(waiting_request(&turns, "r1"), Some(0));
         assert_eq!(waiting_request(&turns, "r2"), None, "already answered");
         assert_eq!(waiting_request(&turns, "r3"), None, "no such card");
+    }
+
+    #[test]
+    fn a_waiting_code_request_is_found_once() {
+        let card = |id: &str, status: CodeRequestStatus| Turn {
+            at: chrono::Utc::now(),
+            said: String::new(),
+            reply: String::new(),
+            via: "app".into(),
+            room: None,
+            by: None,
+            proposal: None,
+            approval: None,
+            login_request: None,
+            code_request: Some(CodeRequest {
+                id: id.into(),
+                label: "Shop".into(),
+                site: "https://shop.example".into(),
+                status,
+            }),
+            artifacts: Vec::new(),
+            attachments: Vec::new(),
+        };
+        let turns = vec![
+            card("c1", CodeRequestStatus::Waiting),
+            card("c2", CodeRequestStatus::Entered),
+        ];
+        assert_eq!(waiting_code(&turns, "c1"), Some(0));
+        assert_eq!(waiting_code(&turns, "c2"), None, "already answered");
+        assert_eq!(waiting_code(&turns, "c3"), None, "no such card");
     }
 
     #[test]

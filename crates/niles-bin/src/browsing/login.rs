@@ -27,13 +27,13 @@ const TOOL: &str = "request_login";
 const ASKED: &str = "Nothing is saved yet. Under your reply the person has a card with Add login, a form you never see. End your turn now and say in one short sentence what the card is for. Never ask them for the username or the password in the chat. When they have added it, Niles starts your next turn and tells you the login's id, label and site.";
 
 /// What the model is told when the person already saved this site.
-const ALREADY: &str = "The person already has a saved login for this site. Niles keeps its username and password: you never see them, and never ask the person for them. Signing in with a saved login isn't built yet in Niles's browser, so tell the person in one short sentence.";
+const ALREADY: &str = "The person already has a saved login for this site. Niles keeps its username and password: you never see them, and never ask the person for them. To sign in, open the site's sign-in page and call browser_sign_in with the login's id.";
 
 /// What the model is told when there is no store to keep a login in.
-const NO_LOGINS: &str = "Saved logins need Niles's database and its secrets key, and this Niles doesn't have both. Tell the person in one short sentence.";
+pub(super) const NO_LOGINS: &str = "Saved logins need Niles's database and its secrets key, and this Niles doesn't have both. Tell the person in one short sentence.";
 
 /// What the model is told when nobody is signed in to the chat.
-const NOBODY: &str = "Saved logins belong to a signed-in person, and nobody is signed in to this chat. Tell the person in one short sentence to sign in to the app first.";
+pub(super) const NOBODY: &str = "Saved logins belong to a signed-in person, and nobody is signed in to this chat. Tell the person in one short sentence to sign in to the app first.";
 
 /// A card no turn took within the hour belonged to a turn that failed:
 /// its entry is dropped, so an old card can never ride a new turn.
@@ -210,29 +210,33 @@ pub(crate) async fn added_from_card(
     };
     // The next turn runs in a task of its own, which the handler
     // awaits: a phone that locks mid-turn must not leave it unkept.
-    tokio::spawn(crate::app::carry_on_with_login(app, follow, added))
-        .await
-        .map_err(|e| {
-            tracing::error!("[logins] the turn after an added login did not finish: {e}");
-            NotAdded::NotWaiting
-        })
+    tokio::spawn(crate::app::carry_on_with(
+        app,
+        follow,
+        crate::browsing::ADDED_A_LOGIN,
+        crate::browsing::added_text(&added),
+        format!("Saved your login for {}.", added.label),
+    ))
+    .await
+    .map_err(|e| {
+        tracing::error!("[logins] the turn after an added login did not finish: {e}");
+        NotAdded::NotWaiting
+    })
 }
 
 /// The person key of a chat nobody is signed in to.
-fn nobody() -> String {
+pub(super) fn nobody() -> String {
     niles_training::person_key(None, niles_api::chat::ANYONE)
 }
 
 /// What the turn a card's answer starts says: Niles's fixed words only,
-/// carrying `{id, label, site}` and nothing the person typed. NIL-76
-/// rewrites the last sentence to sign in with `browser_sign_in`.
+/// carrying `{id, label, site}` and nothing the person typed.
 #[must_use]
 pub(crate) fn added_text(added: &LoginRef) -> String {
     format!(
         "Added a login. The person saved the login you asked for with request_login: {}. \
          Niles keeps its username and password: you never see them, and never ask the person for \
-         them. Signing in with a saved login isn't built yet in Niles's browser, so tell the \
-         person in one short sentence that the login is saved.",
+         them. To sign in, open the site's sign-in page and call browser_sign_in with its id.",
         json!({ "id": added.id, "label": added.label, "site": added.site.as_str() }),
     )
 }
@@ -320,13 +324,11 @@ mod tests {
     use super::*;
     use crate::approvals::{self, Approvals, Asker};
     use crate::browsing::fake::FakeDriver;
-    use crate::browsing::{Conversations, Found, with_driver};
+    use crate::browsing::{Found, with_driver};
     use niles_api::chat::ANYONE;
     use niles_core::EventBus;
     use niles_logins::{MemoryLogins, NewLogin, Secret};
-    use std::collections::HashMap;
     use std::net::SocketAddr;
-    use std::sync::atomic::AtomicU64;
 
     const MARK: &str = "person:mark";
     const HER_USER: &str = "mark.scott+tellnoone@example.com";
@@ -370,15 +372,7 @@ mod tests {
 
     /// A browsing with nothing found: browsing isn't set up.
     fn no_browser(approvals: Arc<Approvals>) -> Arc<Browsing> {
-        Arc::new(Browsing {
-            approvals,
-            conversations: Conversations::Kept,
-            found: Mutex::new(Found::Nothing),
-            sessions: Mutex::new(HashMap::new()),
-            serial: AtomicU64::new(0),
-            restarted: Mutex::new(None),
-            proxy: Mutex::new(None),
-        })
+        crate::browsing::built(approvals, Found::Nothing, None)
     }
 
     async fn ask(tool: &RequestLogin, args: Value) -> niles_tools::Result<Value> {

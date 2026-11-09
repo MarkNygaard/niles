@@ -1363,6 +1363,7 @@ impl Artifacts {
             proposal: None,
             approval: None,
             login_request: None,
+            code_request: None,
             artifacts: vec![ArtifactRef::of(artifact)],
             attachments: Vec::new(),
         };
@@ -3048,6 +3049,7 @@ mod tests {
             proposal: None,
             approval: None,
             login_request: None,
+            code_request: None,
             artifacts: cards,
             attachments: Vec::new(),
         }];
@@ -5341,6 +5343,7 @@ mod tests {
             proposal: None,
             approval: None,
             login_request: None,
+            code_request: None,
             artifacts: cards,
             attachments: Vec::new(),
         };

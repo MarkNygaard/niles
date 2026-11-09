@@ -17,7 +17,11 @@
 //!
 //! The page script (`src/page.js`) runs in an isolated world the page
 //! can't see, so the references it hands out can't be moved or faked by
-//! page code.
+//! page code. The same script also fills a saved login or a code in an
+//! isolated world in the field's own frame, only on the login's origins,
+//! checking the frame's origin as it sets each value; and a signed-in
+//! session's page is held to those origins by request interception
+//! (`Fetch`), so no main-frame navigation leaves them.
 
 mod browser;
 mod cdp;
@@ -33,7 +37,8 @@ pub use picture::picture;
 pub use proxy::Proxy;
 pub use session::Session;
 pub use tab::{
-    Aim, Choice, Driver, Element, Kind, NodeId, Point, Reading, Rect, Reference, Scroll, Tab,
+    Aim, Asks, Choice, Driver, Element, Filled, Kind, NodeId, Point, Reading, Rect, Reference,
+    Scroll, Tab, on_sites,
 };
 
 /// Where Niles looks for the browser: the name both the Kustomize Service

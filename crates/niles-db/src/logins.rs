@@ -14,6 +14,7 @@
 
 use crate::secrets::Sealer;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use niles_logins::{Credentials, Login, LoginEdit, LoginStore, NewLogin, Origin, Result, Secret};
 use sqlx::{Row, postgres::PgPool, postgres::PgRow};
 
@@ -107,14 +108,18 @@ impl std::fmt::Debug for PostgresLogins {
 }
 
 const LIST_SQL: &str = "select l.id, l.label, l.origins, l.last_used, s.username_enc,
-     exists (select 1 from browser_profiles p where p.login_id = l.id) as signed_in
+     exists (select 1 from browser_profiles p where p.login_id = l.id
+         and coalesce(l.last_used, p.saved_at)
+             >= now() - make_interval(days => $2)) as signed_in
      from saved_logins l
      join saved_login_secrets s on s.login_id = l.id
      where l.person = $1
      order by lower(l.label), l.id";
 
 const GET_SQL: &str = "select l.id, l.label, l.origins, l.last_used, s.username_enc,
-     exists (select 1 from browser_profiles p where p.login_id = l.id) as signed_in
+     exists (select 1 from browser_profiles p where p.login_id = l.id
+         and coalesce(l.last_used, p.saved_at)
+             >= now() - make_interval(days => $3)) as signed_in
      from saved_logins l
      join saved_login_secrets s on s.login_id = l.id
      where l.person = $1 and l.id = $2";
@@ -125,6 +130,7 @@ impl LoginStore for PostgresLogins {
         self.ensure_schema().await?;
         let rows = sqlx::query(LIST_SQL)
             .bind(person)
+            .bind(niles_logins::PROFILE_DAYS as i32)
             .fetch_all(&self.pool)
             .await
             .map_err(|e| self.storage(e))?;
@@ -140,6 +146,7 @@ impl LoginStore for PostgresLogins {
         let Some(row) = sqlx::query(GET_SQL)
             .bind(person)
             .bind(id)
+            .bind(niles_logins::PROFILE_DAYS as i32)
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| self.storage(e))?
@@ -318,9 +325,13 @@ impl LoginStore for PostgresLogins {
 
     async fn save_profile(&self, person: &str, id: i64, profile: &Secret) -> Result<bool> {
         self.ensure_schema().await?;
+        // One statement, so the login is marked used exactly when the
+        // profile lands.
         let done = sqlx::query(
-            "insert into browser_profiles (login_id, profile_enc)
-                 select id, $3 from saved_logins where id = $1 and person = $2
+            "with l as (update saved_logins set last_used = now()
+                 where id = $1 and person = $2 returning id)
+             insert into browser_profiles (login_id, profile_enc)
+                 select id, $3 from l
              on conflict (login_id) do update set
                  profile_enc = excluded.profile_enc, saved_at = now()",
         )
@@ -335,6 +346,20 @@ impl LoginStore for PostgresLogins {
 
     async fn profile(&self, person: &str, id: i64) -> Result<Option<Secret>> {
         self.ensure_schema().await?;
+        // A stale profile is forgotten, not just refused: the sweep may
+        // not have run yet.
+        sqlx::query(
+            "delete from browser_profiles p using saved_logins l
+             where p.login_id = l.id and l.id = $1 and l.person = $2
+                 and coalesce(l.last_used, p.saved_at)
+                     < now() - make_interval(days => $3)",
+        )
+        .bind(id)
+        .bind(person)
+        .bind(niles_logins::PROFILE_DAYS as i32)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
         let Some(row) = sqlx::query(
             "select p.profile_enc
              from browser_profiles p
@@ -352,5 +377,54 @@ impl LoginStore for PostgresLogins {
         Ok(Some(Secret::new(
             self.open(&row.get::<Vec<u8>, _>("profile_enc"))?,
         )))
+    }
+
+    async fn used(&self, person: &str, id: i64, at: DateTime<Utc>) -> Result<bool> {
+        self.ensure_schema().await?;
+        let done =
+            sqlx::query("update saved_logins set last_used = $3 where id = $1 and person = $2")
+                .bind(id)
+                .bind(person)
+                .bind(at)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| self.storage(e))?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    async fn drop_stale_profiles(&self, before: DateTime<Utc>) -> Result<u64> {
+        self.ensure_schema().await?;
+        let done = sqlx::query(
+            "delete from browser_profiles p using saved_logins l
+             where p.login_id = l.id
+                 and coalesce(l.last_used, p.saved_at) < $1",
+        )
+        .bind(before)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(done.rows_affected())
+    }
+
+    async fn secrets(&self, person: &str) -> Result<Vec<Credentials>> {
+        self.ensure_schema().await?;
+        let rows = sqlx::query(
+            "select s.username_enc, s.password_enc
+             from saved_login_secrets s
+             join saved_logins l on l.id = s.login_id
+             where l.person = $1",
+        )
+        .bind(person)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            out.push(Credentials {
+                username: Secret::new(self.open(&row.get::<Vec<u8>, _>("username_enc"))?),
+                password: Secret::new(self.open(&row.get::<Vec<u8>, _>("password_enc"))?),
+            });
+        }
+        Ok(out)
     }
 }

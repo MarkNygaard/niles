@@ -1,7 +1,9 @@
-//! Browsing: Niles's own browser, found at `niles-browser:9222`, and the
-//! seven tools that work a page for the model, and `request_login`,
-//! which asks the person for a saved login. See ARCHITECTURE.md's
-//! "Browsing on someone's behalf".
+//! Browsing: Niles's own browser, found at `niles-browser:9222`, and
+//! the tools that work a page for the model; `browser_sign_in`, which
+//! signs a session in with a saved login, after which it stays on that
+//! login's sites; `request_login`, which asks the person for a saved
+//! login; the code cards a sign-in waits on; and the profile sweep.
+//! See ARCHITECTURE.md's "Browsing on someone's behalf".
 //!
 //! There is no switch: Niles looks for the browser at
 //! [`niles_browser::HOST`]:[`niles_browser::DEVTOOLS_PORT`] and browsing
@@ -9,14 +11,19 @@
 //! a first turn has no conversation id yet, and one person browsing two
 //! conversations shares one page.
 
+mod code;
+mod ending;
 #[cfg(test)]
 pub(crate) mod fake;
 mod login;
+mod scrub;
+mod signin;
 mod step;
 mod tools;
 
 use crate::approvals::{Approvals, Asker};
 use niles_browser::{Browser, DEVTOOLS_PORT, Driver, HOST, PROXY_PORT, Tab};
+use niles_logins::{LoginStore, Secret};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,6 +37,8 @@ const IDLE: Duration = Duration::from_secs(15 * 60);
 /// The idle browser is restarted this often, so anything a page left
 /// inside it dies at least daily.
 const RESTART_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+/// Stale browser profiles are swept this often.
+const PROFILE_SWEEP_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 /// How often a found browser is tended: idle sessions reaped, the daily
 /// restart asked for.
 const WATCH_EVERY: Duration = Duration::from_secs(30);
@@ -46,7 +55,7 @@ pub(crate) enum Conversations {
 /// What looking for the browser found last. `Silent` is a name that
 /// resolves but doesn't answer; `Nothing` is no name at all.
 #[derive(Clone)]
-enum Found {
+pub(crate) enum Found {
     Looking,
     Nothing,
     Silent,
@@ -62,6 +71,28 @@ struct Open {
     /// The card a held step of this session waits on, if one does: its
     /// session is not reaped while it waits.
     holding: Option<String>,
+    /// The saved login this session is signed in with, if one is.
+    login: Option<Bound>,
+    /// The code card this session waits on, if one does.
+    code: Option<String>,
+}
+
+/// The saved login a session is signed in with: what keeps it on its
+/// sites, and what its profile is kept under.
+#[derive(Clone, Debug)]
+pub(crate) struct Bound {
+    pub(crate) login: i64,
+    pub(crate) label: String,
+    pub(crate) origins: Vec<String>,
+    /// Niles saw a sign-in through, or restored a profile: only then is
+    /// the session's profile kept.
+    pub(crate) signed_in: bool,
+}
+
+/// What ending a session does with its profile.
+pub(crate) enum Save {
+    Profile,
+    Nothing,
 }
 
 /// The clones of an [`Open`] a tool works with.
@@ -80,6 +111,12 @@ pub(crate) struct Browsing {
     serial: AtomicU64,
     restarted: Mutex<Option<Instant>>,
     proxy: Mutex<Option<(IpAddr, JoinHandle<()>)>>,
+    /// The saved-logins store, when Niles has one: what signs a session
+    /// in, and what the scrub reads.
+    store: Option<Arc<dyn LoginStore>>,
+    /// The code cards being waited on, in memory only: a restart lapses
+    /// them all.
+    codes: Mutex<Vec<code::CodeCard>>,
 }
 
 /// What the model is told when browsing is off or a page won't open.
@@ -93,7 +130,11 @@ pub(crate) const NO_DATABASE: &str =
 pub(crate) const NOT_FOR_JOBS: &str = "Browsing is only for the chat, never for a background job.";
 
 /// Start watching for the browser and tending what it serves.
-pub(crate) fn start(approvals: Arc<Approvals>, conversations: Conversations) -> Arc<Browsing> {
+pub(crate) fn start(
+    approvals: Arc<Approvals>,
+    conversations: Conversations,
+    store: Option<Arc<dyn LoginStore>>,
+) -> Arc<Browsing> {
     let browsing = Arc::new(Browsing {
         approvals,
         conversations,
@@ -102,37 +143,90 @@ pub(crate) fn start(approvals: Arc<Approvals>, conversations: Conversations) -> 
         serial: AtomicU64::new(0),
         restarted: Mutex::new(None),
         proxy: Mutex::new(None),
+        store: store.clone(),
+        codes: Mutex::new(Vec::new()),
     });
+    if let Some(store) = store {
+        tokio::spawn(sweep_profiles(store));
+    }
     tokio::spawn(browsing.clone().watch());
     browsing
 }
 
+/// The profile sweep: stale profiles are deleted every six hours, so a
+/// login unused for a month stops restoring even where nothing reads it.
+async fn sweep_profiles(store: Arc<dyn LoginStore>) {
+    loop {
+        let before = chrono::Utc::now() - chrono::Duration::days(niles_logins::PROFILE_DAYS);
+        match store.drop_stale_profiles(before).await {
+            Ok(n) if n > 0 => {
+                tracing::info!("[browser] dropped {n} browser profiles unused for 30 days");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("[browser] stale browser profiles weren't dropped: {e}");
+            }
+        }
+        tokio::time::sleep(PROFILE_SWEEP_EVERY).await;
+    }
+}
+
 /// For the tests: a browsing that starts found, with no watcher.
 #[cfg(test)]
-pub(crate) fn with_driver(approvals: Arc<Approvals>, driver: Arc<dyn Driver>) -> Arc<Browsing> {
+pub(crate) fn built(
+    approvals: Arc<Approvals>,
+    found: Found,
+    store: Option<Arc<dyn LoginStore>>,
+) -> Arc<Browsing> {
     Arc::new(Browsing {
         approvals,
         conversations: Conversations::Kept,
-        found: Mutex::new(Found::Ready(driver)),
+        found: Mutex::new(found),
         sessions: Mutex::new(HashMap::new()),
         serial: AtomicU64::new(0),
         restarted: Mutex::new(None),
         proxy: Mutex::new(None),
+        store,
+        codes: Mutex::new(Vec::new()),
     })
 }
 
-/// Register the browsing tools: the seven that work a page, and
-/// `request_login`.
+/// For the tests: a browsing that starts found, with no store.
+#[cfg(test)]
+pub(crate) fn with_driver(approvals: Arc<Approvals>, driver: Arc<dyn Driver>) -> Arc<Browsing> {
+    built(approvals, Found::Ready(driver), None)
+}
+
+/// For the tests: a browsing with a store.
+#[cfg(test)]
+pub(crate) fn with_store(
+    approvals: Arc<Approvals>,
+    driver: Arc<dyn Driver>,
+    store: Arc<dyn LoginStore>,
+) -> Arc<Browsing> {
+    built(approvals, Found::Ready(driver), Some(store))
+}
+
+/// Register the browsing tools: those that work a page, and
+/// `browser_sign_in`, and `request_login`.
 pub(crate) fn register(
     reg: &mut niles_tools::registry::ToolRegistry,
     browsing: Arc<Browsing>,
     logins: Arc<Logins>,
 ) {
     tools::register(reg, browsing.clone());
+    reg.register(Box::new(signin::SignIn(browsing.clone())));
     reg.register(Box::new(login::RequestLogin { browsing, logins }));
 }
 
+pub(crate) use code::{ENTERED_A_CODE, code_asked_text, code_from_card};
+pub(crate) use ending::ending;
 pub(crate) use login::{ADDED_A_LOGIN, Logins, added_from_card, added_text};
+use scrub::Scrub;
+
+/// What every browsing tool answers when the saved logins can't be
+/// read: without them the scrub can't run, so browsing fails closed.
+pub(crate) const LOGINS_UNREADABLE: &str = "Niles can't read the person's saved logins right now, so it can't make sure the page shows none of them. Tell the person in one short sentence to try again in a minute.";
 
 impl Browsing {
     /// Tend what was found, and look again when there is nothing to
@@ -270,7 +364,11 @@ impl Browsing {
             if let Some(id) = open.holding {
                 self.approvals.lapse(&id).await;
             }
+            if let Some(id) = open.code {
+                self.drop_code(&id);
+            }
         }
+        self.codes.lock().unwrap_or_else(|e| e.into_inner()).clear();
         *self.found.lock().unwrap_or_else(|e| e.into_inner()) = Found::Looking;
         tracing::warn!("[browser] the browser went away; its sessions ended");
     }
@@ -285,27 +383,25 @@ impl Browsing {
                 _ => return,
             }
         };
-        let reaped: Vec<Open> = {
+        let reaped: Vec<(String, Open)> = {
             let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             let idle_ids: Vec<String> = sessions
                 .iter()
                 .filter(|(_, open)| {
-                    let waits = open
-                        .holding
-                        .as_deref()
-                        .is_some_and(|id| self.approvals.waiting(id));
+                    let waits = self.waits(open);
                     idle(open.used, waits, now)
                 })
                 .map(|(person, _)| person.clone())
                 .collect();
             idle_ids
                 .into_iter()
-                .filter_map(|person| sessions.remove(&person))
+                .filter_map(|person| sessions.remove(&person).map(|open| (person, open)))
                 .collect()
         };
-        for open in reaped {
-            open.tab.close().await;
+        for (person, open) in reaped {
+            self.close(&person, open, Save::Profile).await;
         }
+        self.drop_lapsed_codes();
         let empty = self
             .sessions
             .lock()
@@ -326,6 +422,17 @@ impl Browsing {
                 *self.found.lock().unwrap_or_else(|e| e.into_inner()) = Found::Looking;
             }
         }
+    }
+
+    /// Whether the session waits on a held step's card or a code card:
+    /// neither session is reaped while it waits.
+    fn waits(&self, open: &Open) -> bool {
+        let step_waits = open
+            .holding
+            .as_deref()
+            .is_some_and(|id| self.approvals.waiting(id));
+        let code_waits = open.code.as_deref().is_some_and(|id| self.code_waiting(id));
+        step_waits || code_waits
     }
 
     /// Whether browsing is on, and the driver if it is.
@@ -372,6 +479,8 @@ impl Browsing {
             serial: self.serial.fetch_add(1, Ordering::SeqCst),
             used: Instant::now(),
             holding: None,
+            login: None,
+            code: None,
         };
         let existing = {
             let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -434,10 +543,146 @@ impl Browsing {
     /// Whether one of the person's steps waits on its card now.
     pub(crate) fn waiting_step(&self, person: &str) -> bool {
         let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        sessions
-            .get(person)
-            .and_then(|open| open.holding.as_deref())
-            .is_some_and(|id| self.approvals.waiting(id))
+        sessions.get(person).is_some_and(|open| self.waits(open))
+    }
+
+    /// The saved-logins store, when Niles has one.
+    pub(crate) fn store(&self) -> Option<Arc<dyn LoginStore>> {
+        self.store.clone()
+    }
+
+    /// The scrub for what this person's browsing sends the model, the
+    /// log and tracing. With no store there is nothing to scrub; when
+    /// the store can't be read, browsing fails closed.
+    pub(crate) async fn scrub(&self, person: &str) -> std::result::Result<Scrub, &'static str> {
+        let Some(store) = &self.store else {
+            return Ok(Scrub::none());
+        };
+        match store.secrets(person).await {
+            Ok(credentials) => Ok(Scrub::new(credentials)),
+            Err(e) => {
+                tracing::warn!("[browser] saved logins couldn't be read for the scrub: {e}");
+                Err(LOGINS_UNREADABLE)
+            }
+        }
+    }
+
+    /// The login this session is signed in with, if it still is the
+    /// one `serial` names.
+    pub(crate) fn bound(&self, person: &str, serial: u64) -> Option<Bound> {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let open = sessions.get(person)?;
+        if open.serial != serial {
+            return None;
+        }
+        open.login.clone()
+    }
+
+    /// Bind the session to its login, so it stays on the login's sites.
+    /// False when the session moved on.
+    pub(crate) fn bind(&self, person: &str, serial: u64, bound: Bound) -> bool {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(open) = sessions.get_mut(person) else {
+            return false;
+        };
+        if open.serial != serial {
+            return false;
+        }
+        open.login = Some(bound);
+        true
+    }
+
+    /// Note the bound login's sign-in went through: its profile is
+    /// kept when the session ends.
+    pub(crate) fn mark_signed_in(&self, person: &str, serial: u64) {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(open) = sessions.get_mut(person)
+            && open.serial == serial
+            && let Some(bound) = open.login.as_mut()
+        {
+            bound.signed_in = true;
+        }
+    }
+
+    /// End the person's session, keeping its profile when it was signed
+    /// in, and lapse what waits on it.
+    pub(crate) async fn end(&self, person: &str, save: Save) {
+        let open = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(person);
+        if let Some(open) = open {
+            self.close(person, open, save).await;
+        }
+    }
+
+    /// End the person's session when it is signed in with `login`:
+    /// what the Logins page changes calls first.
+    pub(crate) async fn end_login(&self, person: &str, login: i64, save: Save) {
+        let open = {
+            let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let keep = sessions.get(person).and_then(|open| open.login.as_ref());
+            match keep {
+                Some(bound) if bound.login == login => sessions.remove(person),
+                _ => None,
+            }
+        };
+        if let Some(open) = open {
+            self.close(person, open, save).await;
+        }
+    }
+
+    /// Close an open session: lapse its cards, let an in-flight step
+    /// finish, keep the profile when asked and the sign-in was seen
+    /// through, close the page. Called with no lock held.
+    async fn close(&self, person: &str, open: Open, save: Save) {
+        if let Some(id) = open.holding {
+            self.approvals.lapse(&id).await;
+        }
+        if let Some(id) = open.code {
+            self.drop_code(&id);
+        }
+        // Wait for an in-flight step or save to finish first.
+        let _tab = open.lock.lock().await;
+        if matches!(save, Save::Profile)
+            && let Some(bound) = &open.login
+            && bound.signed_in
+        {
+            self.save(person, bound, &open.tab).await;
+        }
+        open.tab.close().await;
+    }
+
+    /// Keep the session's browser profile under its login. The caller
+    /// holds the tab lock and has checked the session is current, or is
+    /// closing it.
+    pub(crate) async fn save(&self, person: &str, bound: &Bound, tab: &Arc<dyn Tab>) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        let profile = match tab.profile(&bound.origins).await {
+            Ok(profile) => profile,
+            Err(e) => {
+                // The error carries only fixed reasons (niles-browser's
+                // contract), so this is safe to log.
+                tracing::warn!("[browser] a browser profile wasn't kept: {e}");
+                return;
+            }
+        };
+        match store
+            .save_profile(person, bound.login, &Secret::new(profile))
+            .await
+        {
+            Ok(true) => {
+                tracing::info!(
+                    "[browser] kept {person}'s browser profile for login {}",
+                    bound.login
+                );
+            }
+            Ok(false) => {}
+            Err(e) => tracing::warn!("[browser] a browser profile wasn't kept: {e}"),
+        }
     }
 }
 

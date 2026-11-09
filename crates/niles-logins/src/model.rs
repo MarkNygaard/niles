@@ -13,6 +13,8 @@ pub const MAX_ORIGINS: usize = 10;
 pub const MAX_USERNAME: usize = 200;
 /// The longest password kept.
 pub const MAX_PASSWORD: usize = 500;
+/// The longest sign-in code kept.
+pub const MAX_CODE: usize = 32;
 
 /// A username or password, exactly as the person typed it.
 ///
@@ -53,8 +55,8 @@ pub struct Credentials {
 }
 
 /// A saved login as its owner sees it, never the password. `signed_in`
-/// means Niles keeps a browser profile signed in as this account, for
-/// NIL-76 to restore.
+/// means a fresh browser profile is kept: Niles can restore it and the
+/// site may not ask for the login again.
 #[derive(Clone, PartialEq, Serialize)]
 pub struct Login {
     pub id: i64,
@@ -165,6 +167,31 @@ fn password(s: Secret) -> Result<Secret> {
         ));
     }
     Ok(s)
+}
+
+/// A sign-in code the site sent, as the person typed it on the card.
+/// Whitespace anywhere is dropped — codes come with spaces for reading
+/// aloud — then the rest must be 1 to [`MAX_CODE`] characters of ASCII
+/// letters, digits and dashes. The reason never quotes the value.
+pub fn code(given: Secret) -> Result<Secret> {
+    let normalised: String = given
+        .expose()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    if normalised.is_empty() {
+        return Err(invalid("code", "a code is needed"));
+    }
+    if normalised.chars().count() > MAX_CODE {
+        return Err(invalid("code", "a code is at most 32 characters"));
+    }
+    if !normalised
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err(invalid("code", "a code is letters, digits and dashes"));
+    }
+    Ok(Secret::new(normalised))
 }
 
 fn invalid(kind: &'static str, reason: &str) -> Error {
@@ -354,5 +381,60 @@ mod tests {
         let sites: Vec<String> = (1..=11).map(|n| format!("shop{n}.example")).collect();
         let err = origins(&sites).unwrap_err();
         assert!(err.to_string().contains("at most 10 sites"));
+    }
+
+    #[test]
+    fn whitespace_is_dropped_from_a_code() {
+        let code = code(Secret::new(" 493 817 ")).unwrap();
+        assert_eq!(code.expose(), "493817");
+    }
+
+    #[test]
+    fn dashes_and_letters_pass_a_code() {
+        let code = code(Secret::new("ab-12")).unwrap();
+        assert_eq!(code.expose(), "ab-12");
+    }
+
+    #[test]
+    fn an_empty_code_is_refused() {
+        assert!(
+            code(Secret::new("   "))
+                .unwrap_err()
+                .to_string()
+                .contains("a code is needed")
+        );
+    }
+
+    #[test]
+    fn a_long_code_is_refused() {
+        let too_long = "1".repeat(MAX_CODE + 1);
+        assert!(
+            code(Secret::new(too_long))
+                .unwrap_err()
+                .to_string()
+                .contains("at most 32 characters")
+        );
+    }
+
+    #[test]
+    fn a_newline_inside_is_whitespace_and_dropped() {
+        // Codes arrive split across lines in texts and mails; the
+        // whitespace rule drops it, so "12\n34" reads as "1234".
+        let code = code(Secret::new("12\n34")).unwrap();
+        assert_eq!(code.expose(), "1234");
+    }
+
+    #[test]
+    fn other_characters_are_refused_and_never_quoted() {
+        for bad in ["12;34", "12 34<script>"] {
+            let err = code(Secret::new(bad)).unwrap_err();
+            assert!(
+                err.to_string().contains("letters, digits and dashes"),
+                "{err}"
+            );
+            for part in bad.split_whitespace().flat_map(|s| s.split(';')) {
+                assert!(!err.to_string().contains(part), "{err}");
+            }
+        }
     }
 }

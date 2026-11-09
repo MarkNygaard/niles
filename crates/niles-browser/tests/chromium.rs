@@ -367,7 +367,7 @@ async fn the_screenshot_is_a_png_and_the_picture_a_jpeg() {
         Aim::Clear { outline, .. } => outline,
         other => panic!("expected a clear aim, got {other:?}"),
     };
-    let jpeg = picture(&png, outline).unwrap();
+    let jpeg = picture(&png, Some(outline)).unwrap();
     assert_eq!(&jpeg[..2], &[0xFF, 0xD8]);
 }
 

@@ -678,6 +678,7 @@ pub(crate) async fn voice_dispatch(args: VoiceDispatchArgs) -> anyhow::Result<()
         automations: None,
         approvals: Arc::default(),
         logins: Arc::new(crate::browsing::Logins::new(None)),
+        browsing: None,
         artifacts: None,
     };
 

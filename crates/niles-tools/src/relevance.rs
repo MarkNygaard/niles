@@ -428,6 +428,7 @@ const GROUPS: &[Group] = &[
             "browser_type",
             "browser_choose",
             "browser_submit",
+            "browser_sign_in",
             "request_login",
         ],
     },
@@ -677,6 +678,10 @@ mod tests {
         assert!(
             names.contains(&"request_login"),
             "a webshop basket needs request_login: {names:?}"
+        );
+        assert!(
+            names.contains(&"browser_sign_in"),
+            "a webshop basket needs browser_sign_in: {names:?}"
         );
         let names = relevant_tool_names("turn on the kitchen light").unwrap_or_default();
         assert!(

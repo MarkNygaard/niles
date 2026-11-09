@@ -3,6 +3,10 @@
     crates/niles-bin/src/browsing/login.rs. */
 export const ADDED_A_LOGIN = "Added a login";
 
+/** The said line of the turn after a code was entered on its card.
+    Mirrors `ENTERED_A_CODE` in crates/niles-bin/src/browsing/code.rs. */
+export const ENTERED_A_CODE = "Entered a code";
+
 /** The sites held in a textarea: one per line, trimmed, blanks dropped. */
 export function sitesOf(text: string): string[] {
   return text

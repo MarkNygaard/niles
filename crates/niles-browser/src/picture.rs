@@ -18,13 +18,14 @@ const MARGIN: f64 = 4.0;
 /// than kept in memory.
 const MAX_PIXELS: u32 = 4096;
 
-/// Draws `outline` on the PNG `screenshot` and returns a JPEG: Niles's
-/// own copy, re-encoded, never what came off the page.
-pub fn picture(screenshot: &[u8], outline: Rect) -> Result<Vec<u8>> {
+/// Draws `outline` on the PNG `screenshot`, when there is one, and
+/// returns a JPEG: Niles's own copy, re-encoded, never what came off
+/// the page.
+pub fn picture(screenshot: &[u8], outline: Option<Rect>) -> Result<Vec<u8>> {
     let decoded =
         image::load_from_memory_with_format(screenshot, ImageFormat::Png).map_err(|e| {
             Error::Picture {
-                reason: format!("the screenshot wasn't a PNG: {e}"),
+                reason: format!("couldn't read the screenshot: {e}"),
             }
         })?;
     if decoded.width() > MAX_PIXELS || decoded.height() > MAX_PIXELS {
@@ -37,7 +38,9 @@ pub fn picture(screenshot: &[u8], outline: Rect) -> Result<Vec<u8>> {
         });
     }
     let mut rgb = decoded.to_rgb8();
-    draw(&mut rgb, outline);
+    if let Some(outline) = outline {
+        draw(&mut rgb, outline);
+    }
     let mut out = std::io::Cursor::new(Vec::new());
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85)
         .encode_image(&rgb)
@@ -89,12 +92,12 @@ mod tests {
         let shot = png(200, 100);
         let jpeg = picture(
             &shot,
-            Rect {
+            Some(Rect {
                 x: 50.0,
                 y: 20.0,
                 width: 40.0,
                 height: 20.0,
-            },
+            }),
         )
         .expect("picture");
         assert_eq!(jpeg[..2], [0xFF, 0xD8]);
@@ -115,16 +118,30 @@ mod tests {
     }
 
     #[test]
+    fn a_picture_without_an_outline_has_no_red() {
+        let shot = png(64, 48);
+        let out = picture(&shot, None).expect("picture");
+        let back = image::load_from_memory(&out).expect("jpeg decodes");
+        assert!(
+            back.to_rgb8().pixels().all(|p| {
+                // JPEG smears a little: red needs a clear margin.
+                p[0] < 150 || p[1] > 80 || p[2] > 100
+            }),
+            "no outline was drawn"
+        );
+    }
+
+    #[test]
     fn an_outline_off_the_image_draws_nothing() {
         let shot = png(64, 48);
         let out = picture(
             &shot,
-            Rect {
+            Some(Rect {
                 x: 1000.0,
                 y: 1000.0,
                 width: 10.0,
                 height: 10.0,
-            },
+            }),
         )
         .expect("picture");
         let back = image::load_from_memory(&out).expect("jpeg decodes");
@@ -139,12 +156,12 @@ mod tests {
         let shot = png(MAX_PIXELS + 1, 10);
         match picture(
             &shot,
-            Rect {
+            Some(Rect {
                 x: 0.0,
                 y: 0.0,
                 width: 5.0,
                 height: 5.0,
-            },
+            }),
         ) {
             Err(Error::Picture { .. }) => {}
             other => panic!("expected Picture, got {other:?}"),

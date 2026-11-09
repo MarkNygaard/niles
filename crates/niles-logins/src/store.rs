@@ -13,6 +13,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::sync::Mutex;
 
+/// How long a browser profile outlives its login's last use.
+pub const PROFILE_DAYS: i64 = 30;
+
 /// Each person's saved logins. Another person's id answers like a
 /// missing one on every method, and changes nothing.
 #[async_trait]
@@ -34,14 +37,27 @@ pub trait LoginStore: Send + Sync {
     /// Forgets the browser profile, keeps the login. True even when
     /// there was no profile; false when the id isn't the person's.
     async fn sign_out(&self, person: &str, id: i64) -> Result<bool>;
-    /// The sealed values, opened. This is for Niles's browser to fill
-    /// in (NIL-76), never for a response or the model.
+    /// The sealed values of one login, opened. This is for Niles's
+    /// browser to fill in, never for a response or the model.
     async fn credentials(&self, person: &str, id: i64) -> Result<Option<Credentials>>;
-    /// A browser profile, sealed. For NIL-76's restore, never a
-    /// response or the model.
+    /// Every saved username and password of the person, opened, for
+    /// scrubbing what Niles's browser sends the model, the log and
+    /// tracing; never for a response or the model.
+    async fn secrets(&self, person: &str) -> Result<Vec<Credentials>>;
+    /// A browser profile, sealed; also marks the login used now. False
+    /// when the id isn't the person's.
     async fn save_profile(&self, person: &str, id: i64, profile: &Secret) -> Result<bool>;
-    /// The person's sealed profile for the login, if one was saved.
+    /// The person's sealed profile for the login, if one is fresh.
+    /// `None`, and the profile forgotten, when its login was last used
+    /// more than [`PROFILE_DAYS`] ago.
     async fn profile(&self, person: &str, id: i64) -> Result<Option<Secret>>;
+    /// Notes the login was used at `at` (a sign-in, or its profile
+    /// kept); false when the id isn't the person's.
+    async fn used(&self, person: &str, id: i64, at: DateTime<Utc>) -> Result<bool>;
+    /// Forgets every person's profile whose login was last used before
+    /// `before`, or was never used and saved before it; answers how many
+    /// went.
+    async fn drop_stale_profiles(&self, before: DateTime<Utc>) -> Result<u64>;
 }
 
 struct Row {
@@ -52,6 +68,7 @@ struct Row {
     credentials: Credentials,
     last_used: Option<DateTime<Utc>>,
     profile: Option<Secret>,
+    profile_saved: Option<DateTime<Utc>>,
 }
 
 struct Kept {
@@ -84,6 +101,14 @@ impl MemoryLogins {
         self.kept.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    fn fresh(row: &Row, now: DateTime<Utc>) -> bool {
+        row.profile.is_some()
+            && row
+                .last_used
+                .or(row.profile_saved)
+                .is_some_and(|at| at >= now - chrono::Duration::days(PROFILE_DAYS))
+    }
+
     fn login(row: &Row) -> Login {
         Login {
             id: row.id,
@@ -91,7 +116,7 @@ impl MemoryLogins {
             origins: row.origins.clone(),
             username: row.credentials.username.expose().to_string(),
             last_used: row.last_used,
-            signed_in: row.profile.is_some(),
+            signed_in: Self::fresh(row, Utc::now()),
         }
     }
 }
@@ -124,6 +149,7 @@ impl LoginStore for MemoryLogins {
             credentials: login.credentials.clone(),
             last_used: None,
             profile: None,
+            profile_saved: None,
         };
         kept.next += 1;
         kept.rows.push(row);
@@ -145,6 +171,7 @@ impl LoginStore for MemoryLogins {
         after.sort();
         if row.credentials.username != edit.username || before != after {
             row.profile = None;
+            row.profile_saved = None;
         }
         row.label = edit.label.clone();
         row.origins = edit.origins.clone();
@@ -172,6 +199,7 @@ impl LoginStore for MemoryLogins {
             return Ok(false);
         };
         row.profile = None;
+        row.profile_saved = None;
         Ok(true)
     }
 
@@ -184,6 +212,16 @@ impl LoginStore for MemoryLogins {
             .map(|r| r.credentials.clone()))
     }
 
+    async fn secrets(&self, person: &str) -> Result<Vec<Credentials>> {
+        Ok(self
+            .lock()
+            .rows
+            .iter()
+            .filter(|r| r.person == person)
+            .map(|r| r.credentials.clone())
+            .collect())
+    }
+
     async fn save_profile(&self, person: &str, id: i64, profile: &Secret) -> Result<bool> {
         let mut kept = self.lock();
         let Some(row) = kept
@@ -193,17 +231,59 @@ impl LoginStore for MemoryLogins {
         else {
             return Ok(false);
         };
+        let now = Utc::now();
         row.profile = Some(profile.clone());
+        row.profile_saved = Some(now);
+        row.last_used = Some(now);
         Ok(true)
     }
 
     async fn profile(&self, person: &str, id: i64) -> Result<Option<Secret>> {
-        Ok(self
-            .lock()
+        let mut kept = self.lock();
+        let Some(row) = kept
             .rows
-            .iter()
+            .iter_mut()
             .find(|r| r.person == person && r.id == id)
-            .and_then(|r| r.profile.clone()))
+        else {
+            return Ok(None);
+        };
+        if !Self::fresh(row, Utc::now()) {
+            row.profile = None;
+            row.profile_saved = None;
+            return Ok(None);
+        }
+        Ok(row.profile.clone())
+    }
+
+    async fn used(&self, person: &str, id: i64, at: DateTime<Utc>) -> Result<bool> {
+        let mut kept = self.lock();
+        let Some(row) = kept
+            .rows
+            .iter_mut()
+            .find(|r| r.person == person && r.id == id)
+        else {
+            return Ok(false);
+        };
+        row.last_used = Some(at);
+        Ok(true)
+    }
+
+    async fn drop_stale_profiles(&self, before: DateTime<Utc>) -> Result<u64> {
+        let mut kept = self.lock();
+        let mut dropped = 0;
+        for row in &mut kept.rows {
+            let stale = row.profile.is_some()
+                && row
+                    .last_used
+                    .or(row.profile_saved)
+                    .is_some_and(|at| at < before);
+            if stale {
+                row.profile = None;
+                row.profile_saved = None;
+                dropped += 1;
+            }
+        }
+        Ok(dropped)
     }
 }
 
@@ -429,5 +509,125 @@ mod tests {
             .map(|l| l.label)
             .collect();
         assert_eq!(names, ["Alpha", "alpha", "beta"]);
+    }
+
+    #[tokio::test]
+    async fn a_profile_unused_for_30_days_is_dropped() {
+        let store = MemoryLogins::new();
+        let login = store.add(MAJSE, &new_login()).await.unwrap();
+        store
+            .save_profile(MAJSE, login.id, &crate::Secret::new("cookies"))
+            .await
+            .unwrap();
+        let now = Utc::now();
+        store
+            .used(MAJSE, login.id, now - chrono::Duration::days(31))
+            .await
+            .unwrap();
+        assert!(store.profile(MAJSE, login.id).await.unwrap().is_none());
+        let after = store.get(MAJSE, login.id).await.unwrap().unwrap();
+        assert!(!after.signed_in);
+        // A second read is still none: the profile was forgotten, not
+        // just refused.
+        assert!(store.profile(MAJSE, login.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_profile_used_within_30_days_is_kept() {
+        let store = MemoryLogins::new();
+        let login = store.add(MAJSE, &new_login()).await.unwrap();
+        store
+            .save_profile(MAJSE, login.id, &crate::Secret::new("cookies"))
+            .await
+            .unwrap();
+        let now = Utc::now();
+        store
+            .used(MAJSE, login.id, now - chrono::Duration::days(29))
+            .await
+            .unwrap();
+        assert!(store.profile(MAJSE, login.id).await.unwrap().is_some());
+        assert!(store.get(MAJSE, login.id).await.unwrap().unwrap().signed_in);
+    }
+
+    #[tokio::test]
+    async fn saving_a_profile_marks_the_login_used() {
+        let store = MemoryLogins::new();
+        let login = store.add(MAJSE, &new_login()).await.unwrap();
+        store
+            .save_profile(MAJSE, login.id, &crate::Secret::new("cookies"))
+            .await
+            .unwrap();
+        let after = store.get(MAJSE, login.id).await.unwrap().unwrap();
+        assert!(after.last_used.is_some());
+    }
+
+    #[tokio::test]
+    async fn the_sweep_drops_only_stale_profiles() {
+        let store = MemoryLogins::new();
+        let stale = store.add(MAJSE, &new_login()).await.unwrap();
+        let fresh = store
+            .add(
+                MAJSE,
+                &NewLogin::new(
+                    "Mail",
+                    &["mail.example".to_string()],
+                    crate::Secret::new("majse@example.com"),
+                    crate::Secret::new("another password"),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        store
+            .save_profile(MAJSE, stale.id, &crate::Secret::new("stale cookies"))
+            .await
+            .unwrap();
+        store
+            .save_profile(MAJSE, fresh.id, &crate::Secret::new("fresh cookies"))
+            .await
+            .unwrap();
+        let now = Utc::now();
+        store
+            .used(MAJSE, stale.id, now - chrono::Duration::days(31))
+            .await
+            .unwrap();
+        let dropped = store
+            .drop_stale_profiles(now - chrono::Duration::days(PROFILE_DAYS))
+            .await
+            .unwrap();
+        assert_eq!(dropped, 1);
+        assert!(store.profile(MAJSE, stale.id).await.unwrap().is_none());
+        assert!(store.profile(MAJSE, fresh.id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn secrets_are_the_persons_own() {
+        let store = MemoryLogins::new();
+        store.add(MAJSE, &new_login()).await.unwrap();
+        let marks = NewLogin::new(
+            "Mail",
+            &["mail.example".to_string()],
+            crate::Secret::new("mark@example.com"),
+            crate::Secret::new("mark's password"),
+        )
+        .unwrap();
+        store.add(MARK, &marks).await.unwrap();
+        let mark_secrets = store.secrets(MARK).await.unwrap();
+        assert_eq!(mark_secrets.len(), 1);
+        assert_eq!(mark_secrets[0].username.expose(), "mark@example.com");
+        let majse_secrets = store.secrets(MAJSE).await.unwrap();
+        assert_eq!(majse_secrets.len(), 1);
+        assert_eq!(
+            majse_secrets[0].username.expose(),
+            "majse.private@example.com"
+        );
+    }
+
+    #[tokio::test]
+    async fn used_refuses_another_persons_login() {
+        let store = MemoryLogins::new();
+        let login = store.add(MAJSE, &new_login()).await.unwrap();
+        assert!(!store.used(MARK, login.id, Utc::now()).await.unwrap());
+        assert!(store.get(MARK, login.id).await.unwrap().is_none());
     }
 }

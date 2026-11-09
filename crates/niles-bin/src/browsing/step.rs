@@ -5,7 +5,7 @@
 //! person's words, saying only that nothing was done.
 
 use super::tools::{invalid, remote};
-use super::{Browsing, Opened};
+use super::{Browsing, Opened, Scrub};
 use crate::approvals::Asker;
 use niles_api::chat::{ApprovalCard, ApprovalStatus, CardField};
 use niles_browser::{Aim, Choice, Element, Kind, Point, Tab};
@@ -19,7 +19,8 @@ use url::Url;
 const STEP_NOTE: &str = "Nothing has happened yet. Under your reply the person has a card with a picture of the page, Allow once and Deny. End your turn now and say in one short sentence what is waiting for them. If they allow it, Niles does the step and starts your next turn; don't ask them to type yes or go on.";
 
 /// Why a step lapsed, each a fixed sentence with no page text in it.
-const SESSION_ENDED: &str = "The browser session this step was for has ended, so nothing was done.";
+pub(super) const SESSION_ENDED: &str =
+    "The browser session this step was for has ended, so nothing was done.";
 const GONE: &str = "What this step was for is no longer on the page, so nothing was done.";
 const CHANGED: &str = "The page changed after the card was made, so nothing was done. The card under this shows the step again as the page is now.";
 const CANT_NOW: &str = "The page changed after the card was made, and the step can't be done on it now, so nothing was done.";
@@ -202,6 +203,7 @@ pub(super) async fn hold(
     element: Element,
     action: Action,
     reason: String,
+    scrub: &Scrub,
 ) -> niles_tools::Result<Value> {
     let aim = checked(&opened.tab, &element, &action).await?;
     let outline = aim
@@ -209,8 +211,8 @@ pub(super) async fn hold(
         .expect("checked above refuses an aim with no outline");
     let address = opened.tab.address().await.map_err(remote)?;
     let png = opened.tab.screenshot().await.map_err(remote)?;
-    let picture = niles_browser::picture(&png, outline).map_err(remote)?;
-    let card = card(&action, &element, &address, &reason);
+    let picture = niles_browser::picture(&png, Some(outline)).map_err(remote)?;
+    let card = scrub.card(card(&action, &element, &address, &reason));
     let name = action.name();
     let step = Arc::new(BrowserStep {
         browsing: Arc::downgrade(browsing),
@@ -365,7 +367,7 @@ fn label_of(element: &Element) -> String {
 }
 
 /// The page's address without its fragment, for the card.
-fn page_of(address: &str) -> String {
+pub(super) fn page_of(address: &str) -> String {
     let without = Url::parse(address)
         .map(|mut url| {
             url.set_fragment(None);
@@ -375,7 +377,7 @@ fn page_of(address: &str) -> String {
     cut(&without, 200)
 }
 
-fn cut(text: &str, max: usize) -> String {
+pub(super) fn cut(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
     }
@@ -406,15 +408,21 @@ impl Tool for BrowserStep {
     }
 
     async fn execute(&self, _args: Value) -> niles_tools::Result<Value> {
-        self.run().await
+        let Some(browsing) = self.browsing.upgrade() else {
+            return Err(lapsed(SESSION_ENDED));
+        };
+        // No browsing (a test's bare registry) means the session is
+        // gone; an unreadable store fails closed.
+        let scrub = match browsing.scrub(&self.asker.person).await {
+            Ok(scrub) => scrub,
+            Err(why) => return Err(niles_tools::Error::Remote(why.into())),
+        };
+        scrub.result(self.run(&browsing, &scrub).await)
     }
 }
 
 impl BrowserStep {
-    async fn run(&self) -> niles_tools::Result<Value> {
-        let Some(browsing) = self.browsing.upgrade() else {
-            return Err(lapsed(SESSION_ENDED));
-        };
+    async fn run(&self, browsing: &Arc<Browsing>, scrub: &Scrub) -> niles_tools::Result<Value> {
         let Some(opened) = browsing.session_of(&self.asker.person, self.serial) else {
             return Err(lapsed(SESSION_ENDED));
         };
@@ -441,14 +449,14 @@ impl BrowserStep {
             || !self.element.same_as(&again)
             || self.choice_missing(&again)
         {
-            return Err(self.recard(&browsing, &opened, now, again).await);
+            return Err(self.recard(browsing, &opened, now, again, scrub).await);
         }
         // The page is as the card showed it. The element must still be
         // actionable, though: a page can disable a field or hide it
         // while the node, the label and the options stay the same.
         let aim = match checked(&opened.tab, &again, &self.action).await {
             Ok(aim) => aim,
-            Err(_) => return Err(self.recard(&browsing, &opened, now, again).await),
+            Err(_) => return Err(self.recard(browsing, &opened, now, again, scrub).await),
         };
         // Only a click lands on a point, so only a click minds coverage:
         // a covered text field still types, as at hold time.
@@ -456,7 +464,7 @@ impl BrowserStep {
             (Aim::Clear { at, .. }, Action::Click) => Some(at),
             _ => None,
         };
-        self.act(&browsing, &opened, &again, at).await
+        self.act(browsing, &opened, &again, at).await
     }
 
     /// The held choice must still be one of the list's options, by its
@@ -504,6 +512,7 @@ impl BrowserStep {
         opened: &Opened,
         now_address: String,
         again: Element,
+        scrub: &Scrub,
     ) -> niles_tools::Error {
         let aim = match checked(&opened.tab, &again, &self.action).await {
             Ok(aim) => aim,
@@ -518,11 +527,11 @@ impl BrowserStep {
             Err(niles_browser::Error::Closed) => return lapsed(SESSION_ENDED),
             Err(e) => return remote(e),
         };
-        let picture = match niles_browser::picture(&png, outline) {
+        let picture = match niles_browser::picture(&png, Some(outline)) {
             Ok(picture) => picture,
             Err(e) => return remote(e),
         };
-        let card = card(&self.action, &again, &now_address, &self.reason);
+        let card = scrub.card(card(&self.action, &again, &now_address, &self.reason));
         let step = Arc::new(BrowserStep {
             browsing: Arc::downgrade(browsing),
             asker: self.asker.clone(),
@@ -547,7 +556,7 @@ impl BrowserStep {
     }
 }
 
-fn lapsed(why: &'static str) -> niles_tools::Error {
+pub(super) fn lapsed(why: &'static str) -> niles_tools::Error {
     niles_tools::Error::Lapsed(why.into())
 }
 

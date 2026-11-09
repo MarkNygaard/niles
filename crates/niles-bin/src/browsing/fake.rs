@@ -4,8 +4,8 @@
 //! it.
 
 use niles_browser::{
-    Aim, Choice, Driver, Element, Kind, NodeId, Point, Reading, Rect, Reference, Result, Scroll,
-    Tab,
+    Aim, Asks, Choice, Driver, Element, Filled, Kind, NodeId, Point, Reading, Rect, Reference,
+    Result, Scroll, Tab,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -62,6 +62,32 @@ pub(crate) struct FakeState {
     pub(crate) closed: bool,
     /// A real PNG, so the picture pipeline is exercised too.
     pub(crate) png: Vec<u8>,
+    /// Extra text appended to the reading after the element lines.
+    pub(crate) text: String,
+    /// When set, one read fails with this fixed reason.
+    pub(crate) fail_read: Option<String>,
+    /// What `asks` answers now.
+    pub(crate) asks: Asks,
+    /// Queued pages: `(address, asks)` a submit moves on to, in order.
+    pub(crate) then: Vec<(String, Asks)>,
+    /// When true, `stay_on` is recorded but not enforced (a leaky guard).
+    pub(crate) leaky: bool,
+    /// What `fill_login` and `fill_code` typed: (address, field, value).
+    pub(crate) typed: Vec<(String, String, String)>,
+    /// What `profile` answers.
+    pub(crate) profile: Option<String>,
+    /// What `restore` was given, in order.
+    pub(crate) restored: Vec<String>,
+    /// What the reading reports.
+    pub(crate) captcha: bool,
+    pub(crate) asks_code: bool,
+}
+
+/// What `asks` answers for the state: the standing ask. A submit moves
+/// the page on to the next queued `(address, asks)`, which becomes the
+/// standing one.
+fn current(state: &FakeState) -> Asks {
+    state.asks
 }
 
 pub(crate) struct FakeTab {
@@ -107,20 +133,34 @@ impl Tab for FakeTab {
     }
 
     async fn read(&self) -> Result<Reading> {
-        let state = self.state();
+        let mut state = self.state();
         if state.closed {
             return Err(niles_browser::Error::Closed);
         }
-        let text = state
+        if let Some(reason) = state.fail_read.take() {
+            return Err(niles_browser::Error::Answer {
+                method: "__niles.read",
+                reason,
+            });
+        }
+        let mut text = state
             .elements
             .values()
             .map(|e| format!("[{}] {} \"{}\"", e.reference.0, e.kind.word(), e.label))
             .collect::<Vec<_>>()
             .join("\n");
+        if !state.text.is_empty() {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&state.text);
+        }
         Ok(Reading {
             address: state.address.clone(),
             title: "A fake page".into(),
             text,
+            captcha: state.captcha,
+            asks_code: state.asks_code,
             more_above: false,
             more_below: false,
         })
@@ -230,9 +270,127 @@ impl Tab for FakeTab {
         Ok(())
     }
 
+    async fn asks(&self, _origins: &[String]) -> Result<Asks> {
+        let state = self.state();
+        if state.closed {
+            return Err(niles_browser::Error::Closed);
+        }
+        Ok(current(&state))
+    }
+
+    async fn fill_login(
+        &self,
+        origins: &[String],
+        username: Option<&str>,
+        password: Option<&str>,
+    ) -> Result<Filled> {
+        let mut state = self.state();
+        if state.closed {
+            return Err(niles_browser::Error::Closed);
+        }
+        let address = state.address.clone();
+        state.done.push(format!("fill_login {address} {origins:?}"));
+        let asks = current(&state);
+        let filled = match asks {
+            Asks::Password { .. } => Filled {
+                username: username.is_some(),
+                password: password.is_some(),
+            },
+            Asks::Username => Filled {
+                username: username.is_some(),
+                password: false,
+            },
+            _ => Filled::default(),
+        };
+        if filled.username
+            && let Some(username) = username
+        {
+            state
+                .typed
+                .push((address.clone(), "username".into(), username.into()));
+        }
+        if filled.password
+            && let Some(password) = password
+        {
+            state
+                .typed
+                .push((address.clone(), "password".into(), password.into()));
+        }
+        if filled.username || filled.password {
+            if !state.then.is_empty() {
+                // The submit moved the page on.
+                let (next, asks) = state.then.remove(0);
+                state.address = next;
+                state.asks = asks;
+            } else if filled.password {
+                // Signed in: the page asks for nothing more.
+                state.asks = Asks::Nothing;
+            }
+        }
+        Ok(filled)
+    }
+
+    async fn fill_code(&self, _origins: &[String], code: &str) -> Result<bool> {
+        let mut state = self.state();
+        if state.closed {
+            return Err(niles_browser::Error::Closed);
+        }
+        if current(&state) != Asks::Code {
+            return Ok(false);
+        }
+        let address = state.address.clone();
+        state.typed.push((address, "code".into(), code.into()));
+        if !state.then.is_empty() {
+            let (next, asks) = state.then.remove(0);
+            state.address = next;
+            state.asks = asks;
+        } else {
+            state.asks = Asks::Nothing;
+        }
+        Ok(true)
+    }
+
+    async fn stay_on(&self, origins: &[String]) -> Result<()> {
+        let mut state = self.state();
+        if state.closed {
+            return Err(niles_browser::Error::Closed);
+        }
+        let _ = state.leaky;
+        state.done.push(format!("stay_on {origins:?}"));
+        Ok(())
+    }
+
+    async fn profile(&self, origins: &[String]) -> Result<String> {
+        let mut state = self.state();
+        if state.closed {
+            return Err(niles_browser::Error::Closed);
+        }
+        state.done.push(format!("profile {origins:?}"));
+        Ok(state.profile.clone().unwrap_or_default())
+    }
+
+    async fn restore(&self, _origins: &[String], profile: &str) -> Result<()> {
+        let mut state = self.state();
+        if state.closed {
+            return Err(niles_browser::Error::Closed);
+        }
+        state.restored.push(profile.to_string());
+        // The restored profile signed the page in: it asks for nothing.
+        state.asks = Asks::Nothing;
+        Ok(())
+    }
+
     async fn close(&self) {
         self.state().closed = true;
     }
+}
+
+/// Set the fake's page to an address asking `asks`: the shape of a
+/// sign-in page.
+pub(crate) fn login_page(tab: &FakeTab, address: &str, asks: Asks) {
+    let mut state = tab.state.lock().unwrap_or_else(|e| e.into_inner());
+    state.address = address.to_string();
+    state.asks = asks;
 }
 
 /// A visible, enabled button labelled `label`.
