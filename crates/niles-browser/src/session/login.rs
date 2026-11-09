@@ -58,7 +58,11 @@ impl Session {
         }
         let tree = self.on("Page.getFrameTree", Value::Null).await?;
         let mut out = Vec::new();
-        walk(&tree, &mut out);
+        // The tree's root hangs under `frameTree`; walking the raw
+        // answer would visit nothing.
+        if let Some(root) = tree.get("frameTree") {
+            walk(root, &mut out);
+        }
         Ok(out)
     }
 

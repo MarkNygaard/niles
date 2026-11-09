@@ -180,8 +180,8 @@ async fn value_of(session: &Session, frame_index: usize, selector: &str) -> Stri
 
 /// A username-and-password form.
 const LOGIN: &str = r#"<form method="post" action="/session">
-  <input id="u" type="email" autocomplete="username">
-  <input id="p" type="password" autocomplete="current-password">
+  <input id="u" name="u" type="email" autocomplete="username">
+  <input id="p" name="p" type="password" autocomplete="current-password">
   <button>Sign in</button>
 </form>"#;
 
@@ -323,9 +323,17 @@ async fn a_frame_on_the_logins_origin_is_filled_beside_a_foreign_one() {
         vec![
             (
                 "https://shop.example/both",
-                Page::html(&format!(
-                    r#"{LOGIN}<iframe src="https://evil.shop.example/f"></iframe>"#
-                )),
+                Page::html(
+                    // The submit is handled in the page, as an AJAX
+                    // login's is: it must not navigate, or the filled
+                    // values would be gone before they could be read.
+                    r#"<form method="post" action="/session" onsubmit="return false">
+                         <input id="u" name="u" type="email" autocomplete="username">
+                         <input id="p" name="p" type="password" autocomplete="current-password">
+                         <button>Sign in</button>
+                       </form>
+                       <iframe src="https://evil.shop.example/f"></iframe>"#,
+                ),
             ),
             (
                 "https://evil.shop.example/f",
@@ -467,6 +475,12 @@ async fn a_form_without_a_form_element_submits_with_enter() {
 #[ignore = "needs a Chromium's DevTools at NILES_TEST_CHROMIUM, such as 127.0.0.1:9222"]
 async fn a_code_reaches_its_origin_only() {
     let session = session().await;
+    let shop = vec!["https://shop.example".to_string()];
+    // Six one-digit boxes take one digit each; like the single field,
+    // the page is the login's own, or the origin check refuses it.
+    let boxed: String = (0..6)
+        .map(|i| format!(r#"<input name="d" maxlength="1" id="b{i}">"#))
+        .collect();
     let records = serve(
         &session,
         vec![
@@ -486,10 +500,15 @@ async fn a_code_reaches_its_origin_only() {
                        </form>"#,
                 ),
             ),
+            (
+                "https://shop.example/boxed",
+                Page::html(&format!(
+                    r#"<form method="post" action="https://shop.example/verify2">{boxed}</form>"#
+                )),
+            ),
         ],
     )
     .await;
-    let shop = vec!["https://shop.example".to_string()];
 
     session
         .open(&Url::parse("https://shop.example/code").unwrap())
@@ -508,13 +527,8 @@ async fn a_code_reaches_its_origin_only() {
     assert!(posted.1.contains("otp=493817"), "{}", posted.1);
 
     // Six one-digit boxes take one digit each.
-    let boxed: String = (0..6)
-        .map(|i| format!(r#"<input name="d" maxlength="1" id="b{i}">"#))
-        .collect();
     session
-        .open(&page(&format!(
-            r#"<form method="post" action="https://shop.example/verify2">{boxed}</form>"#
-        )))
+        .open(&Url::parse("https://shop.example/boxed").unwrap())
         .await
         .unwrap();
     assert!(session.fill_code(&shop, "493817").await.unwrap());
@@ -627,6 +641,11 @@ async fn the_guard_keeps_the_page_on_its_origins() {
         other => panic!("expected the proxy's failure, got {other:?}"),
     }
 
+    // The failed navigations above left Chromium's error page in the
+    // frame; the page with the link is opened again, and the guard is
+    // still bound to the session.
+    session.open(&linked).await.unwrap();
+
     // An allowed link click on the page is failed before any request.
     let reading = session.read().await.unwrap();
     let number = reading
@@ -672,12 +691,15 @@ async fn a_profile_keeps_the_logins_cookies_and_storage_only() {
     )
     .await;
     let shop = vec!["https://shop.example".to_string()];
+    // A profile is kept while the session's page is on the login's
+    // origins — the guard holds it there — so the other site is
+    // visited first and the login's last.
     signed_in
-        .open(&Url::parse("https://shop.example/").unwrap())
+        .open(&Url::parse("https://other.example/").unwrap())
         .await
         .unwrap();
     signed_in
-        .open(&Url::parse("https://other.example/").unwrap())
+        .open(&Url::parse("https://shop.example/").unwrap())
         .await
         .unwrap();
 
