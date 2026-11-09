@@ -1289,3 +1289,202 @@ async fn another_persons_login_answers_as_missing() {
         "and the owner's login is untouched"
     );
 }
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn a_profile_unused_for_30_days_is_dropped() {
+    use chrono::{DateTime, Duration, Utc};
+    use niles_logins::{LoginStore, NewLogin, Secret};
+    let Some((store, pool, person)) = logins() else {
+        return;
+    };
+    let login = store
+        .add(
+            &person,
+            &NewLogin::new(
+                "Shop",
+                &["shop.example".to_string()],
+                Secret::new("majse@example.com"),
+                Secret::new("correct horse battery staple"),
+            )
+            .expect("valid login"),
+        )
+        .await
+        .expect("add");
+    assert!(
+        store
+            .save_profile(&person, login.id, &Secret::new("sealed cookies"))
+            .await
+            .expect("save profile"),
+        "the login is the person's"
+    );
+    let stale: DateTime<Utc> = Utc::now() - Duration::days(niles_logins::PROFILE_DAYS + 1);
+    assert!(
+        store.used(&person, login.id, stale).await.expect("used"),
+        "the login is the person's"
+    );
+
+    assert_eq!(
+        store.profile(&person, login.id).await.expect("profile"),
+        None,
+        "a stale profile is not restored"
+    );
+    let left: i64 = sqlx::query_scalar("select count(*) from browser_profiles where login_id = $1")
+        .bind(login.id)
+        .fetch_one(&pool)
+        .await
+        .expect("raw count");
+    assert_eq!(left, 0, "the stale row was deleted, not just refused");
+    assert!(
+        !store
+            .get(&person, login.id)
+            .await
+            .expect("get")
+            .unwrap()
+            .signed_in,
+        "a stale profile doesn't read as signed in"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn the_sweep_drops_stale_profiles_only() {
+    use chrono::{DateTime, Duration, Utc};
+    use niles_logins::{LoginStore, NewLogin, Secret};
+    let Some((store, pool, person)) = logins() else {
+        return;
+    };
+    let stale = store
+        .add(
+            &person,
+            &NewLogin::new(
+                "Shop",
+                &["shop.example".to_string()],
+                Secret::new("majse@example.com"),
+                Secret::new("correct horse battery staple"),
+            )
+            .expect("valid login"),
+        )
+        .await
+        .expect("add");
+    let fresh = store
+        .add(
+            &person,
+            &NewLogin::new(
+                "Mail",
+                &["mail.example".to_string()],
+                Secret::new("majse@example.com"),
+                Secret::new("another password"),
+            )
+            .expect("valid login"),
+        )
+        .await
+        .expect("add");
+    for login in [&stale, &fresh] {
+        assert!(
+            store
+                .save_profile(&person, login.id, &Secret::new("cookies"))
+                .await
+                .expect("save profile"),
+            "the login is the person's"
+        );
+    }
+    let stale_at: DateTime<Utc> = Utc::now() - Duration::days(niles_logins::PROFILE_DAYS + 1);
+    store.used(&person, stale.id, stale_at).await.expect("used");
+
+    let before: DateTime<Utc> = Utc::now() - Duration::days(niles_logins::PROFILE_DAYS);
+    assert_eq!(
+        store.drop_stale_profiles(before).await.expect("sweep"),
+        1,
+        "only the stale profile went"
+    );
+    let left: i64 = sqlx::query_scalar("select count(*) from browser_profiles where login_id = $1")
+        .bind(fresh.id)
+        .fetch_one(&pool)
+        .await
+        .expect("raw count");
+    assert_eq!(left, 1, "the fresh profile stayed");
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn saving_a_profile_marks_the_login_used() {
+    use niles_logins::{LoginStore, NewLogin, Secret};
+    let Some((store, _pool, person)) = logins() else {
+        return;
+    };
+    let login = store
+        .add(
+            &person,
+            &NewLogin::new(
+                "Shop",
+                &["shop.example".to_string()],
+                Secret::new("majse@example.com"),
+                Secret::new("correct horse battery staple"),
+            )
+            .expect("valid login"),
+        )
+        .await
+        .expect("add");
+    assert!(login.last_used.is_none(), "a new login wasn't used yet");
+    assert!(
+        store
+            .save_profile(&person, login.id, &Secret::new("sealed cookies"))
+            .await
+            .expect("save profile"),
+        "the login is the person's"
+    );
+    assert!(
+        store
+            .get(&person, login.id)
+            .await
+            .expect("get")
+            .unwrap()
+            .last_used
+            .is_some(),
+        "keeping a profile marks the login used"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn secrets_round_trip_for_their_owner_only() {
+    use niles_logins::{LoginStore, NewLogin, Secret};
+    let Some((store, _pool, person)) = logins() else {
+        return;
+    };
+    store
+        .add(
+            &person,
+            &NewLogin::new(
+                "Shop",
+                &["shop.example".to_string()],
+                Secret::new("majse@example.com"),
+                Secret::new("correct horse battery staple"),
+            )
+            .expect("valid login"),
+        )
+        .await
+        .expect("add");
+    let other = format!("person:test-{}", rand::random::<u64>());
+    store
+        .add(
+            &other,
+            &NewLogin::new(
+                "Mail",
+                &["mail.example".to_string()],
+                Secret::new("mark@example.com"),
+                Secret::new("mark's password"),
+            )
+            .expect("valid login"),
+        )
+        .await
+        .expect("add");
+
+    let theirs = store.secrets(&person).await.expect("secrets");
+    assert_eq!(theirs.len(), 1);
+    assert_eq!(theirs[0].username.expose(), "majse@example.com");
+    let for_the_other = store.secrets(&other).await.expect("secrets");
+    assert_eq!(for_the_other.len(), 1);
+    assert_eq!(for_the_other[0].username.expose(), "mark@example.com");
+}

@@ -1260,6 +1260,8 @@ export interface Turn {
   approval?: ApprovalCard | null;
   /** What this turn asked the person to add a login for. */
   login_request?: LoginRequest | null;
+  /** What this turn asked the person to type a sign-in code for. */
+  code_request?: CodeRequest | null;
   /** The artifacts this turn made or changed, for a card under the
       reply. Absent when there are none. */
   artifacts?: ArtifactRef[];
@@ -1784,6 +1786,15 @@ export interface LoginRequest {
   login?: number | null;
 }
 
+/** A card asking for a code a site sent. Mirrors `CodeRequest` in
+    crates/niles-api/src/chat.rs. */
+export interface CodeRequest {
+  id: string;
+  label: string;
+  site: string;
+  status: "waiting" | "entered" | "lapsed";
+}
+
 /** Each field: absent leaves it, empty clears it. */
 export type MeUpdate = Partial<
   Pick<Me, "spoken_as" | "address_as" | "notes" | "birthday">
@@ -2137,6 +2148,13 @@ export const api = {
     request<{ reply: string }>(
       `/chat/conversations/${conversation}/login-requests/${encodeURIComponent(loginRequest)}`,
       { method: "POST", body: JSON.stringify({ login }) },
+    ),
+  /** Hands a sign-in code to its card: Niles types it into the page,
+      and it goes nowhere else. */
+  enterCode: (conversation: number, codeRequest: string, code: string) =>
+    request<{ reply: string }>(
+      `/chat/conversations/${conversation}/code-requests/${encodeURIComponent(codeRequest)}`,
+      { method: "POST", body: JSON.stringify({ code }) },
     ),
   deviceStatus: () => request<DeviceView>("/presence/device"),
   pairDevice: () => request<void>("/presence/device", { method: "POST" }),

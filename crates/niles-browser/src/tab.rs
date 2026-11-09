@@ -126,6 +126,12 @@ pub struct Reading {
     pub address: String,
     pub title: String,
     pub text: String,
+    /// The page shows a CAPTCHA, which Niles never solves.
+    #[serde(default)]
+    pub captcha: bool,
+    /// The page asks for a code the site sent.
+    #[serde(default)]
+    pub asks_code: bool,
     pub more_above: bool,
     pub more_below: bool,
 }
@@ -188,6 +194,41 @@ pub enum Scroll {
     Bottom,
 }
 
+/// What a page asks for to sign in, in its frames on the login's
+/// origins.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Asks {
+    /// The page wants a person to show they aren't a robot.
+    Captcha,
+    /// A password field, with a username field beside it or not.
+    Password { username: bool },
+    /// Only a username field: the password comes on the next page.
+    Username,
+    /// A code the site sent.
+    Code,
+    /// No sign-in form the script may fill.
+    #[default]
+    Nothing,
+}
+
+/// Which fields a fill set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Filled {
+    pub username: bool,
+    pub password: bool,
+}
+
+/// Whether `address`'s origin, in its ASCII form, is one of `origins`.
+/// False when the address doesn't parse.
+pub fn on_sites(address: &str, origins: &[String]) -> bool {
+    let Ok(url) = Url::parse(address) else {
+        return false;
+    };
+    let origin = url.origin();
+    origin.is_tuple() && origins.contains(&origin.ascii_serialization())
+}
+
 /// A browser: what opens sessions and can be restarted by its supervisor.
 #[async_trait::async_trait]
 pub trait Driver: Send + Sync {
@@ -242,6 +283,33 @@ pub trait Tab: Send + Sync {
 
     /// Submit the form the element belongs to.
     async fn submit(&self, element: &Element) -> Result<()>;
+
+    /// What the page asks for to sign in, in its frames on `origins`.
+    async fn asks(&self, origins: &[String]) -> Result<Asks>;
+
+    /// Fill the login fields in a frame on `origins`, each frame's
+    /// script checking its own origin as it sets the value; submits and
+    /// waits out the page.
+    async fn fill_login(
+        &self,
+        origins: &[String],
+        username: Option<&str>,
+        password: Option<&str>,
+    ) -> Result<Filled>;
+
+    /// Type the sign-in code into the page's code fields, on `origins`.
+    async fn fill_code(&self, origins: &[String], code: &str) -> Result<bool>;
+
+    /// From now on the page's own navigations stay on `origins`;
+    /// history is forgotten.
+    async fn stay_on(&self, origins: &[String]) -> Result<()>;
+
+    /// The cookies of `origins`' hosts and the storage of their frames,
+    /// as opaque JSON.
+    async fn profile(&self, origins: &[String]) -> Result<String>;
+
+    /// Put a profile back and open the page again.
+    async fn restore(&self, origins: &[String], profile: &str) -> Result<()>;
 
     /// End the session, releasing its browser context.
     async fn close(&self);
@@ -304,5 +372,24 @@ mod tests {
             value: "2".into(),
         }];
         assert!(!element().same_as(&now));
+    }
+
+    #[test]
+    fn on_sites_matches_the_ascii_origin() {
+        let origins = vec!["https://shop.example".to_string()];
+        assert!(on_sites("https://shop.example/login", &origins));
+        // A subdomain of another site that merely ends the same isn't
+        // one of the login's origins.
+        assert!(!on_sites("https://shop.example.evil.example/", &origins));
+        // Only https: the login's origins are https and so is the page
+        // script's check.
+        assert!(!on_sites("http://shop.example/", &origins));
+        assert!(on_sites("blob:https://shop.example/x", &origins));
+        // An IDN page answers against its punycode origin.
+        let idn = vec!["https://xn--bcher-kva.example".to_string()];
+        assert!(on_sites("https://bücher.example/", &idn));
+        // Junk never parses onto a login's origin.
+        assert!(!on_sites("not a url", &origins));
+        assert!(!on_sites("", &origins));
     }
 }

@@ -118,6 +118,9 @@ pub(crate) struct DispatchCtx {
     /// The saved logins, and the add-login cards on their way to the
     /// turn that keeps them.
     pub(crate) logins: Arc<crate::browsing::Logins>,
+    /// Niles's browser and its sessions, for the code cards. Absent
+    /// outside `serve`.
+    pub(crate) browsing: Option<Arc<crate::browsing::Browsing>>,
     /// Each person's artifacts, and the jobs that write them. Absent
     /// without a database, and outside `serve`.
     pub(crate) artifacts: Option<Arc<artifacts::Artifacts>>,
@@ -235,6 +238,7 @@ pub(crate) async fn handle_transcript(
                     .approvals
                     .for_turn(&chat_log::person(Some(slug), ""), started),
                 login_request: None,
+                code_request: None,
                 artifacts: Vec::new(),
                 attachments: Vec::new(),
             };

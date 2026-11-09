@@ -276,6 +276,10 @@ impl niles_api::chat::Chat for AppChat {
             proposal: proposal_since(ctx, started),
             approval: ctx.approvals.for_turn(&person, started),
             login_request: ctx.logins.for_turn(&person, started),
+            code_request: ctx
+                .browsing
+                .as_ref()
+                .and_then(|b| b.code_for_turn(&person, started)),
             artifacts: match &ctx.artifacts {
                 Some(artifacts) => artifacts.for_turn(&person, started).await,
                 None => Vec::new(),
@@ -356,6 +360,22 @@ impl niles_api::chat::Chat for AppChat {
             {
                 card.status = niles_api::chat::ApprovalStatus::Lapsed;
                 card.picture = false;
+            }
+        }
+        // A code card the browser no longer holds lapsed: its session
+        // ended, its card waited out, or its Niles restarted.
+        for card in conversation
+            .turns
+            .iter_mut()
+            .filter_map(|t| t.code_request.as_mut())
+        {
+            if card.status == niles_api::chat::CodeRequestStatus::Waiting
+                && !ctx
+                    .browsing
+                    .as_ref()
+                    .is_some_and(|b| b.code_waiting(&card.id))
+            {
+                card.status = niles_api::chat::CodeRequestStatus::Lapsed;
             }
         }
         Some(conversation)
@@ -481,6 +501,7 @@ impl niles_api::chat::Chat for AppChat {
             proposal: None,
             approval: None,
             login_request: None,
+            code_request: None,
             artifacts: Vec::new(),
             attachments: Vec::new(),
         };
@@ -499,6 +520,17 @@ impl niles_api::chat::Chat for AppChat {
         login: i64,
     ) -> Result<String, niles_api::chat::NotAdded> {
         crate::browsing::added_from_card(self.ctx.clone(), who, speaker, id, request, login).await
+    }
+
+    async fn code_entered(
+        &self,
+        who: &str,
+        speaker: Option<&str>,
+        id: i64,
+        request: &str,
+        code: niles_logins::Secret,
+    ) -> Result<String, niles_api::chat::NotEntered> {
+        crate::browsing::code_from_card(self.ctx.clone(), who, speaker, id, request, code).await
     }
 
     async fn delete(&self, who: &str, speaker: Option<&str>, id: i64) -> bool {
@@ -723,12 +755,22 @@ async fn answer(
         person: person.clone(),
     };
     let turn = if approvals::goes_on(then, &card) {
+        // A code card made during the run changes what the model is
+        // told: the code goes on the card, never in the chat.
+        let text = match ctx
+            .browsing
+            .as_ref()
+            .and_then(|b| b.code_for_turn(&person, started))
+        {
+            Some(_) => crate::browsing::code_asked_text(&reply),
+            None => carry_on_text(&reply),
+        };
         carry_on(
             ctx,
             &follow,
             &Prompted {
                 said: "Allow once",
-                text: carry_on_text(&reply),
+                text,
                 fallback: reply.clone(),
             },
             started,
@@ -749,6 +791,7 @@ async fn answer(
             proposal: None,
             approval: ctx.approvals.for_turn(&person, started),
             login_request: None,
+            code_request: None,
             artifacts: Vec::new(),
             attachments: Vec::new(),
         }
@@ -836,6 +879,10 @@ async fn carry_on(
         proposal: proposal_since(ctx, started),
         approval: ctx.approvals.for_turn(&asked.person, started),
         login_request: ctx.logins.for_turn(&asked.person, started),
+        code_request: ctx
+            .browsing
+            .as_ref()
+            .and_then(|b| b.code_for_turn(&asked.person, started)),
         artifacts: match &ctx.artifacts {
             Some(artifacts) => artifacts.for_turn(&asked.person, started).await,
             None => Vec::new(),
@@ -855,20 +902,36 @@ fn carry_on_text(ran: &str) -> String {
     )
 }
 
-/// The conversation's next turn once the login its card asked for was
-/// added, kept like any turn. Spawned for the reason `answer` is: a
-/// phone that locks mid-turn must not leave it unkept.
-pub(crate) async fn carry_on_with_login(
+/// The conversation's next turn once the thing its card asked for
+/// happened — an added login, an entered code — kept like any turn.
+/// Spawned for the reason `answer` is: a phone that locks mid-turn
+/// must not leave it unkept.
+pub(crate) async fn carry_on_with(
     ctx: Arc<std::sync::OnceLock<DispatchCtx>>,
     follow: CarryOn,
-    added: niles_logins::LoginRef,
+    said: &'static str,
+    text: String,
+    fallback: String,
+) -> String {
+    carry_on_with_at(ctx, follow, said, text, fallback, Instant::now()).await
+}
+
+/// [`carry_on_with`] with the turn's start given: a code card made
+/// during the run (a wrong code's replacement) must be the new turn's,
+/// so the run and the turn share one clock.
+pub(crate) async fn carry_on_with_at(
+    ctx: Arc<std::sync::OnceLock<DispatchCtx>>,
+    follow: CarryOn,
+    said: &'static str,
+    text: String,
+    fallback: String,
+    started: Instant,
 ) -> String {
     let ctx = ctx.get().expect("set before the API takes requests");
-    let started = Instant::now();
     let prompted = Prompted {
-        said: crate::browsing::ADDED_A_LOGIN,
-        text: crate::browsing::added_text(&added),
-        fallback: format!("Saved your login for {}.", added.label),
+        said,
+        text,
+        fallback,
     };
     let turn = carry_on(ctx, &follow, &prompted, started).await;
     keep_turn(
@@ -886,6 +949,44 @@ pub(crate) async fn carry_on_with_login(
         ctx.approvals.changed(&follow.person, card);
     }
     turn.reply
+}
+
+/// Keep Niles's own words as the turn, without starting a next one:
+/// what a code card's lapse or stop answers. `said` is the fixed line
+/// the turn is listed under.
+pub(crate) async fn keep_said(
+    ctx: Arc<std::sync::OnceLock<DispatchCtx>>,
+    follow: CarryOn,
+    said: &'static str,
+    reply: String,
+) -> String {
+    let ctx = ctx.get().expect("set before the API takes requests");
+    let thread = conversation::Thread::Chat(follow.who.clone());
+    ctx.conversation.record_via(&thread, said, &reply, None);
+    let turn = niles_api::chat::Turn {
+        at: chrono::Utc::now(),
+        said: said.into(),
+        reply: reply.clone(),
+        via: "app".into(),
+        room: None,
+        by: None,
+        proposal: None,
+        approval: None,
+        login_request: None,
+        code_request: None,
+        artifacts: Vec::new(),
+        attachments: Vec::new(),
+    };
+    keep_turn(
+        ctx,
+        &follow.person,
+        Some(follow.conversation),
+        &turn,
+        Instant::now(),
+        &[],
+    )
+    .await;
+    reply
 }
 
 /// How each decision reads in the conversation: the said line of the

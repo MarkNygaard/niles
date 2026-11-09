@@ -1,6 +1,12 @@
 //! A session: one browser context's page, read through the isolated
 //! world, acted on with the checks Niles means.
 
+mod login;
+mod profile;
+
+#[cfg(test)]
+mod chromium;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,7 +19,7 @@ use url::Url;
 use crate::cdp::{Connection, Event};
 use crate::error::{Error, Result};
 use crate::tab::{
-    Aim, Choice, Element, Kind, NodeId, Point, Reading, Rect, Reference, Scroll, Tab,
+    Aim, Asks, Choice, Element, Filled, Kind, NodeId, Point, Reading, Rect, Reference, Scroll, Tab,
 };
 
 /// Niles's page script, installed in an isolated world the page can't
@@ -40,6 +46,9 @@ pub struct Session {
     /// cached while the document lives.
     world: Mutex<Option<(String, i64)>>,
     dialogs: JoinHandle<()>,
+    /// The task keeping a signed-in session's page on its login's
+    /// origins; `None` until a sign-in binds one.
+    guard: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 /// The script's `info(el)` answer.
@@ -93,6 +102,7 @@ impl Session {
             frame,
             world: Mutex::new(None),
             dialogs,
+            guard: std::sync::Mutex::new(None),
         }))
     }
 
@@ -616,8 +626,40 @@ impl Tab for Session {
         Ok(())
     }
 
+    async fn asks(&self, origins: &[String]) -> Result<Asks> {
+        self.asks_in(origins).await
+    }
+
+    async fn fill_login(
+        &self,
+        origins: &[String],
+        username: Option<&str>,
+        password: Option<&str>,
+    ) -> Result<Filled> {
+        self.fill_login_in(origins, username, password).await
+    }
+
+    async fn fill_code(&self, origins: &[String], code: &str) -> Result<bool> {
+        self.fill_code_in(origins, code).await
+    }
+
+    async fn stay_on(&self, origins: &[String]) -> Result<()> {
+        self.stay_on_in(origins).await
+    }
+
+    async fn profile(&self, origins: &[String]) -> Result<String> {
+        self.profile_in(origins).await
+    }
+
+    async fn restore(&self, origins: &[String], profile: &str) -> Result<()> {
+        self.restore_in(origins, profile).await
+    }
+
     async fn close(&self) {
         self.dialogs.abort();
+        if let Some(guard) = self.guard.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            guard.abort();
+        }
         let _ = self
             .on(
                 "Target.disposeBrowserContext",

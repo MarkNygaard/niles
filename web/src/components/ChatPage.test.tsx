@@ -577,6 +577,52 @@ describe("ChatPage", () => {
     await waitFor(() => expect(screen.getByText("Added a login")).toBeInTheDocument());
   });
 
+  const CODE_REQUEST = {
+    id: "c1",
+    label: "Shop",
+    site: "https://shop.example",
+    status: "waiting" as const,
+  };
+
+  it("enters a code from its card, never through the chat", async () => {
+    const sendChat = vi.spyOn(api, "sendChat").mockRejectedValue(new Error("must not be called"));
+    const enterCode = vi.spyOn(api, "enterCode").mockResolvedValue({ reply: "Entered a code" });
+    const asked = summary(7, "Order printer ink", { last_at: ago(MINUTE) });
+    show([asked], {
+      7: conversationOf(asked, [
+        turn("order printer ink", "Shop sent the person a code to finish signing in.", {
+          code_request: CODE_REQUEST,
+        }),
+      ]),
+    });
+    fireEvent.change(await screen.findByLabelText("Code"), { target: { value: "493817" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enter code" }));
+    await waitFor(() => expect(enterCode).toHaveBeenCalledWith(7, "c1", "493817"));
+    expect(sendChat).not.toHaveBeenCalled();
+    // The code reaches the card's route and nothing else.
+    const calls = JSON.stringify(vi.mocked(enterCode).mock.calls);
+    expect(calls).toContain("493817");
+    expect(sendChat.mock.calls).toHaveLength(0);
+  });
+
+  it("shows 'Entered a code' while the next turn runs, never the code", async () => {
+    // A promise the test never settles: the next turn is still running.
+    // (The executor form: this Node has no Promise.withResolvers yet.)
+    vi.spyOn(api, "enterCode").mockReturnValue(new Promise(() => {}));
+    const asked = summary(7, "Order printer ink", { last_at: ago(MINUTE) });
+    show([asked], {
+      7: conversationOf(asked, [
+        turn("order printer ink", "Shop sent the person a code to finish signing in.", {
+          code_request: CODE_REQUEST,
+        }),
+      ]),
+    });
+    fireEvent.change(await screen.findByLabelText("Code"), { target: { value: "493817" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enter code" }));
+    await waitFor(() => expect(screen.getByText("Entered a code")).toBeInTheDocument());
+    expect(screen.queryByText(/493817/)).toBeNull();
+  });
+
   it("shows the job being written in the status line, as the stream says", async () => {
     const working = artifact(3, "Thailand travel plan", {
       status: "working",

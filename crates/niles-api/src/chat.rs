@@ -12,6 +12,7 @@ use crate::state::AppState;
 use async_trait::async_trait;
 use axum::Json;
 use axum::body::Bytes;
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use serde::{Deserialize, Serialize};
@@ -108,6 +109,19 @@ pub trait Chat: Send + Sync {
         request: &str,
         login: i64,
     ) -> Result<String, NotAdded>;
+
+    /// The person typed the code a card in conversation `id` asked for,
+    /// on the card. Niles types it into the page, marks the card, and
+    /// carries the conversation on; the code reaches nothing else.
+    /// Answers Niles's reply.
+    async fn code_entered(
+        &self,
+        who: &str,
+        speaker: Option<&str>,
+        id: i64,
+        request: &str,
+        code: niles_logins::Secret,
+    ) -> Result<String, NotEntered>;
 
     /// Words from a recording, by the same speech-to-text the satellites
     /// use. `filename` carries the format: `dictation.webm`, `.mp4`.
@@ -243,6 +257,40 @@ pub enum NotAdded {
     Unavailable,
 }
 
+/// A code a site sent the person while Niles signed them in, asked for
+/// on a card under the reply. The field behind it posts the code to
+/// `/chat/conversations/{id}/code-requests/{request}`, which types it
+/// into the page: it is in no turn, log or model message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CodeRequest {
+    pub id: String,
+    /// The login's label: "Shop".
+    pub label: String,
+    /// The page's origin, ASCII.
+    pub site: String,
+    pub status: CodeRequestStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeRequestStatus {
+    Waiting,
+    Entered,
+    Lapsed,
+}
+
+/// Why a card's code could not be taken: the code request was refused,
+/// and the card stays as it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotEntered {
+    /// The conversation is not theirs, or there is none by that id.
+    NoSuchConversation,
+    /// No card by that id in the conversation.
+    NoSuchRequest,
+    /// The card was answered already, or it lapsed.
+    NotWaiting,
+}
+
 /// One exchange: what was said, and what Niles answered.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Turn {
@@ -267,6 +315,9 @@ pub struct Turn {
     /// What this turn asked the person to add a login for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub login_request: Option<LoginRequest>,
+    /// What this turn asked the person to type a sign-in code for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_request: Option<CodeRequest>,
     /// The artifacts this turn made or changed, for a card under the
     /// reply. Brought up to date when the conversation is read back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -583,6 +634,55 @@ pub(crate) fn not_added(why: NotAdded) -> Failure {
     }
 }
 
+#[derive(Deserialize)]
+pub struct CodeBody {
+    pub code: niles_logins::Secret,
+}
+
+/// `POST /chat/conversations/{id}/code-requests/{request}` — the code a
+/// site sent, typed on its card. It goes to the page and nowhere else.
+pub async fn code_entered(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, request)): Path<(i64, String)>,
+    body: Result<Json<CodeBody>, JsonRejection>,
+) -> Result<Json<Answered>, Failure> {
+    let chat = chat(&state)?;
+    // The rejection's text can quote the body, which carries the code:
+    // it is never echoed.
+    let Json(body) = body.map_err(|_| {
+        failed(
+            StatusCode::BAD_REQUEST,
+            "the body must be {\"code\": \"…\"}".into(),
+        )
+    })?;
+    let code = niles_logins::code(body.code).map_err(|_| {
+        failed(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "a code is 1 to 32 letters, digits and dashes".into(),
+        )
+    })?;
+    let (who, speaker) = caller(&state, &headers);
+    chat.code_entered(&who, speaker.as_deref(), id, &request, code)
+        .await
+        .map(|reply| Json(Answered { reply }))
+        .map_err(not_entered)
+}
+
+/// Why a card's code could not be taken, as the app is told it.
+pub(crate) fn not_entered(why: NotEntered) -> Failure {
+    match why {
+        NotEntered::NoSuchConversation => {
+            failed(StatusCode::NOT_FOUND, "no such conversation".into())
+        }
+        NotEntered::NoSuchRequest => failed(StatusCode::NOT_FOUND, "no such code request".into()),
+        NotEntered::NotWaiting => failed(
+            StatusCode::CONFLICT,
+            "that card is no longer waiting: a code was entered, or it lapsed".into(),
+        ),
+    }
+}
+
 /// `DELETE /chat/conversations/{id}`
 pub async fn delete(
     State(state): State<AppState>,
@@ -767,6 +867,9 @@ mod tests {
         /// `(conversation, request, login)` each login-added call arrived
         /// with: the id alone is all a card's login ever is here.
         added: Mutex<Vec<(i64, String, i64)>>,
+        /// `(conversation, request, code)` each code-entered call arrived
+        /// with: the code goes to the page and this test, never the body.
+        codes: Mutex<Vec<(i64, String, String)>>,
         /// `(conversation, id)` the stub says it owns, and the file
         /// there: both must match the ask, the way the real check
         /// matches person, conversation and id.
@@ -785,6 +888,7 @@ mod tests {
             proposal: None,
             approval: None,
             login_request: None,
+            code_request: None,
             artifacts: Vec::new(),
             attachments: Vec::new(),
         }
@@ -954,6 +1058,26 @@ mod tests {
                 "gone" => Err(NotAdded::NotWaiting),
                 "nobody" => Err(NotAdded::NoSuchRequest),
                 _ => Ok("Saved.".into()),
+            }
+        }
+
+        async fn code_entered(
+            &self,
+            _who: &str,
+            _speaker: Option<&str>,
+            id: i64,
+            request: &str,
+            code: niles_logins::Secret,
+        ) -> Result<String, NotEntered> {
+            self.codes
+                .lock()
+                .unwrap()
+                .push((id, request.into(), code.expose().to_string()));
+            match (id, request) {
+                (1, "gone") => Err(NotEntered::NotWaiting),
+                (1, "nobody") => Err(NotEntered::NoSuchRequest),
+                (1, _) => Ok("Entered a code".into()),
+                _ => Err(NotEntered::NoSuchConversation),
             }
         }
 
@@ -1129,6 +1253,118 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"], "no such login request");
+    }
+
+    #[tokio::test]
+    async fn a_code_from_its_card_reaches_the_chat_and_the_answer_holds_none_of_it() {
+        let echo = Arc::new(Echo::default());
+        let app = app(Some(echo.clone()));
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/chat/conversations/1/code-requests/c1",
+            Some(json!({ "code": " 493 817 " })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["reply"], "Entered a code");
+        let answered = body.to_string();
+        assert!(
+            !answered.contains("493817"),
+            "the answer holds no part of the code: {answered}"
+        );
+        assert_eq!(
+            *echo.codes.lock().unwrap(),
+            vec![(1, "c1".to_string(), "493817".to_string())],
+            "the normalised code reached the chat and nothing else"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_code_that_isnt_one_is_refused_without_echoing_it() {
+        let echo = Arc::new(Echo::default());
+        let app = app(Some(echo.clone()));
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/chat/conversations/1/code-requests/c1",
+            Some(json!({ "code": "12;34<script>" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let said = body.to_string();
+        assert!(!said.contains("12;34"), "{said}");
+        assert!(!said.contains("script"), "{said}");
+        assert!(echo.codes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_body_that_doesnt_read_is_refused_without_echoing_it() {
+        let app = app(Some(Arc::new(Echo::default())));
+        for body in [json!({ "code": 493817 }), json!({ "nope": "x" })] {
+            let (status, answered) = call(
+                &app,
+                "POST",
+                "/chat/conversations/1/code-requests/c1",
+                Some(body.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            let said = answered.to_string();
+            assert!(!said.contains("493817"), "{said}");
+            assert!(!said.contains('x'), "{said}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_code_cards_refusals_have_their_statuses() {
+        let app = app(Some(Arc::new(Echo::default())));
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/chat/conversations/7/code-requests/c1",
+            Some(json!({ "code": "493817" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "no such conversation");
+
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/chat/conversations/1/code-requests/nobody",
+            Some(json!({ "code": "493817" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "no such code request");
+
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/chat/conversations/1/code-requests/gone",
+            Some(json!({ "code": "493817" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(
+            body["error"],
+            "that card is no longer waiting: a code was entered, or it lapsed"
+        );
+    }
+
+    #[test]
+    fn not_entered_maps_each_why_to_a_status() {
+        let cases = [
+            (NotEntered::NoSuchConversation, StatusCode::NOT_FOUND),
+            (NotEntered::NoSuchRequest, StatusCode::NOT_FOUND),
+            (NotEntered::NotWaiting, StatusCode::CONFLICT),
+        ];
+        for (why, status) in cases {
+            let (got, body) = not_entered(why);
+            assert_eq!(got, status);
+            assert!(body.0["error"].is_string(), "{body:?}");
+        }
     }
 
     #[test]
@@ -1609,5 +1845,23 @@ mod tests {
         }"#;
         let back: Turn = serde_json::from_str(old).unwrap();
         assert_eq!(back.login_request, None);
+    }
+
+    #[test]
+    fn a_turn_without_a_code_request_serialises_without_one() {
+        let json = serde_json::to_string(&turn("just words")).unwrap();
+        let kept: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(kept.get("code_request").is_none(), "{json}");
+
+        // A turn kept before the card existed has no key, and reads
+        // back with none.
+        let old = r#"{
+            "at": "2026-11-01T12:00:00Z",
+            "said": "hello",
+            "reply": "hi",
+            "via": "app"
+        }"#;
+        let back: Turn = serde_json::from_str(old).unwrap();
+        assert_eq!(back.code_request, None);
     }
 }

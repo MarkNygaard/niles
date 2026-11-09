@@ -66,6 +66,10 @@ pub fn router(state: AppState) -> Router {
             post(crate::chat::login_added),
         )
         .route(
+            "/chat/conversations/{id}/code-requests/{request}",
+            post(crate::chat::code_entered),
+        )
+        .route(
             "/chat/conversations/{id}/attachments/{a}",
             get(crate::chat_attachments::serve),
         )

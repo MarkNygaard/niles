@@ -89,7 +89,7 @@ impl Browser {
 
     /// One session: a fresh browser context with one page, every
     /// connection of it through Niles's proxy.
-    async fn new_session(&self) -> Result<Arc<dyn Tab>> {
+    pub(crate) async fn open(&self) -> Result<Arc<Session>> {
         let context = self
             .conn
             .call(
@@ -127,7 +127,7 @@ impl Browser {
 
     /// The session's steps after the context exists: downloads denied,
     /// one blank page, attached flat.
-    async fn session_in(&self, context: &str) -> Result<Arc<dyn Tab>> {
+    async fn session_in(&self, context: &str) -> Result<Arc<Session>> {
         self.conn
             .call(
                 "Browser.setDownloadBehavior",
@@ -165,9 +165,7 @@ impl Browser {
                 method: "Target.attachToTarget",
                 reason: "no sessionId".into(),
             })?;
-        let started: Arc<dyn Tab> =
-            Session::start(Arc::clone(&self.conn), context.to_string(), target, session).await?;
-        Ok(started)
+        Session::start(Arc::clone(&self.conn), context.to_string(), target, session).await
     }
 }
 
@@ -244,7 +242,7 @@ fn socket_path(version: &Value) -> Result<String> {
 #[async_trait::async_trait]
 impl Driver for Browser {
     async fn session(&self) -> Result<Arc<dyn Tab>> {
-        self.new_session().await
+        self.open().await.map(|s| s as Arc<dyn Tab>)
     }
 
     async fn restart(&self) -> Result<()> {

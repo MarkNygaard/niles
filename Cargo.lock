@@ -2872,6 +2872,7 @@ dependencies = [
  "futures-util",
  "image",
  "niles-websearch",
+ "parking_lot 0.13.0",
  "reqwest",
  "serde",
  "serde_json",

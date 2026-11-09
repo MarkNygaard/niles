@@ -15,8 +15,8 @@ mod store;
 
 pub use error::{Error, Result};
 pub use model::{
-    Credentials, Login, LoginEdit, LoginRef, MAX_LABEL, MAX_ORIGINS, MAX_PASSWORD, MAX_USERNAME,
-    NewLogin, Secret, label, origins,
+    Credentials, Login, LoginEdit, LoginRef, MAX_CODE, MAX_LABEL, MAX_ORIGINS, MAX_PASSWORD,
+    MAX_USERNAME, NewLogin, Secret, code, label, origins,
 };
 pub use origin::Origin;
-pub use store::{LoginStore, MemoryLogins};
+pub use store::{LoginStore, MemoryLogins, PROFILE_DAYS};

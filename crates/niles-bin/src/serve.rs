@@ -481,7 +481,6 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     // Each person's saved logins, sealed: without a database and its
     // secrets key there are none, and the tool is not offered.
     let logins = build_logins(&cfg);
-    let login_cards = Arc::new(crate::browsing::Logins::new(logins.clone()));
     // Browsing needs the database its cards are kept with, so it is off
     // without one.
     let browsing = crate::browsing::start(
@@ -491,8 +490,13 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         } else {
             crate::browsing::Conversations::NotKept
         },
+        logins.clone(),
     );
-    crate::browsing::register(&mut tools, browsing, login_cards.clone());
+    // What the Logins page changes ends a session open with that login
+    // first, so its profile is kept or dropped by the right rule.
+    let logins = logins.map(|store| crate::browsing::ending(store, browsing.clone()));
+    let login_cards = Arc::new(crate::browsing::Logins::new(logins.clone()));
+    crate::browsing::register(&mut tools, browsing.clone(), login_cards.clone());
     // Made by the assistant, which runs their jobs: the runner is handed
     // the assistant once it has started serving the tools.
     let artifact_runner = Arc::new(artifacts::AssistantRunner {
@@ -1039,6 +1043,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         automations: automations.clone().map(|store| (store, proposals.clone())),
         approvals: approvals.clone(),
         logins: login_cards,
+        browsing: Some(browsing.clone()),
         artifacts: artifacts.clone(),
     };
     // The API is already up; from here on the chat has something to

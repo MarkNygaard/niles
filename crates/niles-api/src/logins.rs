@@ -185,7 +185,7 @@ pub async fn sign_out(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::{self, Chat, NotAdded, Unanswerable, Undecidable, Upload, Where};
+    use crate::chat::{self, Chat, NotAdded, NotEntered, Unanswerable, Undecidable, Upload, Where};
     use crate::publish::DevicePublisher;
     use axum::body::Body;
     use axum::http::{Request, header};
@@ -299,6 +299,18 @@ mod tests {
         ) -> Result<String, NotAdded> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             Err(NotAdded::NoSuchConversation)
+        }
+
+        async fn code_entered(
+            &self,
+            _who: &str,
+            _speaker: Option<&str>,
+            _id: i64,
+            _request: &str,
+            _code: niles_logins::Secret,
+        ) -> Result<String, NotEntered> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Err(NotEntered::NoSuchConversation)
         }
 
         async fn transcribe(&self, audio: Vec<u8>, filename: &str) -> Result<String, String> {

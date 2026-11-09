@@ -13,6 +13,7 @@ import {
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { ArtifactCard } from "@/components/ArtifactCard";
 import { LoginRequestCard } from "@/components/LoginRequestCard";
+import { CodeRequestCard } from "@/components/CodeRequestCard";
 import { PushNudge } from "@/components/PushNudge";
 import { NilesAvatar } from "@/components/NilesPanel";
 import { Button } from "@/components/ui/button";
@@ -67,6 +68,10 @@ export interface ChatViewProps {
   onLoginAdded?: (request: string, login: number) => void;
   /** The conversation is carrying on after a login was added. */
   addingLogin?: boolean;
+  /** A code a card asked for was entered: its request and the code. */
+  onCodeEntered?: (request: string, code: string) => void;
+  /** The conversation is carrying on after a code was entered. */
+  enteringCode?: boolean;
   /** Words from a recording. Without it there is no microphone. */
   onDictate?: (audio: Blob) => Promise<string>;
   /** Open an artifact a reply made, in Niles's panel. */
@@ -101,6 +106,8 @@ export function ChatView({
   deciding,
   onLoginAdded,
   addingLogin,
+  onCodeEntered,
+  enteringCode,
   onDictate,
   onOpenArtifact,
   working,
@@ -349,6 +356,13 @@ export function ChatView({
                 request={turn.login_request}
                 adding={addingLogin}
                 onAdded={(login) => turn.login_request && onLoginAdded?.(turn.login_request.id, login)}
+              />
+            )}
+            {turn.code_request && (
+              <CodeRequestCard
+                request={turn.code_request}
+                entering={enteringCode}
+                onEnter={(code) => turn.code_request && onCodeEntered?.(turn.code_request.id, code)}
               />
             )}
             {/* Only the last turn's proposal is still open: once
