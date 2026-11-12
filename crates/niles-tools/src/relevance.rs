@@ -393,6 +393,53 @@ const GROUPS: &[Group] = &[
             "automation_runs",
         ],
     },
+    Group {
+        keywords: &[
+            "website",
+            "websites",
+            "site",
+            "sites",
+            "webpage",
+            "web page",
+            "webshop",
+            "online shop",
+            "browse",
+            "browser",
+            "basket",
+            "cart",
+            "checkout",
+            // Saying yes to the order ("buy it", "place the order") must
+            // keep the browser's tools in the turn; "buy" also stays in
+            // the grocery group.
+            "order",
+            "pay",
+            "buy",
+            "purchase",
+            "check out",
+            "click",
+            "url",
+            "link",
+            "http",
+            "https",
+            "www",
+            "com",
+            "dk",
+            "org",
+            "net",
+            "io",
+        ],
+        tools: &[
+            "browser_open",
+            "browser_read",
+            "browser_scroll",
+            "browser_click",
+            "browser_type",
+            "browser_choose",
+            "browser_submit",
+            "browser_sign_in",
+            "request_login",
+        ],
+    },
 ];
 
 /// Whether `transcript` mentions any of `keywords`, by the same
@@ -629,5 +676,40 @@ mod tests {
         for core in ALWAYS {
             assert!(names.contains(core), "{core} should always be sent");
         }
+    }
+
+    #[test]
+    fn placing_an_order_keeps_the_browser_tools() {
+        for sentence in [
+            "yes, buy it",
+            "place the order",
+            "go ahead and pay",
+            "check out and pay for it",
+        ] {
+            let names = relevant_tool_names(sentence).expect("matched");
+            assert!(names.contains(&"browser_click"), "{sentence}");
+        }
+    }
+
+    #[test]
+    fn a_webshop_basket_brings_the_browser_tools_and_a_light_does_not() {
+        let names = relevant_tool_names("put a 2 m USB-C cable in my basket on shop.example")
+            .expect("matched");
+        assert!(names.contains(&"browser_click"));
+        assert!(
+            names.contains(&"request_login"),
+            "a webshop basket needs request_login: {names:?}"
+        );
+        assert!(
+            names.contains(&"browser_sign_in"),
+            "a webshop basket needs browser_sign_in: {names:?}"
+        );
+        let names = relevant_tool_names("turn on the kitchen light").unwrap_or_default();
+        assert!(
+            !names
+                .iter()
+                .any(|n| n.starts_with("browser_") || n == &"request_login"),
+            "a light command needs no browser tool: {names:?}"
+        );
     }
 }

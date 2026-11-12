@@ -1258,6 +1258,10 @@ export interface Turn {
   proposal: Proposal | null;
   /** What this turn left waiting for a yes. */
   approval?: ApprovalCard | null;
+  /** What this turn asked the person to add a login for. */
+  login_request?: LoginRequest | null;
+  /** What this turn asked the person to type a sign-in code for. */
+  code_request?: CodeRequest | null;
   /** The artifacts this turn made or changed, for a card under the
       reply. Absent when there are none. */
   artifacts?: ArtifactRef[];
@@ -1424,6 +1428,11 @@ export function chatAttachmentUrl(conversation: number, attachment: number): str
   return `/chat/conversations/${conversation}/attachments/${attachment}`;
 }
 
+/** Where the app fetches the page a held browser step would act on. */
+export function approvalPictureUrl(approval: string): string {
+  return `/me/approvals/${encodeURIComponent(approval)}/picture`;
+}
+
 export interface ArtifactList {
   artifacts: Artifact[];
   /** Which assistant makes them now; null when neither is on. */
@@ -1463,6 +1472,8 @@ export interface ApprovalCard {
   allow_conversation: boolean;
   status: ApprovalStatus;
   outcome: string | null;
+  /** A page's screenshot goes with it while it waits. */
+  picture?: boolean;
 }
 
 /**
@@ -1742,6 +1753,46 @@ export interface PushDelivery {
 export interface StravaAppUpdate {
   client_id: string;
   client_secret?: string;
+}
+
+/** One of the person's saved logins, as /me/logins lists it: never the
+    password. Mirrors `Login` in crates/niles-logins/src/model.rs. */
+export interface SavedLogin {
+  id: number;
+  label: string;
+  origins: string[];
+  username: string;
+  last_used: string | null;
+  /** Niles keeps a signed-in browser profile for it. */
+  signed_in: boolean;
+}
+
+/** What the Logins form sends. In an edit, a missing password keeps the
+    saved one. */
+export interface LoginDraft {
+  label: string;
+  origins: string[];
+  username: string;
+  password?: string;
+}
+
+/** A card asking the person to add a login. Mirrors `LoginRequest` in
+    crates/niles-api/src/chat.rs. */
+export interface LoginRequest {
+  id: string;
+  label: string;
+  site: string;
+  status: "waiting" | "added";
+  login?: number | null;
+}
+
+/** A card asking for a code a site sent. Mirrors `CodeRequest` in
+    crates/niles-api/src/chat.rs. */
+export interface CodeRequest {
+  id: string;
+  label: string;
+  site: string;
+  status: "waiting" | "entered" | "lapsed";
 }
 
 /** Each field: absent leaves it, empty clears it. */
@@ -2085,6 +2136,26 @@ export const api = {
   syncStrava: () => request<{ started: boolean }>("/me/strava/sync", { method: "POST" }),
   disconnectStrava: () =>
     request<{ revoked_at_strava: boolean }>("/me/strava/connection", { method: "DELETE" }),
+  logins: () => request<{ logins: SavedLogin[] }>("/me/logins"),
+  addLogin: (draft: LoginDraft) =>
+    request<SavedLogin>("/me/logins", { method: "POST", body: JSON.stringify(draft) }),
+  updateLogin: (id: number, draft: LoginDraft) =>
+    request<SavedLogin>(`/me/logins/${id}`, { method: "PUT", body: JSON.stringify(draft) }),
+  removeLogin: (id: number) => request<void>(`/me/logins/${id}`, { method: "DELETE" }),
+  signOutLogin: (id: number) => request<void>(`/me/logins/${id}/sign-out`, { method: "POST" }),
+  /** Tells the chat a card's login was added: its id, never its values. */
+  loginAdded: (conversation: number, loginRequest: string, login: number) =>
+    request<{ reply: string }>(
+      `/chat/conversations/${conversation}/login-requests/${encodeURIComponent(loginRequest)}`,
+      { method: "POST", body: JSON.stringify({ login }) },
+    ),
+  /** Hands a sign-in code to its card: Niles types it into the page,
+      and it goes nowhere else. */
+  enterCode: (conversation: number, codeRequest: string, code: string) =>
+    request<{ reply: string }>(
+      `/chat/conversations/${conversation}/code-requests/${encodeURIComponent(codeRequest)}`,
+      { method: "POST", body: JSON.stringify({ code }) },
+    ),
   deviceStatus: () => request<DeviceView>("/presence/device"),
   pairDevice: () => request<void>("/presence/device", { method: "POST" }),
   captures: () => request<Capture[]>("/captures"),

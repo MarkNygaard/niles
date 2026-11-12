@@ -482,6 +482,147 @@ describe("ChatPage", () => {
     }
   });
 
+  it("shows the answer and Niles working while an Allow is on its way", async () => {
+    vi.spyOn(api, "decideApproval").mockReturnValue(new Promise(() => {}));
+    const asked = summary(7, "Email jakob", { last_at: ago(MINUTE) });
+    show([asked], {
+      7: conversationOf(asked, [
+        turn("email jakob", "It's ready for you to check.", { approval: CARD }),
+      ]),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Allow once" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Niles is answering")).toBeInTheDocument(),
+    );
+    // The answer bubble sits next to the still-waiting card's button.
+    expect(screen.getAllByText("Allow once")).toHaveLength(2);
+  });
+
+  const LOGIN_REQUEST = {
+    id: "r1",
+    label: "Shop",
+    site: "https://shop.example",
+    status: "waiting" as const,
+    login: null,
+  };
+
+  const SAVED_LOGIN = {
+    id: 42,
+    label: "Shop",
+    origins: ["https://shop.example"],
+    username: "majse",
+    last_used: null,
+    signed_in: false,
+  };
+
+  /** The card's flow end to end: its form posts to /me/logins, and the
+      chat is told the new login's id — never its values. */
+  async function addLoginFromCard() {
+    const sendChat = vi.spyOn(api, "sendChat").mockRejectedValue(new Error("must not be called"));
+    const addLogin = vi.spyOn(api, "addLogin").mockResolvedValue(SAVED_LOGIN);
+    const loginAdded = vi.spyOn(api, "loginAdded").mockResolvedValue({ reply: "Added a login" });
+    const asked = summary(7, "Order printer ink", { last_at: ago(MINUTE) });
+    show([asked], {
+      7: conversationOf(asked, [
+        turn("order printer ink", "The shop wants a login before I can check out.", {
+          login_request: LOGIN_REQUEST,
+        }),
+      ]),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Add login" }));
+    fireEvent.change(await screen.findByLabelText("Username"), {
+      target: { value: "majse" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "hunter2-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(loginAdded).toHaveBeenCalledWith(7, "r1", 42),
+    );
+    expect(addLogin).toHaveBeenCalledWith({
+      label: "Shop",
+      origins: ["https://shop.example"],
+      username: "majse",
+      password: "hunter2-secret",
+    });
+    return { sendChat, loginAdded };
+  }
+
+  it("adds a login from its card without sending the values through the chat", async () => {
+    const { sendChat, loginAdded } = await addLoginFromCard();
+    expect(sendChat).not.toHaveBeenCalled();
+    // Ids alone reach the chat endpoint: neither value is anywhere in
+    // its calls.
+    const calls = JSON.stringify(vi.mocked(loginAdded).mock.calls);
+    expect(calls).not.toContain("majse");
+    expect(calls).not.toContain("hunter2-secret");
+  });
+
+  it("shows 'Added a login' while the next turn runs", async () => {
+    vi.spyOn(api, "loginAdded").mockReturnValue(new Promise(() => {}));
+    const asked = summary(7, "Order printer ink", { last_at: ago(MINUTE) });
+    vi.spyOn(api, "addLogin").mockResolvedValue(SAVED_LOGIN);
+    show([asked], {
+      7: conversationOf(asked, [
+        turn("order printer ink", "The shop wants a login before I can check out.", {
+          login_request: LOGIN_REQUEST,
+        }),
+      ]),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Add login" }));
+    fireEvent.change(await screen.findByLabelText("Username"), {
+      target: { value: "majse" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "hunter2-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByText("Added a login")).toBeInTheDocument());
+  });
+
+  const CODE_REQUEST = {
+    id: "c1",
+    label: "Shop",
+    site: "https://shop.example",
+    status: "waiting" as const,
+  };
+
+  it("enters a code from its card, never through the chat", async () => {
+    const sendChat = vi.spyOn(api, "sendChat").mockRejectedValue(new Error("must not be called"));
+    const enterCode = vi.spyOn(api, "enterCode").mockResolvedValue({ reply: "Entered a code" });
+    const asked = summary(7, "Order printer ink", { last_at: ago(MINUTE) });
+    show([asked], {
+      7: conversationOf(asked, [
+        turn("order printer ink", "Shop sent the person a code to finish signing in.", {
+          code_request: CODE_REQUEST,
+        }),
+      ]),
+    });
+    fireEvent.change(await screen.findByLabelText("Code"), { target: { value: "493817" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enter code" }));
+    await waitFor(() => expect(enterCode).toHaveBeenCalledWith(7, "c1", "493817"));
+    expect(sendChat).not.toHaveBeenCalled();
+    // The code reaches the card's route and nothing else.
+    const calls = JSON.stringify(vi.mocked(enterCode).mock.calls);
+    expect(calls).toContain("493817");
+    expect(sendChat.mock.calls).toHaveLength(0);
+  });
+
+  it("shows 'Entered a code' while the next turn runs, never the code", async () => {
+    // A promise the test never settles: the next turn is still running.
+    // (The executor form: this Node has no Promise.withResolvers yet.)
+    vi.spyOn(api, "enterCode").mockReturnValue(new Promise(() => {}));
+    const asked = summary(7, "Order printer ink", { last_at: ago(MINUTE) });
+    show([asked], {
+      7: conversationOf(asked, [
+        turn("order printer ink", "Shop sent the person a code to finish signing in.", {
+          code_request: CODE_REQUEST,
+        }),
+      ]),
+    });
+    fireEvent.change(await screen.findByLabelText("Code"), { target: { value: "493817" } });
+    fireEvent.click(screen.getByRole("button", { name: "Enter code" }));
+    await waitFor(() => expect(screen.getByText("Entered a code")).toBeInTheDocument());
+    expect(screen.queryByText(/493817/)).toBeNull();
+  });
+
   it("shows the job being written in the status line, as the stream says", async () => {
     const working = artifact(3, "Thailand travel plan", {
       status: "working",

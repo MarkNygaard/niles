@@ -1,0 +1,174 @@
+---
+title: "Browsing for you"
+description: "Ask in the chat for something done on a website. Niles reads the pages itself, and every step that changes something waits for your Allow."
+---
+
+Niles has a browser of its own. Ask in the chat for something done on a
+website, such as "put a 2 m USB-C cable in my basket on shop.example", and
+Niles opens the site, reads its pages and works out the steps. Opening and
+reading a page needs nothing from you. Each step that changes something
+waits on a card until you allow it.
+
+To read a public page, Niles doesn't need its browser. The browser is for
+pages that need clicks, a form or a login.
+
+## What to ask
+
+Ask in the app's chat. Browsing happens there and nowhere else:
+
+- Asked by voice, Niles tells you to ask in the app, where the cards are.
+- Automations and other background jobs can't browse.
+- Each person has a browsing session of their own. Two of your
+  conversations share yours, and its page.
+
+Name the site and say what you want done there, such as "book the 18:00
+delivery slot on shop.example". Niles tells you when it needs a login
+first.
+
+## The cards
+
+Every click, every bit of typing, every choice from a list and every form
+Niles submits waits on a card under its reply. The card asks the step, such
+as **Click "Add to basket"?**, with the site under the question. It shows a
+picture of the page with what Niles would act on outlined, the page's
+address, the element, the text or the option when there is one, and the
+model's reason for the step.
+
+- **Allow once** does that one step, exactly as the card shows it. Niles
+  then carries on by itself and reads the page again.
+- **Deny** does nothing, and Niles stops there.
+
+These cards have no **Allow for this conversation**, and nothing answers
+them by voice. A notification about one offers **Review**, which opens the
+card, instead of **Approve**. Only you see your cards.
+
+Niles checks the page again when you press **Allow once**. If the page
+changed after the card was made, the step lapses and nothing is done. When
+what the card was for is still on the page, a new card shows it as the page
+is now. Otherwise Niles stops, and you ask again. A card also lapses when
+nobody answers it within an hour, and when Niles or its browser restarts.
+
+A purchase takes several cards: adding to the basket, going to the
+checkout, signing in, perhaps a code, a delivery time and the order itself.
+Niles follows links by opening their addresses, which needs no card.
+
+## Placing an order
+
+The step that places an order or pays gets a card of its own, **Place this
+order on shop.example?**, with the order's **Total** and **Delivery
+address** beside the picture. Niles reads both from the page, never from
+the model. When it can't find one, the card says "Niles couldn't find it
+on the page", and the picture shows what the page says.
+
+Niles knows an order step by the button's label, such as **Place order**,
+**Pay now** or **Buy now**, and by the checkout around it. On a checkout
+page most buttons get the order card, so you may see it before the last
+step too. If the total or the address changes before you press **Allow
+once**, the step lapses and a new card shows the new ones.
+
+## Paying
+
+Niles pays only with what your account on the site has saved, such as a
+saved card. It never asks for card details, keeps them or types them.
+
+A page that asks for card details stops the run, and Niles tells you the
+site wants them. Save a card on your account on the site yourself, or
+finish that order on the site. Niles also refuses to type anything that
+reads as a card number.
+
+If your bank wants to approve the payment (3-D Secure), approve it in the
+bank's app, then tell Niles to carry on. A bank that wants a code typed on
+the page can't be answered through Niles. Finish that order on the site.
+
+## Logins
+
+When a site needs you signed in and Niles has no login for it, the chat
+shows "Shop wants a login", Shop being the name Niles gave the site, with
+**Add login**. The form opens with the site filled in. The username and
+password you type there go straight to Niles, never into the chat or to
+the model.
+
+You can also add a login before you need it, under **My profile →
+Logins**. **Add login** asks for a label, the site's address, the username
+and the password. A site that signs in or checks out on another address
+needs that address too. Each login in the list has three buttons:
+
+- **Edit** shows the password as saved. Leave it empty to keep it.
+- **Sign out** forgets what the site stored in Niles's browser for that
+  login, and keeps the login.
+- **Remove** deletes the login and what the site stored.
+
+Only you see your logins, and nobody can read a password back. Saved
+logins need Niles's database and its secrets key.
+
+### Signing in
+
+Niles signs in on a card, **Sign in to Shop?**, which shows the site and
+the login's label, never the username. When you allow it, Niles fills in
+the form itself, only on that login's own sites, and the model learns only
+whether it worked. A signed-in session stays on the login's sites. To open
+another site, Niles starts a new session that isn't signed in.
+
+After a sign-in, Niles keeps what the site stored in its browser, its
+cookies and storage, encrypted, so the next visit doesn't ask for a code
+each time. The **Signed in** badge on the Logins page shows Niles has
+them. They go 30 days after the login was last used, and when you press
+**Sign out** or **Remove**.
+
+## Codes and CAPTCHAs
+
+When a site sends you a code by text message, mail or an authenticator
+app, the chat shows "Shop sent you a code" with a field. Type the code
+there. It goes to the page and nowhere else, not to the chat and not to
+the model. A wrong code gets a new card. A code card lapses after 15
+minutes.
+
+When a page wants you to show you aren't a robot (a CAPTCHA), Niles stops
+and tells you the site wants a person. Niles doesn't solve CAPTCHAs, and
+you can't take over its browser.
+
+## Sites that say no
+
+Niles doesn't hide that its browser is automated, so a site that refuses
+automated browsers refuses Niles too. Nothing in Niles changes that.
+
+A site may also ask your account to verify itself when Niles signs in for
+the first time, by mail or with a code, as it would for any new browser.
+What Niles keeps after a sign-in makes that rarer.
+
+A signed-in session stays on its login's sites. If a shop sends you to
+another site to pay, add that site's address to the shop's login.
+
+## Setting it up
+
+Browsing needs Niles's browser, a headless Chromium in a container of its
+own, and Niles's database, which keeps the cards with their conversation.
+
+- On Kubernetes, add `components: [../../components/browser]` to your
+  overlay's `kustomization.yaml`. See
+  [Kubernetes](/docs/self-hosting/kubernetes#browsing).
+- With Docker Compose, start it with
+  `docker compose -f compose.yaml -f browser.yaml up -d`. See
+  [Docker Compose](/docs/self-hosting/docker-compose#browsing).
+
+Niles looks for the browser by its name, `niles-browser`, and turns
+browsing on by itself within a minute of the browser starting. There is
+nothing to set in `niles.toml`. Until it finds one, Niles says browsing
+isn't set up.
+
+The browser reaches the internet only through Niles, which lets it open
+public `https` sites and nothing on your home network or in your cluster.
+On Kubernetes the component adds a NetworkPolicy as a second wall. It
+holds only where the cluster's network plugin enforces NetworkPolicies:
+Cilium and Calico do, and Flannel, Talos's default, doesn't.
+
+## What Niles keeps
+
+- Your logins, encrypted in Niles's database.
+- What a site stored in Niles's browser after a sign-in, encrypted, until
+  30 days after the login was last used.
+- A card's picture of the page, in memory, until the card is answered or
+  lapses.
+
+The browser keeps nothing between sessions, and Niles restarts it once a
+day when no session is open.

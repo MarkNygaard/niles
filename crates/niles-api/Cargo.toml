@@ -33,6 +33,7 @@ niles-webos.workspace = true
 niles-integration-linear.workspace = true
 niles-llm.workspace = true
 niles-training.workspace = true
+niles-logins.workspace = true
 niles-artifacts.workspace = true
 niles-podcasts.workspace = true
 niles-webpush.workspace = true

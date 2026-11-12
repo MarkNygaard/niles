@@ -221,6 +221,26 @@ pub(crate) fn build_strava(
     }
 }
 
+/// Each person's saved logins, when there is a database and a secrets
+/// key to seal their usernames and passwords with. Saving a login is
+/// the switch.
+pub(crate) fn build_logins(cfg: &Config) -> Option<Arc<dyn niles_logins::LoginStore>> {
+    let database = cfg.database.as_ref()?;
+    let key = std::env::var(&database.secret_key_env).ok()?;
+    if key.trim().is_empty() {
+        return None;
+    }
+    let url = database.resolve_url().ok()?;
+    let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
+    match niles_db::PostgresLogins::new(backend.pool(), backend.describe_target(), &key) {
+        Ok(store) => Some(Arc::new(store)),
+        Err(e) => {
+            tracing::error!("[logins] unavailable: {e}");
+            None
+        }
+    }
+}
+
 pub(crate) fn build_tado_tokens(
     cfg: &Config,
 ) -> anyhow::Result<Option<Arc<dyn niles_presence::TokenStore>>> {

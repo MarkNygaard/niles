@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bell, ChevronLeft, ShieldCheck, Smartphone, UserRound } from "lucide-react";
+import { Bell, ChevronLeft, KeyRound, ShieldCheck, Smartphone, UserRound } from "lucide-react";
 import { Approvals } from "@/components/ApprovalsList";
 import { CALENDARS } from "@/components/CalendarsPanel";
+import { LoginsPanel } from "@/components/LoginsPanel";
 import { AboutYou, PhoneCard } from "@/components/MeCard";
 import { Notifications } from "@/components/NotificationsCard";
 import {
@@ -55,6 +56,12 @@ export function profileSections(addOns: PersonalAddOn[]): { group: string; items
           label: "Notifications",
           hint: "Which of your devices Niles tells things to",
           icon: Bell,
+        },
+        {
+          id: "logins",
+          label: "Logins",
+          hint: "Sites Niles signs in to for you",
+          icon: KeyRound,
         },
       ],
     },
@@ -208,6 +215,7 @@ export function MyProfile() {
           </>
         )}
         {shown === "notifications" && <Notifications />}
+        {shown === "logins" && <ProfileLogins />}
         {addOns
           .filter((a) => a.id === shown)
           .map((a) => (
@@ -216,6 +224,24 @@ export function MyProfile() {
         {shown === "approvals" && <ProfileApprovals />}
       </div>
     </div>
+  );
+}
+
+/** The person's saved logins: what Niles signs in to for them, sealed. */
+function ProfileLogins() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Logins</CardTitle>
+        <CardDescription>
+          The sites Niles signs in to for you when it browses. Only you see yours. A password is
+          never shown again, and the model never sees it.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <LoginsPanel />
+      </CardContent>
+    </Card>
   );
 }
 

@@ -1,0 +1,33 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: niles-browser
+  labels:
+    app.kubernetes.io/name: niles-browser
+    app.kubernetes.io/part-of: niles
+    app.kubernetes.io/component: browser
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: niles-browser
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Only Niles talks to the DevTools port.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: niles
+      ports:
+        - protocol: TCP
+          port: 9222
+  egress:
+    # Nothing else, not even DNS: sessions name Niles's proxy by address.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: niles
+      ports:
+        - protocol: TCP
+          port: 3128

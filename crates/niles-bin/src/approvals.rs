@@ -122,6 +122,16 @@ impl Allow {
     }
 }
 
+/// What answering a held call leads to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Then {
+    /// Its result is the answer, as for a mail sent or an issue filed.
+    Answer,
+    /// The conversation goes on: a browsing step, allowed on its card,
+    /// starts the next turn when it has run.
+    NextTurn,
+}
+
 /// Where what was asked and decided is kept. Postgres in the house; a
 /// list in the tests.
 #[async_trait]
@@ -164,6 +174,11 @@ pub(crate) struct Held {
     label: String,
     args: Value,
     pub(crate) card: ApprovalCard,
+    /// A page's picture, kept with the held call in memory and served
+    /// to its person alone while it waits. Never logged or pushed.
+    picture: Option<niles_api::approvals::Picture>,
+    /// What answering it leads to.
+    then: Then,
     made: Instant,
     lapses: Instant,
     asked_at: DateTime<Utc>,
@@ -183,6 +198,18 @@ pub(crate) struct Placed {
     /// The conversation its card is in; none for a question asked aloud.
     pub(crate) conversation: Option<i64>,
     pub(crate) allow_conversation: bool,
+}
+
+/// What [`Approvals::hold_with`] keeps: the held call, its card, and
+/// what answering it leads to.
+struct Holding {
+    tool: Arc<dyn Tool>,
+    label: String,
+    args: Value,
+    card: ApprovalCard,
+    allow: Allow,
+    picture: Option<niles_api::approvals::Picture>,
+    then: Then,
 }
 
 #[derive(Default)]
@@ -233,9 +260,61 @@ impl Approvals {
         tool: Arc<dyn Tool>,
         label: &str,
         args: Value,
-        mut card: ApprovalCard,
+        card: ApprovalCard,
         allow: Allow,
     ) -> ApprovalCard {
+        self.hold_with(
+            asker,
+            Holding {
+                tool,
+                label: label.to_string(),
+                args,
+                card,
+                allow,
+                picture: None,
+                then: Then::Answer,
+            },
+        )
+    }
+
+    /// Keep a browsing step: answered only on its card and only once,
+    /// its picture kept with it while it waits, and allowing it starts
+    /// its conversation's next turn. The tool runs what was resolved
+    /// when the card was made, checked again on Allow.
+    pub(crate) fn hold_step(
+        &self,
+        asker: &Asker,
+        tool: Arc<dyn Tool>,
+        label: &str,
+        mut card: ApprovalCard,
+        picture: niles_api::approvals::Picture,
+    ) -> ApprovalCard {
+        card.allow_conversation = false;
+        card.picture = true;
+        self.hold_with(
+            asker,
+            Holding {
+                tool,
+                label: label.to_string(),
+                args: Value::Null,
+                card,
+                allow: Allow::OnItsCard,
+                picture: Some(picture),
+                then: Then::NextTurn,
+            },
+        )
+    }
+
+    fn hold_with(&self, asker: &Asker, holding: Holding) -> ApprovalCard {
+        let Holding {
+            tool,
+            label,
+            args,
+            mut card,
+            allow,
+            picture,
+            then,
+        } = holding;
         let now = Instant::now();
         let wait = if asker.satellite.is_some() {
             BY_VOICE
@@ -253,9 +332,11 @@ impl Approvals {
             asker: asker.clone(),
             name: tool.descriptor().name,
             tool,
-            label: label.to_string(),
+            label,
             args,
             card: card.clone(),
+            picture,
+            then,
             made: now,
             lapses: now + wait,
             asked_at,
@@ -321,6 +402,24 @@ impl Approvals {
         self.lock()
             .get(id)
             .is_some_and(|h| h.lapses > Instant::now())
+    }
+
+    /// A held call's picture while it waits: theirs only, and only
+    /// before it is answered or lapsed.
+    pub(crate) fn picture(&self, id: &str, person: &str) -> Option<niles_api::approvals::Picture> {
+        self.lock()
+            .get(id)
+            .filter(|h| h.asker.person == person && h.lapses > Instant::now())
+            .and_then(|h| h.picture.clone())
+    }
+
+    /// End a held call whose browser went away: it lapses as if its
+    /// hour had passed, is said so, and its picture goes with it.
+    pub(crate) async fn lapse(&self, id: &str) {
+        if let Some(h) = self.lock().get_mut(id) {
+            h.lapses = Instant::now();
+        }
+        self.sweep().await;
     }
 
     /// Everything still waiting for `person`, newest first: what the
@@ -487,6 +586,7 @@ impl Approvals {
         for held in lapsed {
             let mut card = held.card.clone();
             card.status = ApprovalStatus::Lapsed;
+            card.picture = false;
             if held.pushed {
                 self.take_back(&held.asker.person, &card, None);
             }
@@ -676,6 +776,11 @@ impl Held {
         &self.name
     }
 
+    /// What answering this leads to.
+    pub(crate) fn then(&self) -> Then {
+        self.then
+    }
+
     /// Answered on the device with this push address, if one was named.
     pub(crate) fn answered_on(mut self, device: Option<&str>) -> Self {
         self.device = device.map(str::to_string);
@@ -685,6 +790,8 @@ impl Held {
     /// Run what was held, with what was held. Answers the card as it now
     /// stands and a sentence for the person.
     async fn run(mut self) -> (ApprovalCard, String) {
+        // The picture goes with the answer: nothing waits any more.
+        self.card.picture = false;
         match self.tool.execute(self.args).await {
             Ok(result) => {
                 self.card.status = ApprovalStatus::Allowed;
@@ -697,6 +804,13 @@ impl Held {
                 };
                 (self.card, reply)
             }
+            // What it was about changed before it was allowed: nothing
+            // ran, and the why is said in the person's words.
+            Err(niles_tools::Error::Lapsed(why)) => {
+                self.card.status = ApprovalStatus::Lapsed;
+                self.card.outcome = Some(why.clone());
+                (self.card, why)
+            }
             Err(e) => {
                 self.card.status = ApprovalStatus::Failed;
                 self.card.outcome = Some(e.to_string());
@@ -708,8 +822,17 @@ impl Held {
     fn deny(mut self) -> (ApprovalCard, String) {
         self.card.status = ApprovalStatus::Denied;
         self.card.outcome = Some("Denied".into());
+        self.card.picture = false;
         (self.card, "All right, I didn't.".to_string())
     }
+}
+
+/// Whether `card` answered `then` starts its conversation's next turn:
+/// a browsing step allowed once. Nothing else does: a denial, a lapse,
+/// a failure, or an answered call whose result is the answer.
+#[must_use]
+pub(crate) fn goes_on(then: Then, card: &ApprovalCard) -> bool {
+    then == Then::NextTurn && card.status == ApprovalStatus::Allowed
 }
 
 /// The first line of a result, short enough to say: what the model
@@ -737,7 +860,7 @@ fn first_line(text: &str) -> String {
     out
 }
 
-fn new_id() -> String {
+pub(crate) fn new_id() -> String {
     format!("{:024x}", rand::random::<u128>() >> 32)
 }
 
@@ -779,6 +902,7 @@ impl ToolCard {
             fields,
             body: None,
             allow_conversation: true,
+            picture: false,
             status: ApprovalStatus::Pending,
             outcome: None,
         }
@@ -1466,6 +1590,7 @@ mod tests {
             ],
             body: Some("Hi Jakob, the door code is 4321.".into()),
             allow_conversation: false,
+            picture: false,
             status: ApprovalStatus::Pending,
             outcome: None,
         };
@@ -1782,5 +1907,194 @@ mod tests {
             1,
             "the device it was answered on hears no take-back"
         );
+    }
+
+    /// A tool that lapses when it runs: what a browser step answers
+    /// when its page moved on.
+    struct Lapsing;
+
+    #[async_trait]
+    impl Tool for Lapsing {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "browser_click".into(),
+                description: "Lapses.".into(),
+                parameters: json!({ "type": "object" }),
+            }
+        }
+        async fn execute(&self, _args: Value) -> niles_tools::Result<Value> {
+            Err(niles_tools::Error::Lapsed("The page changed …".into()))
+        }
+    }
+
+    /// A tool that fails when it runs, for the not-every-allow-carries-on cases.
+    struct Broken;
+
+    #[async_trait]
+    impl Tool for Broken {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "browser_click".into(),
+                description: "Broken.".into(),
+                parameters: json!({ "type": "object" }),
+            }
+        }
+        async fn execute(&self, _args: Value) -> niles_tools::Result<Value> {
+            Err(niles_tools::Error::Internal("boom".into()))
+        }
+    }
+
+    fn step_card() -> ApprovalCard {
+        ApprovalCard {
+            id: String::new(),
+            title: "Click \"Add to basket\"?".into(),
+            subtitle: "shop.example".into(),
+            icon: Some("browser".into()),
+            fields: vec![],
+            body: None,
+            allow_conversation: false,
+            picture: false,
+            status: ApprovalStatus::Pending,
+            outcome: None,
+        }
+    }
+
+    fn jpeg() -> niles_api::approvals::Picture {
+        niles_api::approvals::Picture {
+            mime: "image/jpeg",
+            bytes: vec![0xFF, 0xD8, 0xFF],
+        }
+    }
+
+    /// One held browsing step of `who`'s, on a tool that counts its runs.
+    fn held_step(approvals: &Approvals, who: &str) -> String {
+        let asker = Asker {
+            person: who.into(),
+            ..in_the_app(Some(3))
+        };
+        approvals
+            .hold_step(
+                &asker,
+                Arc::new(Counted::default()),
+                "Browser",
+                step_card(),
+                jpeg(),
+            )
+            .id
+    }
+
+    #[tokio::test]
+    async fn a_step_is_answered_on_its_card_only_and_only_once() {
+        let approvals = Approvals::default();
+        let id = held_step(&approvals, "person:mark");
+        let card = &approvals.pending("person:mark")[0].card;
+        assert!(!card.allow_conversation);
+        assert!(card.picture);
+        assert_eq!(card.id, id);
+        assert_eq!(
+            approvals.buttons(&id),
+            Some(vec![
+                niles_webpush::Action::Review,
+                niles_webpush::Action::Deny
+            ]),
+            "a step is approved on its card, once"
+        );
+    }
+
+    #[tokio::test]
+    async fn its_picture_is_its_persons_alone_and_only_while_it_waits() {
+        let approvals = Approvals::default();
+        let id = held_step(&approvals, "person:mark");
+        assert!(approvals.picture(&id, "person:mark").is_some());
+        assert!(
+            approvals.picture(&id, "person:anna").is_none(),
+            "nobody else's, by id or by person"
+        );
+    }
+
+    #[tokio::test]
+    async fn its_picture_goes_once_it_is_answered() {
+        let approvals = Arc::new(Approvals::default());
+        let id = held_step(&approvals, "person:mark");
+        let held = approvals.take(&id, "person:mark").unwrap();
+        let (card, _) = approvals
+            .settle(held, Decision::Once, Via::App, Some(3))
+            .await;
+        assert!(approvals.picture(&id, "person:mark").is_none());
+        assert!(!card.picture, "the answered card reads without it");
+    }
+
+    #[tokio::test]
+    async fn its_picture_goes_once_it_lapses() {
+        let (approvals, _, bus) = logged();
+        let id = held_step(&approvals, "person:mark");
+        let mut heard = bus.subscribe();
+        approvals.lapse(&id).await;
+        assert!(!approvals.waiting(&id));
+        assert!(approvals.picture(&id, "person:mark").is_none());
+        match heard.recv().await.unwrap() {
+            Event::ApprovalChanged { status, .. } => assert_eq!(status, "lapsed"),
+            other => panic!("expected ApprovalChanged, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_allowed_step_starts_the_next_turn_and_nothing_else_does() {
+        let approvals = Arc::new(Approvals::default());
+        // Allowed once, it runs and carries on.
+        let id = held_step(&approvals, "person:mark");
+        let held = approvals.take(&id, "person:mark").unwrap();
+        let (card, _) = approvals
+            .settle(held, Decision::Once, Via::App, Some(3))
+            .await;
+        assert!(goes_on(Then::NextTurn, &card));
+        // Denied, it does not.
+        let id = held_step(&approvals, "person:mark");
+        let held = approvals.take(&id, "person:mark").unwrap();
+        let (card, _) = approvals
+            .settle(held, Decision::Deny, Via::App, Some(3))
+            .await;
+        assert!(!goes_on(Then::NextTurn, &card));
+        // Lapsed when allowed, it does not.
+        let asker = in_the_app(Some(3));
+        let card = approvals.hold_step(&asker, Arc::new(Lapsing), "Browser", step_card(), jpeg());
+        let held = approvals.take(&card.id, "person:mark").unwrap();
+        let (card, _) = approvals
+            .settle(held, Decision::Once, Via::App, Some(3))
+            .await;
+        assert!(!goes_on(Then::NextTurn, &card));
+        // Failed, it does not.
+        let asker = in_the_app(Some(3));
+        let card = approvals.hold_step(&asker, Arc::new(Broken), "Browser", step_card(), jpeg());
+        let held = approvals.take(&card.id, "person:mark").unwrap();
+        let (card, _) = approvals
+            .settle(held, Decision::Once, Via::App, Some(3))
+            .await;
+        assert!(!goes_on(Then::NextTurn, &card));
+        // An answered call whose result is the answer does not.
+        let (id, _) = held_for(&approvals, "person:mark", Some(3));
+        let held = approvals.take(&id, "person:mark").unwrap();
+        let (card, _) = approvals
+            .settle(held, Decision::Once, Via::App, Some(3))
+            .await;
+        assert!(!goes_on(Then::Answer, &card));
+    }
+
+    #[tokio::test]
+    async fn a_step_that_lapses_when_allowed_runs_nothing_and_says_why() {
+        let (approvals, kept, _) = logged();
+        let asker = in_the_app(Some(3));
+        let card = approvals.hold_step(&asker, Arc::new(Lapsing), "Browser", step_card(), jpeg());
+        settle_writes().await;
+        let held = approvals.take(&card.id, "person:mark").unwrap();
+        let (card, reply) = approvals
+            .settle(held, Decision::Once, Via::App, Some(3))
+            .await;
+        assert_eq!(card.status, ApprovalStatus::Lapsed);
+        assert_eq!(card.outcome.as_deref(), Some("The page changed …"));
+        assert_eq!(reply, "The page changed …");
+        let entry = kept.of(&card.id).unwrap();
+        assert_eq!(entry.status, "lapsed");
+        assert_eq!(entry.decision.as_deref(), Some("once"));
     }
 }

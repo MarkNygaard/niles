@@ -109,10 +109,14 @@ pub struct AppState {
     pub plugins: Option<Arc<dyn crate::plugins::Plugins>>,
     /// The remote MCP servers whose tools the model is offered.
     pub tool_servers: Option<Arc<dyn crate::tool_servers::ToolServers>>,
-    /// Each person's Strava and the workouts it brings. Absent without
-    /// a database and its secrets key: an app secret and its tokens are
+    /// Each person's Strava and the workouts it brings. Absent without a
+    /// database and its secrets key: an app secret and its tokens are
     /// not kept anywhere unsealed.
     pub strava: Option<Arc<niles_training::Strava>>,
+    /// Each person's saved logins for Niles's browser. Absent without a
+    /// database and its secrets key: a password is not kept anywhere
+    /// unsealed.
+    pub logins: Option<Arc<dyn niles_logins::LoginStore>>,
     /// Strava sign-ins in flight, apart from the others.
     pub strava_attempts: Arc<crate::auth::flow::Attempts>,
     /// Plugins' account connections in flight, apart from the others.
@@ -172,6 +176,7 @@ impl AppState {
             plugins: None,
             tool_servers: None,
             strava: None,
+            logins: None,
             strava_attempts: Arc::new(crate::auth::flow::Attempts::new()),
             plugin_attempts: Arc::new(crate::auth::flow::Attempts::new()),
             artifacts: None,
@@ -285,6 +290,11 @@ impl AppState {
 
     pub fn with_strava(mut self, strava: Option<Arc<niles_training::Strava>>) -> Self {
         self.strava = strava;
+        self
+    }
+
+    pub fn with_logins(mut self, logins: Option<Arc<dyn niles_logins::LoginStore>>) -> Self {
+        self.logins = logins;
         self
     }
 

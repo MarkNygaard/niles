@@ -1137,3 +1137,28 @@ id = "api-events-update"
 category = "api.events"
 summary = "update_checked on /events/stream, to everyone"
 since_pr = 516
+
+[[feature]]
+id = "tool-browsing"
+category = "llm.tools"
+summary = "Do something on a website from the chat: Niles reads the pages, and each click, typing or submit waits on a card"
+phrasings = ["put a 2 m USB-C cable in my basket on shop.example", "book a delivery time on shop.example"]
+since_pr = 520
+
+[[feature]]
+id = "ui-saved-logins"
+category = "ui.settings"
+summary = "My profile → Logins: a site's login for browsing, added there or from the chat; the password is never shown again"
+since_pr = 521
+
+[[feature]]
+id = "browsing-sign-in"
+category = "llm.tools"
+summary = "Niles signs in with a saved login only on its own sites, asks for a sign-in code on a card, and stops at a CAPTCHA"
+since_pr = 526
+
+[[feature]]
+id = "browsing-order-card"
+category = "runtime.approvals"
+summary = "Placing an order waits on its own card with the page's total and delivery address; card details stop the run"
+since_pr = 527

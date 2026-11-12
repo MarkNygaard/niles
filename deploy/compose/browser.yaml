@@ -1,0 +1,69 @@
+# Niles's headless Chromium on an internal network Niles is the only
+# other member of. Add it to the stack with:
+#
+#   docker compose -f compose.yaml -f browser.yaml up -d
+
+services:
+  niles:
+    networks:
+      - default
+      - browsing
+
+  niles-browser:
+    # Pinned by version and digest.
+    image: docker.io/chromedp/headless-shell:158.0.8127.18@sha256:830fa77e0602cb42e5cb2cbd9237ba27b649ad69d5fb82b54713aac8b7ab4f29
+    restart: unless-stopped
+    init: true
+    user: "65534:65534"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    environment:
+      HOME: /tmp
+    tmpfs:
+      - "/tmp:size=1g"
+    shm_size: 512m
+    # The image's run.sh, kept: Chromium listens on 127.0.0.1:9223
+    # whatever --remote-debugging-address says, and run.sh's socat
+    # forwards 9222 to it. It also adds --no-sandbox (the container is
+    # the sandbox; it has no user namespaces), the debugging address and
+    # port, and SwiftShader.
+    command:
+      - --headless
+      - --user-data-dir=/tmp/chromium
+      - --window-size=1280,900
+      # The browser's own requests outside a session go nowhere; each
+      # session gets Niles's proxy.
+      - --proxy-server=http://127.0.0.1:9
+      - --proxy-bypass-list=<-loopback>
+      - --force-webrtc-ip-handling-policy=disable_non_proxied_udp
+      - --disable-quic
+      - --disable-background-networking
+      - --disable-component-update
+      - --disable-sync
+      - --disable-default-apps
+      - --disable-extensions
+      - --disable-domain-reliability
+      - --disable-client-side-phishing-detection
+      - --no-first-run
+      - --no-pings
+    networks:
+      - browsing
+    healthcheck:
+      # Chromium itself and the forwarder: either alone answering is a
+      # browser Niles can't use.
+      test:
+        - CMD
+        - bash
+        - -c
+        - exec 3<>/dev/tcp/127.0.0.1/9223 && exec 4<>/dev/tcp/127.0.0.1/9222
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+networks:
+  browsing:
+    internal: true

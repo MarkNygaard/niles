@@ -2732,6 +2732,7 @@ dependencies = [
  "niles-groceries",
  "niles-integration-linear",
  "niles-llm",
+ "niles-logins",
  "niles-memory",
  "niles-mqtt",
  "niles-nemlig",
@@ -2815,6 +2816,7 @@ dependencies = [
  "niles-api",
  "niles-artifacts",
  "niles-automations",
+ "niles-browser",
  "niles-calendar",
  "niles-capabilities",
  "niles-config",
@@ -2824,6 +2826,7 @@ dependencies = [
  "niles-history",
  "niles-intent",
  "niles-llm",
+ "niles-logins",
  "niles-mcp",
  "niles-memory",
  "niles-mqtt",
@@ -2856,7 +2859,28 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "url",
  "wiremock",
+]
+
+[[package]]
+name = "niles-browser"
+version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "futures-util",
+ "image",
+ "niles-websearch",
+ "parking_lot 0.13.0",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -2942,6 +2966,7 @@ dependencies = [
  "niles-config",
  "niles-core",
  "niles-history",
+ "niles-logins",
  "niles-presence",
  "niles-recognition",
  "niles-training",
@@ -3015,6 +3040,20 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
+]
+
+[[package]]
+name = "niles-logins"
+version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "niles-websearch",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
 ]
 
 [[package]]
