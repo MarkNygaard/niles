@@ -34,13 +34,13 @@ spec:
         - name: chromium
           # Pinned by version and digest.
           image: docker.io/chromedp/headless-shell:158.0.8127.18@sha256:830fa77e0602cb42e5cb2cbd9237ba27b649ad69d5fb82b54713aac8b7ab4f29
-          command: ["/headless-shell/headless-shell"]
+          # The image's run.sh, kept: Chromium listens on 127.0.0.1:9223
+          # whatever --remote-debugging-address says, and run.sh's socat
+          # forwards 9222 to it. It also adds --no-sandbox (the container
+          # is the sandbox; it has no user namespaces), the debugging
+          # address and port, and SwiftShader.
           args:
-            # The container is the sandbox; it has no user namespaces.
-            - --no-sandbox
             - --headless
-            - --remote-debugging-address=0.0.0.0
-            - --remote-debugging-port=9222
             - --user-data-dir=/tmp/chromium
             - --window-size=1280,900
             # The browser's own requests outside a session go nowhere;
@@ -58,8 +58,6 @@ spec:
             - --disable-client-side-phishing-detection
             - --no-first-run
             - --no-pings
-            - --use-gl=angle
-            - --use-angle=swiftshader
           env:
             - name: HOME
               value: /tmp
@@ -79,14 +77,16 @@ spec:
               memory: 256Mi
             limits:
               memory: 2Gi
+          # Chromium itself and the forwarder: either alone answering is a
+          # browser Niles can't use.
           readinessProbe:
             exec:
-              command: [bash, -c, 'exec 3<>/dev/tcp/127.0.0.1/9222']
+              command: [bash, -c, 'exec 3<>/dev/tcp/127.0.0.1/9223 && exec 4<>/dev/tcp/127.0.0.1/9222']
             initialDelaySeconds: 5
             periodSeconds: 5
           livenessProbe:
             exec:
-              command: [bash, -c, 'exec 3<>/dev/tcp/127.0.0.1/9222']
+              command: [bash, -c, 'exec 3<>/dev/tcp/127.0.0.1/9223 && exec 4<>/dev/tcp/127.0.0.1/9222']
             initialDelaySeconds: 10
             periodSeconds: 10
           volumeMounts:
