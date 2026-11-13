@@ -143,6 +143,9 @@ pub enum Retired {
     /// Linear's own MCP server. Dropped: Linear is added again as a
     /// tool server, with its own key.
     Linear,
+    /// `[history]`, from before the history was kept in Postgres.
+    /// Dropped: there is nothing left to set.
+    History,
 }
 
 impl crate::Config {
@@ -201,6 +204,9 @@ impl crate::Config {
         }
         if self.integrations.linear.take().is_some() {
             retired.push(Retired::Linear);
+        }
+        if self.history.take().is_some() {
+            retired.push(Retired::History);
         }
         self.retired = retired;
     }
@@ -279,6 +285,31 @@ impl crate::Config {
                 })
             }
         }
+    }
+
+    /// Where Tier 1 goes, and with which key: what `niles serve` builds
+    /// its client from, and so what a restart would build it from now.
+    pub fn llm_endpoint(&self) -> Result<Endpoint> {
+        self.endpoint_for(
+            Role::Llm,
+            self.llm.provider.as_deref(),
+            self.llm.base_url.as_deref(),
+            &self.llm.api_key_env,
+            "llm",
+        )
+    }
+
+    /// Tier 2's, or `None` without `[llm.tier2]`.
+    pub fn tier2_endpoint(&self) -> Option<Result<Endpoint>> {
+        self.llm.tier2.as_ref().map(|tier2| {
+            self.endpoint_for(
+                Role::Llm,
+                tier2.provider.as_deref(),
+                Some(&tier2.base_url),
+                &tier2.api_key_env,
+                "llm.tier2",
+            )
+        })
     }
 }
 
@@ -384,6 +415,7 @@ mod tests {
     #[test]
     fn a_role_with_its_own_endpoint_uses_its_own_key() {
         // A Whisper server in the house: no provider, its own URL.
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::set_var("NILES_TEST_PROV_OWN", "own-key") };
         let cfg = crate::Config::load_from_str(
             "[stt]\nbase_url = \"http://whisper.local/v1\"\napi_key_env = \"NILES_TEST_PROV_OWN\"\n",
@@ -405,6 +437,7 @@ mod tests {
 
     #[test]
     fn naming_a_provider_takes_its_endpoint() {
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::set_var("NILES_TEST_PROV_KEY", "shared-key") };
         let cfg = crate::Config::load_from_str(concat!(
             "[[providers]]\nname = \"cerebras\"\n",

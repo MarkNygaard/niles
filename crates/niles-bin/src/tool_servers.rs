@@ -594,6 +594,7 @@ mod tests {
             .await
             .unwrap();
         until(|| names(&dynamic).is_empty()).await;
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::remove_var("NILES_TEST_TOOL_SERVER_KEY") };
     }
 

@@ -57,8 +57,10 @@ pub trait VoiceRoster: Send + Sync {
 
 #[async_trait]
 pub trait EnrollmentBackend: Send + Sync {
-    /// Every enrolled speaker. Read once at startup to build the
-    /// matcher, so a new enrollment needs a restart to take effect.
+    /// Every enrolled speaker. Read at startup to build the matcher,
+    /// and again whenever this process changes the roster; one enrolled
+    /// by another process, such as `niles enroll`, is picked up at the
+    /// next restart.
     async fn load_all(&self) -> Result<Vec<EnrolledSpeaker>>;
 
     /// Add a clip's embedding to a speaker, creating them if new.

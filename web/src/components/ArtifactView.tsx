@@ -41,6 +41,14 @@ function authorOf(r: ArtifactRevisionMeta): string {
 
 type Look = "page" | "builtin";
 
+/**
+ * Kinds whose first job saves the data and then designs a page for it
+ * (`PAGED` in `crates/niles-bin/src/artifacts.rs`). Their built-in view
+ * is only the fallback: not shown while the page is being designed, and
+ * not offered beside a page that works.
+ */
+const DESIGNED_KINDS = new Set(["trip", "training_plan"]);
+
 /** The two ways an artifact with a page can be shown. */
 function LookSwitch({ look, onChange }: { look: Look; onChange: (look: Look) => void }) {
   const option = (value: Look, label: string) => (
@@ -155,6 +163,8 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
   const pageKey = `${reading ?? "current"}:${reading !== undefined ? old.data?.page : a.page}`;
   const broken = fellBack?.key === pageKey ? fellBack.why : undefined;
   const onPage = Boolean(pageHtml) && look === "page" && broken === undefined;
+  const designed = DESIGNED_KINDS.has(a.kind);
+  const designing = designed && a.status === "working" && reading === undefined && !pageHtml;
   const editable = canEdit(a);
   const mine = isOwner(a);
   const edit =
@@ -230,7 +240,7 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
         </div>
       )}
 
-      {pageHtml && showing !== undefined && showing !== null && (
+      {pageHtml && showing !== undefined && showing !== null && (!designed || !onPage) && (
         <LookSwitch
           look={onPage ? "page" : "builtin"}
           onChange={(next) => {
@@ -245,7 +255,7 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
         </p>
       )}
 
-      {showing !== undefined && showing !== null ? (
+      {showing !== undefined && showing !== null && !designing ? (
         onPage && pageHtml ? (
           <SandboxedPage
             key={pageKey}
@@ -291,7 +301,7 @@ export function ArtifactView({ id, onBack }: ArtifactViewProps) {
             <History />
             Versions ({a.revisions.length})
           </Button>
-          {a.page_html && reading === undefined && editable && (
+          {a.page_html && reading === undefined && editable && !designed && (
             <Button
               size="sm"
               variant="outline"

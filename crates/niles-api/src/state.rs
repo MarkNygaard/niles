@@ -129,6 +129,14 @@ pub struct AppState {
     /// What Niles told each person, for their Notifications page.
     /// Absent without a database.
     pub notifications: Option<Arc<dyn niles_webpush::Inbox>>,
+    /// What waits for a restart, and the way to ask for one. Absent for
+    /// subcommands that serve the API without a config store;
+    /// `/system/restart` says so rather than 500ing.
+    pub restart: Option<Arc<crate::system::Restart>>,
+    /// Which build runs and whether a newer one is published. Absent
+    /// for subcommands that don't check; `/system/update` says so
+    /// rather than 500ing.
+    pub updates: Option<Arc<niles_update::Updates>>,
 }
 
 impl AppState {
@@ -175,6 +183,8 @@ impl AppState {
             voices: None,
             captures: None,
             secrets: None,
+            restart: None,
+            updates: None,
         }
     }
 
@@ -331,6 +341,16 @@ impl AppState {
 
     pub fn with_config_store(mut self, store: Option<Arc<niles_config::ConfigStore>>) -> Self {
         self.config = store;
+        self
+    }
+
+    pub fn with_restart(mut self, restart: Option<Arc<crate::system::Restart>>) -> Self {
+        self.restart = restart;
+        self
+    }
+
+    pub fn with_updates(mut self, updates: Option<Arc<niles_update::Updates>>) -> Self {
+        self.updates = updates;
         self
     }
 

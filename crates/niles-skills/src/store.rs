@@ -581,7 +581,7 @@ fn validate_skill_name(name: &str) -> Result<()> {
         });
     }
     let mut chars = name.chars();
-    let first = chars.next().unwrap();
+    let first = chars.next().expect("checked non-empty above");
     if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
         return Err(Error::InvalidName {
             name: name.to_string(),

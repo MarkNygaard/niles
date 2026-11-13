@@ -397,6 +397,7 @@ mod tests {
     /// A TV paired and standing in the office. Nothing listens on
     /// loopback for it, which is how a TV that is off looks.
     fn tv_in_the_office() -> TvControl {
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::set_var("NILES_TEST_TV_VOLUME_KEY", "key") };
         TvControl::new(Arc::new(
             ConfigStore::from_str_in_memory(

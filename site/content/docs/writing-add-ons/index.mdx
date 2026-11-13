@@ -38,8 +38,9 @@ does not know about.
 Niles's first-party add-ons are built the way this guide describes, in
 [`addons/`](https://github.com/MarkNygaard/niles-addons/tree/main/addons) of
 the add-on library's repository, `MarkNygaard/niles-addons`, and released one
-by one like anybody's. Each is a complete example to read. The first is the
-[worked example](/docs/writing-add-ons/example-spotprice)'s spot prices.
+by one like anybody's. Each is a complete example to read. To start your own,
+use the [template](https://github.com/MarkNygaard/niles-addon-template): a
+small add-on that already builds, checks and releases.
 
 You write the add-on in Rust, JavaScript, Go or Python, compile it to a
 WebAssembly component, publish it as a GitHub release, and anyone running Niles
@@ -141,7 +142,7 @@ See [host API](/docs/writing-add-ons/host-api#outside-the-host-api).
 
 ## The guide
 
-1. [Getting started](/docs/writing-add-ons/getting-started): template, build, run locally, release, install
+1. [Getting started](/docs/writing-add-ons/getting-started): template, build, run locally, release, install, and JavaScript and Python
 2. [The manifest](/docs/writing-add-ons/manifest): every field of `niles-integration.toml`
 3. [Host API](/docs/writing-add-ons/host-api): every import and export, with examples
 4. [Devices](/docs/writing-add-ons/devices): classes, state fields and units, controllable devices, naming
@@ -152,8 +153,6 @@ See [host API](/docs/writing-add-ons/host-api#outside-the-host-api).
 9. [Accounts and webhooks](/docs/writing-add-ons/accounts): signing in to a service, keeping its tokens, being called by it
 10. [Permissions](/docs/writing-add-ons/permissions): what each one allows and how the household sees it
 11. [Publishing](/docs/writing-add-ons/publishing): release layout, the add-on library, versioning, updates
-12. [Worked example: spot prices](/docs/writing-add-ons/example-spotprice): a complete plugin in Rust,
-   with the same tool in JavaScript and Python
 
 Why plugins are WebAssembly components, and what the sandbox does and does
 not promise, are in ARCHITECTURE.md's

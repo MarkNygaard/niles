@@ -12,6 +12,8 @@
 //! NILES_TEST_DATABASE_URL=postgres://... cargo test -p niles-db -- --ignored
 //! ```
 
+#![allow(clippy::unwrap_used, reason = "test helpers: a failure fails the test")]
+
 use niles_config::{ChangeSource, OverrideBackend, Revision, StoredState};
 use niles_db::PostgresBackend;
 
@@ -910,4 +912,113 @@ async fn a_persons_notifications_are_theirs_capped_and_replaced_by_tag() {
     assert_eq!(all.len() as i64, niles_webpush::inbox::KEPT_PER_PERSON);
     assert_eq!(inbox.page(&other, None, 50).await.unwrap().len(), 1);
     assert_eq!(inbox.read(&other, None).await.unwrap(), 1);
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn the_lights_at_eight_yesterday_are_kept_and_found_again() {
+    use chrono::TimeZone;
+    use niles_core::{DeviceId, DeviceState};
+    use niles_history::{
+        CommandEntry, CommandHistory, CommandQuery, StateEntry, StateHistory, StateQuery,
+    };
+
+    let Some(backend) = backend() else {
+        return;
+    };
+    let history = niles_db::PostgresHistory::new(backend.pool(), backend.describe_target());
+    // In 2001, so nothing else a test keeps is in the way, and taken
+    // away again at the end.
+    let at = |hour: u32| {
+        chrono::Utc
+            .with_ymd_and_hms(2001, 3, 4, hour, 0, 0)
+            .unwrap()
+    };
+    let table = DeviceId::parse("z2m:living_room/table").unwrap();
+    let strip = DeviceId::parse("wled:living_room/strip").unwrap();
+    let dimmed = |brightness: u8| DeviceState {
+        on: Some(true),
+        brightness: Some(brightness),
+        ..Default::default()
+    };
+    for (ts, id, brightness) in [
+        (at(19), &table, 60),
+        (at(19), &strip, 50),
+        (at(20), &table, 20),
+        (at(23), &table, 100),
+    ] {
+        StateHistory::record(
+            &history,
+            &StateEntry {
+                ts,
+                device_id: id.clone(),
+                state: dimmed(brightness),
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    let then = history
+        .snapshot_at(at(21), &[table.clone(), strip.clone()])
+        .await
+        .unwrap();
+    let brightness: Vec<_> = then
+        .iter()
+        .map(|e| (e.device_id.to_string(), e.state.brightness))
+        .collect();
+    assert_eq!(
+        brightness,
+        [
+            ("wled:living_room/strip".to_string(), Some(50)),
+            ("z2m:living_room/table".to_string(), Some(20)),
+        ]
+    );
+
+    let evening = StateHistory::query(
+        &history,
+        &StateQuery {
+            since: Some(at(18)),
+            until: Some(at(22)),
+            room: Some("living_room".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(evening.len(), 3);
+    assert_eq!(evening[0].state.brightness, Some(20), "newest first");
+
+    let heard = CommandEntry {
+        ts: at(20),
+        peer: "192.168.69.188:58583".parse().unwrap(),
+        origin_room: Some("living_room".into()),
+        transcript: "movie time".into(),
+        spoken_response: Some("Enjoy the film.".into()),
+        speaker: Some("Mark".into()),
+    };
+    CommandHistory::record(&history, &heard).await.unwrap();
+    let said = CommandHistory::query(
+        &history,
+        &CommandQuery {
+            since: Some(at(18)),
+            until: Some(at(22)),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(said, [heard]);
+
+    StateHistory::forget_before(&history, at(24)).await.unwrap();
+    CommandHistory::forget_before(&history, at(24))
+        .await
+        .unwrap();
+    assert!(
+        history
+            .snapshot_at(at(23), &[table])
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }

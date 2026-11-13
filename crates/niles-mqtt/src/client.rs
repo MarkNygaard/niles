@@ -161,7 +161,7 @@ impl MqttClient {
         // up via the replay path even if the immediate send below
         // races against an in-progress reconnect.
         {
-            let mut subs = self.subscriptions.lock().unwrap();
+            let mut subs = self.subscriptions.lock().unwrap_or_else(|e| e.into_inner());
             if !subs.iter().any(|t| t == topic) {
                 subs.push(topic.to_string());
             }
@@ -212,7 +212,10 @@ impl MqttClient {
     /// the original `subscribe` calls; duplicates are deduped at
     /// subscription time.
     pub fn subscriptions(&self) -> Vec<String> {
-        self.subscriptions.lock().unwrap().clone()
+        self.subscriptions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 
@@ -244,6 +247,14 @@ impl MqttPublisher {
         self.client
             .publish(topic, QoS::AtLeastOnce, false, payload.into())
             .await?;
+        Ok(())
+    }
+
+    /// Tell the broker goodbye: a DISCONNECT, so it sees a client leave
+    /// rather than a connection drop. Queued like a publish, so give the
+    /// eventloop a moment to send it before the client is dropped.
+    pub async fn disconnect(&self) -> Result<()> {
+        self.client.disconnect().await?;
         Ok(())
     }
 }
@@ -312,7 +323,10 @@ async fn pump_events(
                     // would double-subscribe, which Mosquitto handles
                     // poorly when multiple overlapping patterns are in
                     // play (silently wedges message delivery).
-                    let to_replay: Vec<String> = subscriptions.lock().unwrap().clone();
+                    let to_replay: Vec<String> = subscriptions
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
                     replay.replace(Replay::start(client.clone(), to_replay));
                 } else {
                     info!("MQTT connected");

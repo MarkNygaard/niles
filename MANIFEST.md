@@ -21,7 +21,9 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | --- | --- | --- |
 | `api-events-approval-changed` | approval_changed on /events/stream when one is held, answered or lapses, to its person only | [#455](https://github.com/MarkNygaard/niles/pull/455) |
 | `api-events-notifications` | notification_added and notifications_read on /events/stream, to their person only | [#483](https://github.com/MarkNygaard/niles/pull/483) |
+| `api-events-restart` | restart_pending_changed and restart_started on /events/stream, to everyone | [#507](https://github.com/MarkNygaard/niles/pull/507) |
 | `api-events-stream` | WebSocket /events/stream pushes real-time device and system events | [#86](https://github.com/MarkNygaard/niles/pull/86) |
+| `api-events-update` | update_checked on /events/stream, to everyone | [#516](https://github.com/MarkNygaard/niles/pull/516) |
 | `events-artifact-status` | artifact_changed on /events/stream, to its owner and whoever it is shared with only: the status line follows a job | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `api-artifact-images` | GET /me/artifacts/{id}/images/{image}: a picture an artifact keeps, its owner's only; GET lists them | [#442](https://github.com/MarkNygaard/niles/pull/442) |
 | `api-get-devices` | GET /devices returns the full device registry snapshot | [#13](https://github.com/MarkNygaard/niles/pull/13) |
@@ -41,6 +43,8 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `api-post-lights` | POST /lights sets every light in the house in one request | [#189](https://github.com/MarkNygaard/niles/pull/189) |
 | `api-post-room` | POST /rooms/{room} sets every light in a room in one request | [#178](https://github.com/MarkNygaard/niles/pull/178) |
 | `api-push` | GET /push/key; GET, POST and DELETE /me/push for this person's devices; POST /me/push/test | [#432](https://github.com/MarkNygaard/niles/pull/432) |
+| `api-system-restart` | GET /system/restart says what waits, the boot id, the build and what a restart cuts short; POST restarts Niles | [#507](https://github.com/MarkNygaard/niles/pull/507) |
+| `api-system-update` | GET /system/update says which build runs and what is newest without waiting; POST /system/update/check checks now | [#516](https://github.com/MarkNygaard/niles/pull/516) |
 | `api-web-search-test` | POST /integrations/web_search/test runs a web and an image query through the saved SearXNG and counts the results | [#451](https://github.com/MarkNygaard/niles/pull/451) |
 
 ## automations
@@ -61,18 +65,34 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 | Feature | Summary | Since |
 | --- | --- | --- |
-| `tool-command-history` | Query the command-history log for past user requests | [#70](https://github.com/MarkNygaard/niles/pull/70) |
+| `tool-command-history` | Ask what was said to Niles and when, from 14 days of spoken turns kept in Postgres | [#508](https://github.com/MarkNygaard/niles/pull/508) |
 | `tool-datetime` | Return the current date and time in the configured timezone | [#84](https://github.com/MarkNygaard/niles/pull/84) |
-| `tool-device-history` | Query the device-state history log for past state changes | [#71](https://github.com/MarkNygaard/niles/pull/71) |
+| `tool-device-history` | Ask how devices were at a past time and set them back, from 14 days of history in Postgres | [#508](https://github.com/MarkNygaard/niles/pull/508) |
 | `tool-explain-device-state` | Provide a natural-language explanation of a device's current state | [#70](https://github.com/MarkNygaard/niles/pull/70) |
 | `tool-light-control` | Turn lights on or off and set brightness or color temperature | [#3](https://github.com/MarkNygaard/niles/pull/3) |
 | `tool-look-up-capability` | Retrieve a capability reference document by name for the LLM context | [#84](https://github.com/MarkNygaard/niles/pull/84) |
-| `tool-scene-control` | Apply or delete saved scenes via structured tool calls | [#43](https://github.com/MarkNygaard/niles/pull/43) |
+| `tool-scene-control` | Apply a saved scene however it was asked for, through the model's apply_scene tool | [#517](https://github.com/MarkNygaard/niles/pull/517) |
 | `tool-sonos-transport` | Control Sonos speaker transport state via the speakers subsystem | [#65](https://github.com/MarkNygaard/niles/pull/65) |
 | `tool-timer` | Set, cancel, and list timers via structured tool calls | [#3](https://github.com/MarkNygaard/niles/pull/3) |
 | `tool-tv-volume` | tv_volume sets, steps, mutes or unmutes the TV's own speakers; music_volume turns the TV in a room with no Sonos | [#403](https://github.com/MarkNygaard/niles/pull/403) |
 | `tool-weather` | Fetch current weather and forecast via Open-Meteo | [#81](https://github.com/MarkNygaard/niles/pull/81) |
 | `tool-web-search` | Search the web via SearXNG and return summarized results; offered while the SearXNG add-on is set up | [#83](https://github.com/MarkNygaard/niles/pull/83) |
+
+### `tool-command-history` — example phrasings
+
+- what did I ask you this morning
+- turn it off again
+
+### `tool-device-history` — example phrasings
+
+- set the lights like yesterday at eight
+- make it like last night
+- when did the kitchen light go off
+
+### `tool-scene-control` — example phrasings
+
+- turn on the movie scene
+- movie time, please
 
 ## runtime
 
@@ -82,6 +102,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `notify-approval-waiting` | Something waiting for your yes is on your page at once, on your devices at once or a minute later; a tap opens its card | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `push-approval-buttons` | On Android and computers an approval's notification has Deny, Approve where a spoken yes counts, Review for a mail | [#485](https://github.com/MarkNygaard/niles/pull/485) |
 | `push-approval-replaced` | Answered or lapsed, an approval's notification is replaced quietly on your other devices with what became of it | [#485](https://github.com/MarkNygaard/niles/pull/485) |
+| `artifacts-designed-pages` | A new trip or training plan comes with a page the assistant designs as it writes it; the built-in view is a fallback | [#506](https://github.com/MarkNygaard/niles/pull/506) |
 | `artifacts-documents` | Claude or ChatGPT saves documents for you, with versions, and writes a big one in the background | [#429](https://github.com/MarkNygaard/niles/pull/429) |
 | `artifacts-edits` | Small changes to a saved item or its page made in the chat as edits; big or slow ones finish in the background | [#474](https://github.com/MarkNygaard/niles/pull/474) |
 | `artifacts-pages` | Ask Claude or ChatGPT for a page for any saved artifact: HTML that draws its data, and draws again as the data changes | [#440](https://github.com/MarkNygaard/niles/pull/440) |
@@ -92,13 +113,17 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `assistant-none` | Choose Niles's own model as the assistant: neither Claude nor ChatGPT answers, and nothing runs in the background | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `assistant-reads-attachments` | Claude or ChatGPT answers about an attached photo or PDF; a message with files always goes to the assistant | [#449](https://github.com/MarkNygaard/niles/pull/449) |
 | `web-search-live` | Adding, changing or removing the SearXNG address takes hold with the next search, without a restart | [#451](https://github.com/MarkNygaard/niles/pull/451) |
+| `runtime-build-info` | A workflow-built image knows its commit and build date and logs them at start; any other build is a dev build | [#516](https://github.com/MarkNygaard/niles/pull/516) |
+| `runtime-orderly-stop` | A restart, SIGTERM or Ctrl-C stops Niles in order: requests finish, delays are kept, satellites and MQTT close, exit 0 | [#507](https://github.com/MarkNygaard/niles/pull/507) |
+| `runtime-update-check` | Every six hours and when About Niles opens, Niles asks GitHub anonymously for a newer image; offline it says so | [#516](https://github.com/MarkNygaard/niles/pull/516) |
+| `ui-reload-on-new-build` | An open app, the iPhone Home Screen one included, reloads itself once when Niles comes back as another build | [#516](https://github.com/MarkNygaard/niles/pull/516) |
 | `notification-history` | What Niles says unprompted is kept in Postgres, so "what did I miss" still knows after a restart | [#466](https://github.com/MarkNygaard/niles/pull/466) |
 | `notifications-for-the-house` | An announcement with no room is spoken in every room with a satellite, still under quiet hours | [#466](https://github.com/MarkNygaard/niles/pull/466) |
 | `notifications-kept` | Every notification to a person kept, pushed or not: the newest 200, a newer one about the same thing replacing the last | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `push-artifact-ready` | A notification on your phone or computer when a document written in the background is ready; a tap opens it | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `push-artifact-shared` | A notification when someone shares an artifact with you, from the app or by asking: Mark shared “Thailand trip” with you | [#452](https://github.com/MarkNygaard/niles/pull/452) |
-| `observability-command-log` | Structured command-history log for every voice and API request | [#70](https://github.com/MarkNygaard/niles/pull/70) |
-| `observability-state-log` | Structured device-state history log for every state change | [#71](https://github.com/MarkNygaard/niles/pull/71) |
+| `observability-command-log` | Every spoken turn kept in Postgres for 14 days, on whenever there is a database | [#508](https://github.com/MarkNygaard/niles/pull/508) |
+| `observability-state-log` | Each device's whole state after every change kept in Postgres for 14 days, on with a database | [#508](https://github.com/MarkNygaard/niles/pull/508) |
 | `persistence-json-store` | JSON file persistence for timers, scenes, and morning-routine claims | [#64](https://github.com/MarkNygaard/niles/pull/64) |
 | `plugins-check-listing` | `niles plugin check` lists a plugin's permissions; `--listing` also checks the marker the add-on library needs | [#469](https://github.com/MarkNygaard/niles/pull/469) |
 | `plugins-dev-check` | `niles plugin check` validates a plugin as an install would; `niles plugin dev` runs one against a stand-in house | [#388](https://github.com/MarkNygaard/niles/pull/388) |
@@ -123,6 +148,11 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `notify-workout-counted` | A notification once per workout counted on your plan: Your 8.2 km run on Saturday was counted as the long run | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `training-plan-follows-runs` | A training plan follows your Strava runs: each marks its session done, and Claude or ChatGPT adjusts what is to come | [#436](https://github.com/MarkNygaard/niles/pull/436) |
 | `training-strava-sync` | Each person's own Strava: 180 days on connect, then a poll every 15 minutes within Strava's rate limits | [#418](https://github.com/MarkNygaard/niles/pull/418) |
+
+### `artifacts-designed-pages` — example phrasings
+
+- plan our trip to Thailand in January
+- make me a training plan for the Copenhagen Half
 
 ### `artifacts-documents` — example phrasings
 
@@ -212,12 +242,17 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-notifications-bell` | The bell counts what is unread, 9+ over nine, live; opening the page reads what is on it, and every bell of yours clears | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `ui-notifications-page` | Notifications, by the avatar: Now (today's run, a delivery, pair this phone), then all Niles told you; Home is the house | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `ui-todays-run-card` | Today's run under Now on your Notifications page: the session, the next, the week's km, the coach's note, Done, Skipped | [#438](https://github.com/MarkNygaard/niles/pull/438) |
+| `config-live-speaking-integrations` | Speaking and integration settings say they apply at once, as they always did, and the voice lock asks for no restart | [#507](https://github.com/MarkNygaard/niles/pull/507) |
+| `ui-about-niles` | About Niles in Settings: version, commit and build date; Update available lists what's new and how to update | [#516](https://github.com/MarkNygaard/niles/pull/516) |
 | `ui-api-access` | Settings → API access: the key masked, with reveal, copy, a curl example and New key, for a signed-in person only | [#405](https://github.com/MarkNygaard/niles/pull/405) |
 | `ui-profile-sections` | My profile laid out like Settings: About you, My phone, Notifications, each add-on a page, Approvals | [#455](https://github.com/MarkNygaard/niles/pull/455) |
 | `ui-push-notifications` | My profile → Notifications: on for this device, your devices, Send a test; iPhone asks for the Home Screen app | [#432](https://github.com/MarkNygaard/niles/pull/432) |
+| `ui-restart-now` | Restart now under Kubernetes or a declared supervisor: says what a restart cuts short, waits for the new Niles, reloads | [#507](https://github.com/MarkNygaard/niles/pull/507) |
+| `ui-restart-pending` | While a change waits for a restart, the top of Settings names it and its menu has a dot; changing it back clears both | [#507](https://github.com/MarkNygaard/niles/pull/507) |
 | `ui-settings-system` | Settings splits the system (Devices: the broker; Voice & AI: hearing, thinking, speaking) from optional add-ons | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `ui-setup-checklist` | On a new install each System page leads with what it still needs, and the settings list counts it | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `ui-strava-connect` | My profile → Strava: set up your own Strava app, save its keys, connect, last sync, Sync now, disconnect | [#418](https://github.com/MarkNygaard/niles/pull/418) |
+| `ui-update-dot` | While a newer Niles is published, Settings and its About Niles entry carry a dot | [#516](https://github.com/MarkNygaard/niles/pull/516) |
 | `ui-voice-roles` | Picking a hearing or thinking provider sets it up: its API key sits beside it, and one save declares it | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 
 ## voice
@@ -236,6 +271,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `media-duck` | Temporarily lower volume for voice responses | [#73](https://github.com/MarkNygaard/niles/pull/73) |
 | `media-next-previous` | Skip to the next or previous track | [#75](https://github.com/MarkNygaard/niles/pull/75) |
 | `media-play-pause` | Play or pause media playback on the active speaker | [#65](https://github.com/MarkNygaard/niles/pull/65) |
+| `media-play-song` | A song by name and artist, however it is said, plays straight from Spotify | [#509](https://github.com/MarkNygaard/niles/pull/509) |
 | `media-volume-set` | Set the speaker volume to a specific level | [#65](https://github.com/MarkNygaard/niles/pull/65) |
 | `media-volume-step` | Raise or lower the speaker volume by one step | [#65](https://github.com/MarkNygaard/niles/pull/65) |
 | `podcasts` | A researched two-host episode, voiced by the house's own Kokoro, played in the app or on a Sonos | [#457](https://github.com/MarkNygaard/niles/pull/457) |
@@ -319,6 +355,12 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 - play music
 - pause the music
+
+### `media-play-song` — example phrasings
+
+- play Gravity by John Mayer
+- play She Was Just a Stranger with Benny G
+- put on John Mayer's Gravity
 
 ### `media-volume-set` — example phrasings
 

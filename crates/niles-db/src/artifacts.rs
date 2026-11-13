@@ -26,7 +26,7 @@ use niles_artifacts::{
     Status, StatusChange,
 };
 use sqlx::postgres::{PgPool, PgRow};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{AssertSqlSafe, Postgres, Row, Transaction};
 
 const SCHEMA: &str = "
 create table if not exists artifacts (
@@ -145,9 +145,9 @@ impl PostgresArtifacts {
     }
 
     async fn one(&self, person: &str, id: i64) -> Result<Option<Artifact>> {
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(AssertSqlSafe(format!(
             "select {COLUMNS} from artifacts where artifacts.id = $1 and artifacts.person = $2"
-        ))
+        )))
         .bind(id)
         .bind(person)
         .fetch_optional(&self.pool)
@@ -414,13 +414,13 @@ impl ArtifactStore for PostgresArtifacts {
 
     async fn list(&self, person: &str, filter: Filter) -> Result<Vec<Artifact>> {
         self.ensure_schema().await?;
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(AssertSqlSafe(format!(
             "select {COLUMNS} from artifacts
              where artifacts.person = $1
                and ($2::boolean is null or artifacts.pinned = $2)
                and ($3::boolean is null or artifacts.archived = $3)
              order by artifacts.pinned desc, artifacts.updated_at desc, artifacts.id desc"
-        ))
+        )))
         .bind(person)
         .bind(filter.pinned)
         .bind(filter.archived)
@@ -437,11 +437,11 @@ impl ArtifactStore for PostgresArtifacts {
 
     async fn made_before(&self, kind: &str, before: DateTime<Utc>) -> Result<Vec<Artifact>> {
         self.ensure_schema().await?;
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(AssertSqlSafe(format!(
             "select {COLUMNS} from artifacts
              where artifacts.kind = $1 and artifacts.created_at < $2
              order by artifacts.created_at, artifacts.id"
-        ))
+        )))
         .bind(kind)
         .bind(before)
         .fetch_all(&self.pool)
@@ -598,7 +598,7 @@ impl ArtifactStore for PostgresArtifacts {
 
     async fn change(&self, person: &str, id: i64, changes: Changes) -> Result<Option<Artifact>> {
         self.ensure_schema().await?;
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(AssertSqlSafe(format!(
             "update artifacts set
                  title = coalesce($3, title),
                  updated_at = case when $3 is null then updated_at else now() end,
@@ -607,7 +607,7 @@ impl ArtifactStore for PostgresArtifacts {
                  notify = coalesce($6, notify)
              where artifacts.id = $1 and artifacts.person = $2
              returning {COLUMNS}"
-        ))
+        )))
         .bind(id)
         .bind(person)
         .bind(&changes.title)
@@ -627,12 +627,12 @@ impl ArtifactStore for PostgresArtifacts {
         status: StatusChange,
     ) -> Result<Option<Artifact>> {
         self.ensure_schema().await?;
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(AssertSqlSafe(format!(
             "update artifacts set status = $3, status_text = $4, error = $5, job_id = $6,
                  updated_at = now()
              where artifacts.id = $1 and artifacts.person = $2
              returning {COLUMNS}"
-        ))
+        )))
         .bind(id)
         .bind(person)
         .bind(status.status.as_str())
@@ -679,12 +679,12 @@ impl ArtifactStore for PostgresArtifacts {
             kept.get::<i64, _>("total").max(0) as usize,
             new.picture.bytes.len(),
         )?;
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(AssertSqlSafe(format!(
             "insert into artifact_images as i
                  (artifact_id, mime, bytes, width, height, alt, credit, source)
              values ($1, $2, $3, $4, $5, $6, $7, $8)
              returning {IMAGE_COLUMNS}"
-        ))
+        )))
         .bind(id)
         .bind(new.picture.mime)
         .bind(&new.picture.bytes)
@@ -702,12 +702,12 @@ impl ArtifactStore for PostgresArtifacts {
 
     async fn images(&self, person: &str, id: i64) -> Result<Vec<Image>> {
         self.ensure_schema().await?;
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(AssertSqlSafe(format!(
             "select {IMAGE_COLUMNS}
              from artifact_images i join artifacts a on a.id = i.artifact_id
              where a.id = $1 and a.person = $2
              order by i.id"
-        ))
+        )))
         .bind(id)
         .bind(person)
         .fetch_all(&self.pool)
@@ -718,11 +718,11 @@ impl ArtifactStore for PostgresArtifacts {
 
     async fn image(&self, person: &str, id: i64, picture: i64) -> Result<Option<ImageData>> {
         self.ensure_schema().await?;
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(AssertSqlSafe(format!(
             "select {IMAGE_COLUMNS}, i.bytes
              from artifact_images i join artifacts a on a.id = i.artifact_id
              where a.id = $1 and a.person = $2 and i.id = $3"
-        ))
+        )))
         .bind(id)
         .bind(person)
         .bind(picture)
@@ -777,11 +777,11 @@ impl ArtifactStore for PostgresArtifacts {
 
     async fn shared(&self, person: &str, id: i64) -> Result<Option<(Artifact, Level)>> {
         self.ensure_schema().await?;
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(AssertSqlSafe(format!(
             "select {COLUMNS}, s.level, s.pinned as my_pin
              from artifacts join artifact_shares s on s.artifact_id = artifacts.id
              where artifacts.id = $1 and s.person = $2"
-        ))
+        )))
         .bind(id)
         .bind(person)
         .fetch_optional(&self.pool)
@@ -792,14 +792,14 @@ impl ArtifactStore for PostgresArtifacts {
 
     async fn shared_with(&self, person: &str, filter: Filter) -> Result<Vec<(Artifact, Level)>> {
         self.ensure_schema().await?;
-        let rows = sqlx::query(&format!(
+        let rows = sqlx::query(AssertSqlSafe(format!(
             "select {COLUMNS}, s.level, s.pinned as my_pin
              from artifacts join artifact_shares s on s.artifact_id = artifacts.id
              where s.person = $1
                and ($2::boolean is null or s.pinned = $2)
                and ($3::boolean is null or artifacts.archived = $3)
              order by s.pinned desc, artifacts.updated_at desc, artifacts.id desc"
-        ))
+        )))
         .bind(person)
         .bind(filter.pinned)
         .bind(filter.archived)

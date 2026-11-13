@@ -58,9 +58,11 @@ pub mod server;
 pub mod skills;
 pub mod speakers;
 pub mod state;
+pub mod system;
 pub mod tool_servers;
 pub mod training;
 pub mod tv;
+pub mod update;
 pub mod voices;
 #[cfg(feature = "ui")]
 pub mod web;
@@ -71,3 +73,4 @@ pub use publish::DevicePublisher;
 pub use secrets::SecretStore;
 pub use server::{router, serve};
 pub use state::{AppState, LinearWebhookState};
+pub use system::{Boot, CutShort, Restart, Supervisor, UnderWay};

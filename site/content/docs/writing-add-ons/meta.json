@@ -13,7 +13,6 @@
     "websocket",
     "accounts",
     "permissions",
-    "publishing",
-    "example-spotprice"
+    "publishing"
   ]
 }

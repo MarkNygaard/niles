@@ -9,6 +9,7 @@ import { MediaPage, somethingPlays } from "@/components/MediaPage";
 import { AvatarMenu } from "@/components/AvatarMenu";
 import { MyProfile } from "@/components/MyProfile";
 import { NotificationBell } from "@/components/NotificationBell";
+import { RestartingScreen } from "@/components/RestartingScreen";
 import { NotificationsPage } from "@/components/NotificationsPage";
 import { PluginPageView } from "@/components/PluginPageView";
 import { RoomDashboard } from "@/components/RoomDashboard";
@@ -19,9 +20,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { menuLayout } from "@/lib/menu";
 import { pageRoute, pluginPages } from "@/lib/plugins";
+import { startWaiting } from "@/lib/restart";
 import type { PluginPageEntry } from "@/lib/plugins";
 import { useRoute } from "@/lib/route";
 import { useTheme } from "@/lib/theme";
+import { useRestartStatus } from "@/hooks/useRestartStatus";
+import { useUpdateStatus } from "@/hooks/useUpdateStatus";
+import { useReloadOnNewBuild } from "@/hooks/useReloadOnNewBuild";
+import { settingsDotFor } from "@/lib/update";
 import { cn } from "@/lib/utils";
 
 // Its own chunk: React Flow and dagre are a quarter of the app,
@@ -99,12 +105,31 @@ export function App() {
     enabled: !auth.isLoading && !refused,
     retry: false,
   });
+  const restart = useRestartStatus(!auth.isLoading && !refused);
+  const update = useUpdateStatus(!auth.isLoading && !refused);
+  // A page's script is the build that served it: when another one
+  // answers, load its own, once. A Niles from before builds were named
+  // answers without one (a rollback under an open page); that is no
+  // answer here, not a crash.
+  useReloadOnNewBuild(restart.data?.build?.commit);
+  const settingsDot = settingsDotFor(restart.data, update.data);
 
   // A new page starts at its top. `#root` is what scrolls, not the
   // document — see globals.css.
   useEffect(() => {
     document.getElementById("root")?.scrollTo(0, 0);
   }, [route]);
+
+  // A page loaded while Niles was already on its way down waits with
+  // the rest.
+  useEffect(() => {
+    if (restart.data?.restarting) {
+      startWaiting({
+        before: restart.data.boot.id,
+        supervisor: restart.data.supervisor,
+      });
+    }
+  }, [restart.data]);
 
   // The header's height, for what sticks under it as a page scrolls
   // (the chat's Niles, see ChatView). Measured: the header wraps and
@@ -168,15 +193,14 @@ export function App() {
         aria-hidden
         className="bg-background pointer-events-none fixed inset-x-0 top-0 z-40 h-[env(safe-area-inset-top)]"
       />
-      {/* Stays at the top of a desk as a long page scrolls — the menu is
-          there, and the chat's conversation can be pages long. The
-          negative margins undo the padding that gives it its own
-          background edge to edge, so unscrolled it sits where it did. In
-          a hand the menu is the tab bar at the bottom, so the title
-          scrolls away as before. */}
+      {/* Stays at the top as a long page scrolls, in a hand as on a desk:
+          the bell and the avatar are there, and the chat's conversation
+          can be pages long. The negative margins undo the padding that
+          gives it its own background edge to edge, so unscrolled it sits
+          where it did; on a phone that padding includes the status bar. */}
       <header
         ref={header}
-        className="flex items-center gap-2 sm:bg-background sm:sticky sm:top-0 sm:z-30 sm:-mx-6 sm:-mt-6 sm:-mb-2 sm:px-6 sm:pt-6 sm:pb-2"
+        className="bg-background sticky top-0 z-30 -mx-4 -mt-[calc(env(safe-area-inset-top)+0.25rem)] -mb-2 flex items-center gap-2 px-4 pt-[calc(env(safe-area-inset-top)+0.25rem)] pb-2 sm:-mx-6 sm:-mt-6 sm:px-6 sm:pt-6"
       >
         {screen.parent && (
           <a
@@ -209,7 +233,12 @@ export function App() {
         )}
         {/* Nothing after Home until the arrangement is known: an entry
             somebody hid should not flash up on every load. */}
-        <TabBar route={screen.at} menu={layout?.main ?? []} pages={pages} />
+        <TabBar
+          route={screen.at}
+          menu={layout?.main ?? []}
+          pages={pages}
+          settingsDot={settingsDot}
+        />
         {/* Notifications are someone's own, so only with someone signed in. */}
         {email && <NotificationBell current={screen.at === "/notifications"} />}
         <AvatarMenu
@@ -219,10 +248,12 @@ export function App() {
           pages={pages}
           theme={theme}
           onTheme={setTheme}
+          settingsDot={settingsDot}
         />
       </header>
 
       {screen.body}
+      <RestartingScreen />
     </main>
   );
 }

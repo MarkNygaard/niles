@@ -18,13 +18,7 @@ use std::time::Duration;
 /// validated config, resolving its key.
 pub(crate) fn build_llm_client(cfg: &Config) -> anyhow::Result<OpenAiClient> {
     let endpoint = cfg
-        .endpoint_for(
-            niles_config::Role::Llm,
-            cfg.llm.provider.as_deref(),
-            cfg.llm.base_url.as_deref(),
-            &cfg.llm.api_key_env,
-            "llm",
-        )
+        .llm_endpoint()
         .context("resolving where the language model should go")?;
     OpenAiClient::new(OpenAiConfig {
         api_key: endpoint.api_key,
@@ -44,15 +38,10 @@ pub(crate) fn build_tier2_client(cfg: &Config) -> anyhow::Result<Option<Arc<dyn 
     // The role that most wants a provider: escalation is by definition
     // somewhere other than the tier below it, and used to say so by
     // repeating a whole endpoint inline.
-    let endpoint = cfg
-        .endpoint_for(
-            niles_config::Role::Llm,
-            tier2_cfg.provider.as_deref(),
-            Some(&tier2_cfg.base_url),
-            &tier2_cfg.api_key_env,
-            "llm.tier2",
-        )
-        .context("resolving where the escalation tier should go")?;
+    let endpoint = match cfg.tier2_endpoint() {
+        None => return Ok(None),
+        Some(endpoint) => endpoint.context("resolving where the escalation tier should go")?,
+    };
     let openai_cfg = OpenAiConfig {
         api_key: endpoint.api_key,
         base_url: endpoint.base_url,

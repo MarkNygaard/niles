@@ -264,6 +264,32 @@ describe("ArtifactView", () => {
     expect(menuItems()).toEqual(["Share…"]);
   });
 
+  it("shows no built-in trip while its page is still being designed", async () => {
+    const trip = {
+      destination: "Thailand",
+      start: "2027-01-03",
+      end: "2027-01-04",
+      days: [{ date: "2027-01-03", place: "Bangkok", items: [] }],
+    };
+    show(
+      detail({
+        kind: "trip",
+        status: "working",
+        status_text: "Writing your Thailand travel plan…",
+        content: trip,
+        current_revision: 1,
+      }),
+    );
+    expect(await screen.findByText("Writing your Thailand travel plan…")).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Days" })).not.toBeInTheDocument();
+  });
+
+  it("shows a document as it is written", async () => {
+    show(detail({ status: "working", status_text: "Writing your packing list…" }));
+    expect(await screen.findByText("Writing your packing list…")).toBeInTheDocument();
+    expect(screen.getByText("Passport")).toBeInTheDocument();
+  });
+
   it("says why a job did not finish, and tries it again", async () => {
     show(
       detail({ status: "failed", error: "Claude did not finish", content: null, revisions: [] }),
@@ -348,6 +374,40 @@ describe("ArtifactView", () => {
       await waitFor(() => expect(patch).toHaveBeenCalledWith(5, { remove_page: true }));
       expect(await screen.findByRole("checkbox", { name: "Passport" })).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Built-in" })).toBeNull();
+    });
+
+    describe("on a trip", () => {
+      const TRIP_PAGED = () =>
+        detail({
+          kind: "trip",
+          content: {
+            destination: "Thailand",
+            start: "2027-01-03",
+            end: "2027-01-04",
+            days: [{ date: "2027-01-03", place: "Bangkok", items: [] }],
+          },
+          page: 3,
+          page_html: "<h1>Thailand</h1>",
+          today: "2026-10-16",
+        });
+
+      it("offers no built-in view and no Remove page beside a page that works", async () => {
+        show(TRIP_PAGED());
+        expect(await screen.findByTitle("Packing list")).toBeInTheDocument();
+        expect(screen.queryByRole("group", { name: "Show as" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Remove page" })).toBeNull();
+      });
+
+      it("falls back to the built-in view when the page breaks, and back to the page on a tap", async () => {
+        show(TRIP_PAGED());
+        await screen.findByTitle("Packing list");
+        say({ type: "error", message: "boom" });
+        expect(await screen.findByText(/The page could not be shown/)).toBeInTheDocument();
+        expect(screen.getByRole("list", { name: "Days" })).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: "Page" }));
+        expect(await screen.findByTitle("Packing list")).toBeInTheDocument();
+        expect(screen.queryByRole("group", { name: "Show as" })).toBeNull();
+      });
     });
 
     it("has no switch and no frame without a page", async () => {

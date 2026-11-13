@@ -841,7 +841,97 @@ export interface Applied {
   changes: Change[];
   summary: string;
   noop: boolean;
-  needs_restart: string[];
+  /** What this write left waiting for a restart: touched, read only at
+      startup, and still different from what Niles started with. */
+  needs_restart: RestartItem[];
+}
+
+export interface RestartItem {
+  /** The top-level config section, e.g. "mqtt". */
+  what: string;
+  /** The name the Settings page gives it, e.g. "Zigbee & MQTT". */
+  label: string;
+}
+
+/** What waits for a restart, and the way to ask for one. */
+export interface RestartStatus {
+  boot: Boot;
+  pending: PendingRestart[];
+  /** What starts Niles again when it exits, or null when nothing does. */
+  supervisor: string | null;
+  /** Whether the overrides a restart would apply outlive the process. */
+  persistent: boolean;
+  /** A restart was asked for; this process is on its way down. */
+  restarting: boolean;
+  cut_short: CutShort;
+  /** Which build answered; an open app reloads when it changes.
+      Absent from a Niles older than About Niles. */
+  build?: BuildInfo;
+}
+
+/** Which build a Niles is: its version, and the commit and time the
+    image was built from. A build without them, `cargo run` or a local
+    Docker build, is a development build. */
+export interface BuildInfo {
+  version: string;
+  commit: string | null;
+  built_at: string | null;
+}
+
+/** Whether a newer Niles is published, and what changed between this
+    build and the newest. `GET /system/update` answers what the last
+    check kept and never waits on the network; `POST
+    /system/update/check` checks now. */
+export interface UpdateStatus {
+  running: BuildInfo;
+  state: "dev_build" | "not_checked" | "up_to_date" | "update_available";
+  /** The last successful check. */
+  checked_at: string | null;
+  /** Set when the latest attempt failed; cleared by the next success. */
+  failed: { at: string; reason: string } | null;
+  newest: {
+    digest: string;
+    image: string;
+    commit: string;
+    created: string | null;
+    version: string | null;
+  } | null;
+  /** This build is ahead of the newest published image. */
+  newer_than_published: boolean;
+  changes: { commits: UpdateChange[]; truncated: boolean } | null;
+  /** Why what changed couldn't be listed, when it couldn't. */
+  changes_failed: string | null;
+  compare_url: string | null;
+  /** The pod's namespace, for the command About Niles offers. */
+  namespace: string | null;
+}
+
+/** One commit between the running build and the newest, as What's new
+    shows it: a squash-merged pull request title, linked. */
+export interface UpdateChange {
+  sha: string;
+  subject: string;
+  pr: number | null;
+  url: string;
+  at: string | null;
+}
+
+export interface Boot {
+  id: string;
+  started_at: string;
+}
+
+export interface PendingRestart {
+  what: string;
+  label: string;
+  since: string;
+}
+
+/** What a restart would cut short, counted. */
+export interface CutShort {
+  jobs: number;
+  wake_ups: number;
+  approvals: number;
 }
 
 export interface Revision {
@@ -2037,6 +2127,20 @@ export const api = {
     request<Applied>(`/config/${encodeURIComponent(path)}`, {
       method: "DELETE",
     }),
+
+  /** What waits for a restart, this start's boot id, and what a restart
+      would cut short. Asked again on `restart_pending_changed`. */
+  restartStatus: () => request<RestartStatus>("/system/restart", { cache: "no-store" }),
+  /** Ask Niles to stop, so whatever runs it starts it again. */
+  restart: () => request<{ boot: Boot }>("/system/restart", { method: "POST" }),
+
+  /** Which build runs and whether a newer one is published: the kept
+      answer, never waiting on the network. Asked again on
+      `update_checked`. */
+  updateStatus: () => request<UpdateStatus>("/system/update", { cache: "no-store" }),
+  /** Check now whether a newer Niles is published. Single-flight and
+      throttled; the answer is also kept for `updateStatus`. */
+  checkForUpdate: () => request<UpdateStatus>("/system/update/check", { method: "POST" }),
 
   devices: () => request<Device[]>("/devices"),
 

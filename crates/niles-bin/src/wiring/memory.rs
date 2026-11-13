@@ -1,13 +1,13 @@
 //! Memory, the journal, conversations, skills and device history, kept in Postgres.
 
 use crate::{approvals, chat_log, conversation, review};
-use anyhow::Context;
 use chrono::Utc;
 use niles_config::Config;
 use niles_core::{DeviceId, DeviceState};
-use niles_history::{StateEntry, StateReader, StateWriter};
+use niles_history::{CommandEntry, CommandHistory, KEPT_DAYS, StateEntry, StateHistory};
 use niles_memory::MemoryStore;
 use niles_skills::SkillStore;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -318,39 +318,127 @@ pub(crate) fn spawn_skill_curator(
     }))
 }
 
-/// Build a `StateWriter` from the `[history]` section, pruning old
-/// files on open. Returns a disabled no-op writer when no directory
-/// is configured.
-pub(crate) fn build_state_writer(cfg: &Config) -> anyhow::Result<Arc<StateWriter>> {
-    let writer = match &cfg.history.directory {
-        Some(dir) => {
-            let w = StateWriter::new(dir).context("opening state history writer")?;
-            if let Err(e) = w.prune(cfg.history.retention_days) {
-                tracing::warn!("state history prune failed: {e:#}");
-            }
-            w
-        }
-        None => StateWriter::disabled(),
-    };
-    Ok(Arc::new(writer))
+/// The device state and command histories, both in Postgres.
+pub(crate) struct History {
+    pub(crate) states: Arc<dyn StateHistory>,
+    pub(crate) commands: Arc<dyn CommandHistory>,
 }
 
-/// Build a `StateReader` from the `[history]` section. Returns a
-/// disabled no-op reader when no directory is configured.
-pub(crate) fn build_state_reader(cfg: &Config) -> Arc<StateReader> {
-    match &cfg.history.directory {
-        Some(dir) => Arc::new(StateReader::new(dir)),
-        None => Arc::new(StateReader::disabled()),
+impl History {
+    /// Offer the tools that read the histories.
+    pub(crate) fn register_tools(
+        &self,
+        tools: &mut niles_tools::ToolRegistry,
+        registry: Arc<niles_core::DeviceRegistry>,
+    ) {
+        niles_tools::register_history_tools(tools, self.commands.clone());
+        niles_tools::register_state_history_tools(tools, self.states.clone(), registry);
+    }
+
+    /// Keep a spoken turn, away from the turn: it is spoken without
+    /// waiting on the database.
+    pub(crate) fn record_command(&self, entry: CommandEntry) {
+        let commands = self.commands.clone();
+        tokio::spawn(async move {
+            if let Err(e) = commands.record(&entry).await {
+                tracing::warn!("[history] a spoken turn was not kept: {e}");
+            }
+        });
     }
 }
 
-/// Append a device-state snapshot to the history log.
-pub(crate) fn append_state_history(writer: &StateWriter, id: &DeviceId, state: &DeviceState) {
-    if let Err(e) = writer.append(&StateEntry {
-        ts: Utc::now(),
-        device_id: id.clone(),
-        state: state.clone(),
-    }) {
-        tracing::warn!("state history append failed: {e:#}");
+/// The histories, when there is a database, and a task that lets go
+/// of what is older than [`KEPT_DAYS`]. Without a database none is
+/// kept, and the tools that read them are not offered.
+pub(crate) fn build_history(cfg: &Config) -> Option<History> {
+    let Some(db) = super::stores::database(cfg) else {
+        tracing::info!("[history] no database; nothing is kept of how the house was");
+        return None;
+    };
+    let history = Arc::new(niles_db::PostgresHistory::new(
+        db.pool(),
+        db.describe_target(),
+    ));
+    let pruned = history.clone();
+    tokio::spawn(async move {
+        loop {
+            let before = Utc::now() - chrono::Duration::days(KEPT_DAYS);
+            if let Err(e) = StateHistory::forget_before(&*pruned, before).await {
+                tracing::warn!("[history] old device states not let go: {e}");
+            }
+            if let Err(e) = CommandHistory::forget_before(&*pruned, before).await {
+                tracing::warn!("[history] old spoken turns not let go: {e}");
+            }
+            tokio::time::sleep(Duration::from_secs(60 * 60)).await;
+        }
+    });
+    Some(History {
+        states: history.clone(),
+        commands: history,
+    })
+}
+
+/// Where the event loop sends each device's whole state after a change:
+/// a task of its own keeps it, so a slow database never holds up the
+/// loop that the lights answer to.
+pub(crate) fn spawn_state_recorder(
+    states: Arc<dyn StateHistory>,
+) -> tokio::sync::mpsc::UnboundedSender<StateEntry> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(record_states(states, rx));
+    tx
+}
+
+/// Keep each state that differs from the last one kept for its device:
+/// devices report the same state again and again, and a reading that
+/// did not move is not a change.
+async fn record_states(
+    states: Arc<dyn StateHistory>,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<StateEntry>,
+) {
+    let mut last: HashMap<DeviceId, DeviceState> = HashMap::new();
+    while let Some(entry) = rx.recv().await {
+        if last.get(&entry.device_id) == Some(&entry.state) {
+            continue;
+        }
+        match states.record(&entry).await {
+            Ok(()) => {
+                last.insert(entry.device_id, entry.state);
+            }
+            Err(e) => tracing::warn!("[history] {} not kept: {e}", entry.device_id),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use niles_history::{MemoryStateHistory, StateQuery};
+
+    fn entry(minute: u32, brightness: u8) -> StateEntry {
+        use chrono::TimeZone;
+        StateEntry {
+            ts: Utc.with_ymd_and_hms(2026, 10, 30, 20, minute, 0).unwrap(),
+            device_id: DeviceId::parse("z2m:living_room/table").unwrap(),
+            state: DeviceState {
+                on: Some(true),
+                brightness: Some(brightness),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn a_state_reported_again_unchanged_is_kept_once() {
+        let states = Arc::new(MemoryStateHistory::new());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        for e in [entry(0, 40), entry(1, 40), entry(2, 20), entry(3, 40)] {
+            tx.send(e).unwrap();
+        }
+        drop(tx);
+        record_states(states.clone(), rx).await;
+        let kept = states.query(&StateQuery::default()).await.unwrap();
+        let brightness: Vec<_> = kept.iter().rev().map(|e| e.state.brightness).collect();
+        assert_eq!(brightness, [Some(40), Some(20), Some(40)]);
     }
 }

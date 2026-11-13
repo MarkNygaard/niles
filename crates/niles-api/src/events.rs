@@ -67,6 +67,17 @@ pub enum WireEvent {
     },
     /// The viewer read their notifications, here or on another device.
     NotificationsRead {},
+    /// What waits for a restart changed; the app asks
+    /// `/system/restart` again.
+    RestartPendingChanged {},
+    /// Niles is restarting; the app waits for a boot other than this
+    /// one. Sent to everybody while the stop runs.
+    RestartStarted {
+        boot_id: String,
+    },
+    /// A check for a newer Niles finished; the app asks
+    /// `/system/update` again.
+    UpdateChecked {},
     Ping {
         ts: String,
     },
@@ -123,6 +134,9 @@ impl WireEvent {
             Event::UiInvalidated { plugin, surface } => {
                 Some(WireEvent::UiInvalidated { plugin, surface })
             }
+            Event::RestartPendingChanged => Some(WireEvent::RestartPendingChanged {}),
+            Event::RestartStarted { boot_id } => Some(WireEvent::RestartStarted { boot_id }),
+            Event::UpdateChecked => Some(WireEvent::UpdateChecked {}),
             _ => None,
         }
     }
@@ -139,6 +153,10 @@ impl WireEvent {
 ///   has something new to show
 /// - `artifact_changed`, `approval_changed`, `notification_added` and
 ///   `notifications_read`, each only to the person it is about
+/// - `restart_pending_changed` and `restart_started`, to everybody:
+///   what waits for a restart changed, and Niles is on its way down
+/// - `update_checked`, to everybody: a check for a newer Niles
+///   finished, which About Niles and the Settings dot follow
 /// - A 30-second application-level heartbeat (`{"type":"ping"}`)
 /// - Slow-consumer detection: if the cumulative number of dropped events
 ///   reaches 256, the connection is closed with `{"type":"close"}`
@@ -291,6 +309,38 @@ mod tests {
             ("origin", "https://niles.example"),
             ("host", "niles.example"),
         ])));
+    }
+
+    #[test]
+    fn restart_events_reach_everybody() {
+        // The house's, not one person's: every open app re-asks what
+        // waits, and every one of them starts waiting for the new Niles.
+        let started = serde_json::to_value(
+            WireEvent::for_viewer(
+                Event::RestartStarted {
+                    boot_id: "b".into(),
+                },
+                "person:x",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            started,
+            serde_json::json!({"type": "restart_started", "boot_id": "b"})
+        );
+        let pending = serde_json::to_value(
+            WireEvent::for_viewer(Event::RestartPendingChanged, "person:x").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            pending,
+            serde_json::json!({"type": "restart_pending_changed"})
+        );
+        let checked =
+            serde_json::to_value(WireEvent::for_viewer(Event::UpdateChecked, "person:x").unwrap())
+                .unwrap();
+        assert_eq!(checked, serde_json::json!({"type": "update_checked"}));
     }
 
     #[test]

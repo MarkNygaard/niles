@@ -3,7 +3,7 @@
 use crate::state::{HomeState, Override, PresenceSignal, PresenceSnapshot, SourceReading};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 /// Aggregates readings from one or more `PresenceSource`s and applies
 /// hysteresis so that arriving home is detected immediately while
@@ -31,55 +31,52 @@ impl PresenceAggregator {
     /// same source.
     pub fn ingest(&self, signal: PresenceSignal) {
         if signal.anyone_home {
-            *self.last_resolved.lock().unwrap() = HomeState::Home;
-            *self.away_pending_since.lock().unwrap() = None;
+            *lock(&self.last_resolved) = HomeState::Home;
+            *lock(&self.away_pending_since) = None;
         }
-        self.signals
-            .lock()
-            .unwrap()
-            .insert(signal.source.clone(), signal);
+        lock(&self.signals).insert(signal.source.clone(), signal);
     }
 
     /// Set the manual override.
     pub fn set_override(&self, ov: Override) {
-        let mut pending = self.away_pending_since.lock().unwrap();
+        let mut pending = lock(&self.away_pending_since);
         if ov == Override::Auto {
             *pending = None;
         }
         drop(pending);
-        *self.override_state.lock().unwrap() = ov;
+        *lock(&self.override_state) = ov;
     }
 
     /// Resolve the current household state given `now`.
     pub fn resolve(&self, now: DateTime<Utc>) -> HomeState {
-        let ov = *self.override_state.lock().unwrap();
+        let ov = *lock(&self.override_state);
 
         if ov == Override::ForceHome {
-            *self.last_resolved.lock().unwrap() = HomeState::Home;
+            *lock(&self.last_resolved) = HomeState::Home;
             return HomeState::Home;
         }
         if ov == Override::ForceAway {
-            *self.last_resolved.lock().unwrap() = HomeState::Away;
+            *lock(&self.last_resolved) = HomeState::Away;
             return HomeState::Away;
         }
 
-        let signals = self.signals.lock().unwrap();
+        let signals = lock(&self.signals);
         if signals.is_empty() {
             drop(signals);
-            *self.last_resolved.lock().unwrap() = HomeState::Unknown;
+            *lock(&self.last_resolved) = HomeState::Unknown;
             return HomeState::Unknown;
         }
 
         if signals.values().any(|s| s.anyone_home) {
             drop(signals);
-            *self.away_pending_since.lock().unwrap() = None;
-            *self.last_resolved.lock().unwrap() = HomeState::Home;
+            *lock(&self.away_pending_since) = None;
+            *lock(&self.last_resolved) = HomeState::Home;
             return HomeState::Home;
         }
 
         drop(signals);
 
-        let mut pending = self.away_pending_since.lock().unwrap();
+        let mut pending = lock(&self.away_pending_since);
         if pending.is_none() {
             *pending = Some(now);
         }
@@ -87,20 +84,17 @@ impl PresenceAggregator {
         drop(pending);
 
         if elapsed >= self.away_debounce {
-            *self.last_resolved.lock().unwrap() = HomeState::Away;
+            *lock(&self.last_resolved) = HomeState::Away;
             HomeState::Away
         } else {
-            *self.last_resolved.lock().unwrap()
+            *lock(&self.last_resolved)
         }
     }
 
     /// Produce a full snapshot of current state.
     pub fn snapshot(&self, now: DateTime<Utc>) -> PresenceSnapshot {
         let state = self.resolve(now);
-        let sources: Vec<SourceReading> = self
-            .signals
-            .lock()
-            .unwrap()
+        let sources: Vec<SourceReading> = lock(&self.signals)
             .values()
             .map(|s| SourceReading {
                 source: s.source.clone(),
@@ -108,13 +102,17 @@ impl PresenceAggregator {
                 observed_at: s.observed_at,
             })
             .collect();
-        let r#override = *self.override_state.lock().unwrap();
+        let r#override = *lock(&self.override_state);
         PresenceSnapshot {
             state,
             r#override,
             sources,
         }
     }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 #[cfg(test)]

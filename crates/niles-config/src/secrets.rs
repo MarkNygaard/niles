@@ -21,6 +21,18 @@ use std::sync::RwLock;
 
 static STORED: RwLock<Option<HashMap<String, String>>> = RwLock::new(None);
 
+/// Bumped after every [`load`], so whatever read a secret once can
+/// tell it changed.
+static CHANGED: std::sync::LazyLock<tokio::sync::watch::Sender<u64>> =
+    std::sync::LazyLock::new(|| tokio::sync::watch::channel(0).0);
+
+/// Wakes on every [`load`], so a holder of a long-lived client can tell
+/// the credential it was built from changed. The value counts loads and
+/// matters only for logging.
+pub fn subscribe() -> tokio::sync::watch::Receiver<u64> {
+    CHANGED.subscribe()
+}
+
 /// Replace everything held, which is what a reload is.
 ///
 /// Whole-map replacement rather than per-key edits: a secret that was
@@ -28,6 +40,8 @@ static STORED: RwLock<Option<HashMap<String, String>>> = RwLock::new(None);
 /// until a restart.
 pub fn load(values: HashMap<String, String>) {
     *STORED.write().unwrap_or_else(|e| e.into_inner()) = Some(values);
+    // After the swap, so whoever wakes reads the new values.
+    CHANGED.send_modify(|n| *n = n.wrapping_add(1));
 }
 
 /// The stored value for a purpose, if there is one.
@@ -333,6 +347,7 @@ mod tests {
         // looked in the store, so every credential fed by an env var
         // read as unset — and the page offered to overwrite working
         // credentials, which is exactly the guard it was meant to be.
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::set_var("NILES_TEST_SOURCE_KEY", "from-the-env") };
         let cfg = crate::Config::load_from_str(
             "[mqtt]
@@ -360,6 +375,7 @@ password_env = \"NILES_TEST_DEFINITELY_UNSET_XYZ\"
         // Same order the reader uses. Reporting "stored" while the
         // reader takes the env var would make the page describe a
         // credential Niles is not using.
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::set_var("NILES_TEST_SOURCE_WINS", "from-the-env") };
         load(HashMap::from([("stt.api_key".into(), "stored".into())]));
         let cfg = crate::Config::load_from_str(

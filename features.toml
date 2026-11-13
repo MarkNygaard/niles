@@ -95,6 +95,13 @@ phrasings = ["play music", "pause the music"]
 since_pr = 65
 
 [[feature]]
+id = "media-play-song"
+category = "voice.media"
+summary = "A song by name and artist, however it is said, plays straight from Spotify"
+phrasings = ["play Gravity by John Mayer", "play She Was Just a Stranger with Benny G", "put on John Mayer's Gravity"]
+since_pr = 509
+
+[[feature]]
 id = "media-volume-set"
 category = "voice.media"
 summary = "Set the speaker volume to a specific level"
@@ -241,14 +248,16 @@ since_pr = 84
 [[feature]]
 id = "tool-command-history"
 category = "llm.tools"
-summary = "Query the command-history log for past user requests"
-since_pr = 70
+summary = "Ask what was said to Niles and when, from 14 days of spoken turns kept in Postgres"
+phrasings = ["what did I ask you this morning", "turn it off again"]
+since_pr = 508
 
 [[feature]]
 id = "tool-device-history"
 category = "llm.tools"
-summary = "Query the device-state history log for past state changes"
-since_pr = 71
+summary = "Ask how devices were at a past time and set them back, from 14 days of history in Postgres"
+phrasings = ["set the lights like yesterday at eight", "make it like last night", "when did the kitchen light go off"]
+since_pr = 508
 
 [[feature]]
 id = "tool-explain-device-state"
@@ -283,8 +292,9 @@ since_pr = 3
 [[feature]]
 id = "tool-scene-control"
 category = "llm.tools"
-summary = "Apply or delete saved scenes via structured tool calls"
-since_pr = 43
+summary = "Apply a saved scene however it was asked for, through the model's apply_scene tool"
+phrasings = ["turn on the movie scene", "movie time, please"]
+since_pr = 517
 
 [[feature]]
 id = "curve-brightness"
@@ -397,14 +407,14 @@ since_pr = 64
 [[feature]]
 id = "observability-command-log"
 category = "runtime.observability"
-summary = "Structured command-history log for every voice and API request"
-since_pr = 70
+summary = "Every spoken turn kept in Postgres for 14 days, on whenever there is a database"
+since_pr = 508
 
 [[feature]]
 id = "observability-state-log"
 category = "runtime.observability"
-summary = "Structured device-state history log for every state change"
-since_pr = 71
+summary = "Each device's whole state after every change kept in Postgres for 14 days, on with a database"
+since_pr = 508
 
 [[feature]]
 id = "plugins-runtime"
@@ -747,6 +757,13 @@ phrasings = ["make my trip plan look nicer", "make a page for my training plan",
 since_pr = 440
 
 [[feature]]
+id = "artifacts-designed-pages"
+category = "runtime.assistant"
+summary = "A new trip or training plan comes with a page the assistant designs as it writes it; the built-in view is a fallback"
+phrasings = ["plan our trip to Thailand in January", "make me a training plan for the Copenhagen Half"]
+since_pr = 506
+
+[[feature]]
 id = "ui-artifact-page-frame"
 category = "ui.chat"
 summary = "An artifact's page in a sealed frame, no network and no Niles: a Page / Built-in switch, links opened on a yes"
@@ -1042,3 +1059,81 @@ id = "api-events-notifications"
 category = "api.events"
 summary = "notification_added and notifications_read on /events/stream, to their person only"
 since_pr = 483
+
+[[feature]]
+id = "ui-restart-pending"
+category = "ui.settings"
+summary = "While a change waits for a restart, the top of Settings names it and its menu has a dot; changing it back clears both"
+since_pr = 507
+
+[[feature]]
+id = "ui-restart-now"
+category = "ui.settings"
+summary = "Restart now under Kubernetes or a declared supervisor: says what a restart cuts short, waits for the new Niles, reloads"
+since_pr = 507
+
+[[feature]]
+id = "api-system-restart"
+category = "api.write"
+summary = "GET /system/restart says what waits, the boot id, the build and what a restart cuts short; POST restarts Niles"
+since_pr = 507
+
+[[feature]]
+id = "api-events-restart"
+category = "api.events"
+summary = "restart_pending_changed and restart_started on /events/stream, to everyone"
+since_pr = 507
+
+[[feature]]
+id = "runtime-orderly-stop"
+category = "runtime.lifecycle"
+summary = "A restart, SIGTERM or Ctrl-C stops Niles in order: requests finish, delays are kept, satellites and MQTT close, exit 0"
+since_pr = 507
+
+[[feature]]
+id = "config-live-speaking-integrations"
+category = "ui.settings"
+summary = "Speaking and integration settings say they apply at once, as they always did, and the voice lock asks for no restart"
+since_pr = 507
+
+[[feature]]
+id = "ui-about-niles"
+category = "ui.settings"
+summary = "About Niles in Settings: version, commit and build date; Update available lists what's new and how to update"
+since_pr = 516
+
+[[feature]]
+id = "ui-update-dot"
+category = "ui.settings"
+summary = "While a newer Niles is published, Settings and its About Niles entry carry a dot"
+since_pr = 516
+
+[[feature]]
+id = "runtime-update-check"
+category = "runtime.lifecycle"
+summary = "Every six hours and when About Niles opens, Niles asks GitHub anonymously for a newer image; offline it says so"
+since_pr = 516
+
+[[feature]]
+id = "runtime-build-info"
+category = "runtime.lifecycle"
+summary = "A workflow-built image knows its commit and build date and logs them at start; any other build is a dev build"
+since_pr = 516
+
+[[feature]]
+id = "ui-reload-on-new-build"
+category = "runtime.lifecycle"
+summary = "An open app, the iPhone Home Screen one included, reloads itself once when Niles comes back as another build"
+since_pr = 516
+
+[[feature]]
+id = "api-system-update"
+category = "api.write"
+summary = "GET /system/update says which build runs and what is newest without waiting; POST /system/update/check checks now"
+since_pr = 516
+
+[[feature]]
+id = "api-events-update"
+category = "api.events"
+summary = "update_checked on /events/stream, to everyone"
+since_pr = 516

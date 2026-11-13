@@ -194,10 +194,31 @@ pub(crate) async fn run_tool_calling_chat_with_messages(
         }
     }
 
-    Err(anyhow::anyhow!(
-        "chat tool-calling loop exhausted after {max_iterations} iterations without a final text answer"
-    ))
+    // Out of steps: one last call with no tool to reach for, so the
+    // person hears what was found, not that something went wrong.
+    messages.push(Message::System {
+        content: OUT_OF_STEPS.into(),
+    });
+    let last = client
+        .chat(ChatRequest {
+            messages,
+            tools: Some(llm_tools),
+            tool_choice: Some(ToolChoice::None),
+        })
+        .await
+        .context("calling LLM")?;
+    match last.content.filter(|c| !c.trim().is_empty()) {
+        Some(answer) if last.tool_calls.is_empty() => Ok((LoopOutcome::Done(answer), trace)),
+        _ => Err(anyhow::anyhow!(
+            "chat tool-calling loop exhausted after {max_iterations} iterations without a final text answer"
+        )),
+    }
 }
+
+/// What the model is told when it has used every step it has.
+const OUT_OF_STEPS: &str = "You have used every tool call this turn has. Answer now, in one or \
+    two sentences, from what the tools returned: what you did, or what you could not do and \
+    why. Do not ask to try again.";
 
 /// Drive a chat conversation with tool calling until the model emits
 /// a final text response or `max_iterations` is exhausted.
@@ -339,7 +360,9 @@ mod chat_loop_tests {
             }],
             finish_reason: FinishReason::ToolCalls,
         };
+        // Even told it has no steps left, it reaches for a tool again.
         let fake = FakeChat::new(vec![
+            tool_call_response(),
             tool_call_response(),
             tool_call_response(),
             tool_call_response(),
@@ -357,6 +380,47 @@ mod chat_loop_tests {
             msg.contains("exhausted"),
             "error message should mention exhaustion: got {msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn out_of_steps_it_answers_from_what_it_found() {
+        let tool_call_response = || ChatResponse {
+            content: None,
+            tool_calls: vec![ToolCall {
+                id: "loop".into(),
+                name: "stub".into(),
+                arguments: json!({}),
+            }],
+            finish_reason: FinishReason::ToolCalls,
+        };
+        let fake = FakeChat::new(vec![
+            tool_call_response(),
+            tool_call_response(),
+            ChatResponse {
+                content: Some("I keep no record of the lights from last night.".into()),
+                tool_calls: vec![],
+                finish_reason: FinishReason::Stop,
+            },
+        ]);
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(StubTool {
+            name: "stub".into(),
+            result: json!({"found": []}),
+        }));
+        let (outcome, trace) = run_tool_calling_chat(&fake, &registry, "like yesterday", None, 2)
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, LoopOutcome::Done(ref s) if s.contains("no record")),
+            "{outcome:?}"
+        );
+        assert_eq!(trace.len(), 2);
+        let last = fake.captured_requests().pop().unwrap();
+        assert!(matches!(last.tool_choice, Some(ToolChoice::None)));
+        assert!(matches!(
+            last.messages.last(),
+            Some(Message::System { content }) if content == OUT_OF_STEPS
+        ));
     }
 
     #[tokio::test]

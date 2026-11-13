@@ -36,6 +36,7 @@ mod conversation_log;
 mod conversations;
 mod enrollments;
 mod groceries;
+mod history;
 mod journal;
 mod memory;
 mod morning_claims;
@@ -65,6 +66,7 @@ pub use conversation_log::{
 pub use conversations::PostgresConversations;
 pub use enrollments::PostgresEnrollments;
 pub use groceries::PostgresGroceries;
+pub use history::PostgresHistory;
 pub use journal::PostgresJournal;
 pub use memory::PostgresMemory;
 pub use morning_claims::PostgresMorningClaims;

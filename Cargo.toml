@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.6.0" # x-release-please-version
+version = "0.7.0" # x-release-please-version
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Mark Nygaard Leth <47065655+MarkNygaard@users.noreply.github.com>"]
@@ -15,6 +15,11 @@ unused_must_use = "deny"
 # `#[expect(clippy::too_many_lines, reason = "...")]` saying why.
 [workspace.lints.clippy]
 too_many_lines = "warn"
+# Outside tests (clippy.toml allows them there), a panic says why it
+# can't happen: `expect("...")`, or the error is handled.
+unwrap_used = "warn"
+undocumented_unsafe_blocks = "warn"
+fn_params_excessive_bools = "warn"
 
 [workspace.dependencies]
 thiserror = "2"
@@ -52,7 +57,7 @@ tokio-tungstenite = "0.30"
 futures-util = "0.3"
 serde_yaml = "0.9"
 tempfile = "3"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "chrono"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "chrono", "json"] }
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 mime_guess = "2"
 hound = "3"
@@ -63,7 +68,7 @@ aes-gcm = "0.11"
 base64 = "0.23"
 rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 rand_chacha = "0.10"
-parking_lot = "0.12"
+parking_lot = "0.13"
 hmac = "0.13"
 sha2 = "0.11"
 # Web Push: P-256 for the message key agreement (RFC 8291) and the
@@ -123,6 +128,7 @@ niles-plugins = { path = "crates/niles-plugins" }
 niles-training = { path = "crates/niles-training" }
 niles-artifacts = { path = "crates/niles-artifacts" }
 niles-webpush = { path = "crates/niles-webpush" }
+niles-update = { path = "crates/niles-update" }
 
 # Every niles-plugins test compiles a component with Cranelift, and an
 # unoptimised Cranelift made those tests most of CI's `cargo test`.

@@ -136,8 +136,9 @@ impl Config {
                     severity: Severity::Degraded,
                     consequence: "Linear now works through its own tools, and was set up the old way. Add it again under Add-ons, with an API key.".into(),
                 }),
-                // Nothing to answer: the row could serve nothing.
-                Retired::Provider(_) => {}
+                // Nothing to answer: the row could serve nothing, and
+                // the history now keeps itself.
+                Retired::Provider(_) | Retired::History => {}
             }
         }
 
@@ -273,6 +274,7 @@ provider = \"cerebras\"
         // never set is precisely the half-configured state this
         // reports, so the old version of this test — which named `U`
         // and `P` and set neither — proved nothing.
+        // SAFETY: test-only variable names nothing else reads.
         unsafe {
             std::env::set_var("NILES_TEST_GAP_U", "u");
             std::env::set_var("NILES_TEST_GAP_P", "p");
@@ -290,6 +292,7 @@ provider = \"cerebras\"
 
     #[test]
     fn nothing_left_to_answer_reads_as_set_up() {
+        // SAFETY: test-only variable names nothing else reads.
         unsafe {
             std::env::set_var("NILES_TEST_DONE_U", "u");
             std::env::set_var("NILES_TEST_DONE_P", "p");

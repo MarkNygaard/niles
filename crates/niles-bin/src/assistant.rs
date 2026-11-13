@@ -751,6 +751,7 @@ mod tests {
 
     #[test]
     fn choosing_neither_in_the_config_turns_the_assistant_off() {
+        // SAFETY: a test-only variable name nothing else reads.
         unsafe { std::env::set_var("NILES_TEST_ASSISTANT_NONE_TOKEN", "t") };
         let cfg: IntegrationsConfig = toml::from_str(
             "assistant = \"none\"

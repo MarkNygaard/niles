@@ -32,10 +32,7 @@ fn join_spoken(items: &[String]) -> String {
         [] => String::new(),
         [single] => single.clone(),
         [a, b] => format!("{a} and {b}"),
-        _ => {
-            let (last, head) = items.split_last().unwrap();
-            format!("{}, and {}", head.join(", "), last)
-        }
+        [head @ .., last] => format!("{}, and {}", head.join(", "), last),
     }
 }
 

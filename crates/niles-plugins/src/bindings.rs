@@ -256,6 +256,11 @@ fn add_v6(linker: &mut Linker<HostState>) -> wasmtime::Result<()> {
     add!(v0_2::niles::integration, config, devices, mqtt);
     add!(v0_3::niles::integration, secrets, inbound);
     add!(v0_4::niles::integration, websocket);
-    add!(v0_5::niles::integration, speech_stream);
+    // `add!` names an instance after the Rust module, which would make
+    // this one `speech_stream`; the WIT calls it `speech-stream`.
+    speech_stream::add_to_linker_instance::<_, HasSelf<HostState>>(
+        &mut linker.instance("niles:integration/speech-stream@0.6.0")?,
+        |s| s,
+    )?;
     notify_0_6::add_to_linker::<_, HasSelf<HostState>>(linker, |state| state)
 }

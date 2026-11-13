@@ -140,7 +140,10 @@ impl Matcher {
                         .fold(f32::NEG_INFINITY, f32::max)
                 }
                 MatchStrategy::Centroid => {
-                    let centroids = self.centroids.as_ref().unwrap();
+                    let centroids = self
+                        .centroids
+                        .as_ref()
+                        .expect("new() builds them for the centroid strategy");
                     match &centroids[i] {
                         Some(c) => crate::similarity::cosine_similarity(query, c),
                         None => continue,

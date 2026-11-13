@@ -13,9 +13,12 @@ scenes:
   list: "list my scenes" | "show me my scenes" | "what scenes do I have"
   delete: "delete the <name> scene" | "remove scene <name>"
   exit: "back to normal" | "back to normal in the <room>"
+  tools: apply_scene(name, room?)
   notes:
-    - these are fixed phrasings answered without the LLM; no tool saves, applies or deletes a scene
-    - if a scene request reaches you, tell the person the phrasing that works
+    - the phrasings above are answered without the LLM when they name a saved scene; anything else reaches you
+    - apply a scene with apply_scene, however it was asked for ("turn on the scene movie", "movie time"); its description lists the saved scenes
+    - no tool saves or deletes a scene; for those, tell the person the phrasing that works
+    - an unknown name comes back with the saved ones: offer the closest rather than guessing
     - a scene captures every light (and lamp plug) in the room, or the whole house when no room is said
     - "in the <room>" at the end names the room when the house has that room; otherwise it is part of the name
     - off is captured too: applying turns off lights that were off at save
@@ -29,5 +32,7 @@ scenes:
     - User: "save this as cosy in the living room" → saved as cosy, scope=living_room
     - User: "cosy scene" → applies cosy
     - User: "turn on cosy" → applies cosy if it exists
+    - User: "turn on the movie scene" → apply_scene(name="movie")
+    - User: "cosy in the kitchen, please" → apply_scene(name="cosy", room="kitchen")
     - User: "make it like last night" → device_state_snapshot_at, then set_device
 ```

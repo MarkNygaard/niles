@@ -258,14 +258,14 @@ export function ChatView({
           often enough not to want a panel in the way. */}
       {/* Pinned to the top as the conversation scrolls, the way the
           other person stays at the top of a messages app: under the
-          header on a desk (whose height App keeps in --header-h), just
-          under the status bar in a hand. What scrolls under it fades out rather
-          than meeting a hard edge; the faded strip lets clicks through
-          to the text beneath, and only the buttons take them. */}
+          header, whose height App keeps in --header-h. What scrolls under
+          it fades out rather than meeting a hard edge; the faded strip
+          lets clicks through to the text beneath, and only the buttons
+          take them. */}
       <div
         className={cn(
           "pointer-events-none sticky z-20 -mx-4 grid grid-cols-[1fr_auto_1fr] items-center gap-2 px-4 sm:-mx-6 sm:px-6",
-          "top-[env(safe-area-inset-top)] sm:top-(--header-h)",
+          "top-(--header-h)",
           "from-background via-background/95 -mb-6 bg-linear-to-b from-65% to-transparent pb-6",
         )}
       >

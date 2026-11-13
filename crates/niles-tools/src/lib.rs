@@ -13,12 +13,14 @@ pub mod datetime;
 pub mod error;
 pub mod escalate;
 pub mod groceries;
+pub mod history;
 pub mod list_recent_notifications;
 pub mod mcp;
 pub mod nemlig;
 pub mod presence;
 pub mod registry;
 pub mod relevance;
+pub mod scenes;
 pub mod skill;
 pub mod tool;
 pub mod weather;
@@ -27,11 +29,9 @@ pub mod web_search;
 pub use announce::{AnnounceTool, register_announce_tool};
 pub use automations::register_automation_tools;
 pub use builtin::{
-    Background, CancelTimer, DeviceStateSnapshotAt, ExplainDeviceState, GetDeviceState,
-    GetTimerRemaining, ListAllDevices, ListDevicesInRoom, ListTimers, LookUpCapability, MemoryTool,
-    QueryCommandHistory, QueryDeviceStateHistory, SetDevice, SetLightEffect, background_registry,
-    default_registry, register_history_tools, register_memory_tools, register_state_history_tools,
-    register_timer_tools,
+    Background, CancelTimer, ExplainDeviceState, GetDeviceState, GetTimerRemaining, ListAllDevices,
+    ListDevicesInRoom, ListTimers, LookUpCapability, MemoryTool, SetDevice, SetLightEffect,
+    background_registry, default_registry, register_memory_tools, register_timer_tools,
 };
 pub use config::{GetConfig, ResetConfig, UndoConfigChange, UpdateConfig, register_config_tools};
 pub use datetime::{CurrentDatetimeTool, register_datetime_tool};
@@ -39,6 +39,10 @@ pub use error::{Error, Result};
 pub use escalate::{EscalateToTier2Tool, register_escalate_tool};
 pub use groceries::{
     AddToGroceryList, ReadGroceryList, RemoveFromGroceryList, register_grocery_tools,
+};
+pub use history::{
+    DeviceStateSnapshotAt, QueryCommandHistory, QueryDeviceStateHistory, register_history_tools,
+    register_state_history_tools,
 };
 pub use list_recent_notifications::{
     ListRecentNotificationsTool, register_list_recent_notifications_tool,
@@ -55,6 +59,7 @@ pub fn register_notification_tools(
     register_list_recent_notifications_tool(reg, center);
 }
 pub use registry::{DynamicTools, ToolRegistry};
+pub use scenes::ApplyScene;
 pub use skill::{
     DeleteSkillTool, ListSkillsTool, MintSkillTool, PatchSkillTool, RetireSkillTool, ViewSkillTool,
     Viewed, register_background_skill_tools, register_skill_tools,

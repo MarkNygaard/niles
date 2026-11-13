@@ -40,14 +40,14 @@ what changed for them, not the commit log.
 
 One repo can hold several add-ons, each released on its own. Tag each
 add-on's releases with its `id` from the manifest, a `-v` and the version:
-`spotprice-v0.2.0`, `pool-v1.0.0`. The assets are the same as above, one
+`weather-v0.2.0`, `pool-v1.0.0`. The assets are the same as above, one
 add-on's per release.
 
 The address of one of them is `owner/repo/<id>`, such as
-`you/your-addons/spotprice`. Niles installs that add-on's newest release
-tagged `spotprice-v`, not GitHub's latest release, which may be another
+`you/your-addons/weather`. Niles installs that add-on's newest release
+tagged `weather-v`, not GitHub's latest release, which may be another
 add-on's. A release URL with such a tag works too:
-`https://github.com/you/your-addons/releases/tag/spotprice-v0.2.0`. The
+`https://github.com/you/your-addons/releases/tag/weather-v0.2.0`. The
 manifest's `id` must be the name in the address, and its `version` the
 version in the tag, or the preview refuses the release.
 
@@ -56,23 +56,29 @@ releases. Niles looks through the repo's newest 100 releases, so an add-on
 whose latest release is older than that isn't found.
 
 A repo of one add-on keeps tagging `v0.2.0`. Niles reads a tag like
-`spotprice-v0.2.0` as a release of the add-on `spotprice`, so don't use that
+`weather-v0.2.0` as a release of the add-on `weather`, so don't use that
 form there.
 
-In the release workflow, push tags like `spotprice-v*`, check the tag against
+In the release workflow, push tags like `weather-v*`, check the tag against
 `<id>-v<version>`, and build the add-on the tag names.
 
-`niles plugin check --listing you/your-addons/spotprice` checks one add-on's
+`niles plugin check --listing you/your-addons/weather` checks one add-on's
 newest release.
 
 ## The workflow
 
-The template's `.github/workflows/release.yml` builds and publishes on a
-version tag:
+The [template](https://github.com/MarkNygaard/niles-addon-template) has two
+workflows. `ci.yml` runs fmt, clippy, the build and `niles plugin check` (with
+the published Niles image) on every pull request and push to `main`.
+`release.yml` builds and publishes on a version tag:
 
 ```yaml
 name: release
 
+# Push a tag like v0.2.0 and this builds the add-on and publishes a GitHub
+# release with what an install downloads: niles-integration.toml,
+# integration.wasm, the logo the manifest names, and niles-installed,
+# whose download count is the add-on's number of installs.
 on:
   push:
     tags: ["v*"]
@@ -81,51 +87,64 @@ permissions:
   contents: write
 
 env:
-  CRATE: niles_spotprice   # the crate name, with _ for -
+  CARGO_TERM_COLOR: always
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: The tag matches the manifest's version
+        id: manifest
+        run: |
+          read -r version logo < <(python3 -c '
+          import tomllib
+          m = tomllib.load(open("niles-integration.toml", "rb"))
+          print(m["version"], m.get("logo", ""))
+          ')
+          if [ "v$version" != "$TAG" ]; then
+            echo "Tag $TAG but niles-integration.toml says version $version" >&2
+            exit 1
+          fi
+          echo "logo=$logo" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-wasip2
 
-      - name: Tag matches the manifest
-        run: |
-          version=$(grep -m1 '^version' niles-integration.toml | cut -d '"' -f2)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME but the manifest says $version" >&2
-            exit 1
-          fi
+      - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --release --target wasm32-wasip2
+        run: ./build.sh
 
-      - name: Collect
+      - name: niles plugin check
         run: |
-          cp "target/wasm32-wasip2/release/$CRATE.wasm" integration.wasm
-          # Niles downloads this once per house after a fresh install:
-          # its download count is your install count.
-          printf 'Niles counts installs of this add-on by this file.\n' > niles-installed
+          docker pull --quiet ghcr.io/marknygaard/niles:latest
+          docker run --rm -v "$PWD:/addon:ro" ghcr.io/marknygaard/niles:latest plugin check /addon
 
-      - name: Release
+      # An asset is named after its file, so a logo at assets/logo.svg is
+      # the asset logo.svg, which is where an install looks for it.
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          LOGO: ${{ steps.manifest.outputs.logo }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            integration.wasm niles-integration.toml logo.svg niles-installed
+          printf '1' > "$RUNNER_TEMP/niles-installed"
+          files=(niles-integration.toml integration.wasm "$RUNNER_TEMP/niles-installed")
+          if [ -n "$LOGO" ]; then
+            files+=("$LOGO")
+          fi
+          gh release create "$TAG" "${files[@]}" --title "$TAG" --generate-notes
 ```
 
-Once `niles` publishes release binaries, a `niles plugin check .` step before
-`Release` is worth adding. `niles plugin check --listing you/your-repo`
-checks a published release as the add-on library's listing check does.
+`niles plugin check --listing you/your-repo` checks a published release as
+the add-on library's listing check does.
 
-For JavaScript, Python or Go, replace the toolchain and build steps with
+For JavaScript, Python or Go, replace the toolchain step and `./build.sh` with
 `jco componentize`, `componentize-py` or `tinygo build`, and keep the rest.
 
 ## Versioning your plugin
@@ -195,7 +214,7 @@ For one add-on of a repo that holds several, name it too:
 ```toml
 [[addon]]
 repo = "you/your-addons"
-addon = "spotprice"
+addon = "weather"
 ```
 
 The check runs `niles plugin check --listing you/your-repo` on your latest

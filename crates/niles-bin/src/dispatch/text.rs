@@ -311,7 +311,12 @@ pub(crate) async fn dispatch_text(
             // brightness, so every target has a known value.
             let base = (targets
                 .iter()
-                .map(|d| d.state.brightness.unwrap() as i32)
+                .map(|d| {
+                    d.state
+                        .brightness
+                        .expect("resolve_room_targets keeps those with brightness")
+                        as i32
+                })
                 .sum::<i32>()
                 / targets.len() as i32) as i16;
             let new = (base + delta_percent).clamp(0, 100) as u8;
@@ -339,7 +344,12 @@ pub(crate) async fn dispatch_text(
             // color temperature, so every target has a known value.
             let base = (targets
                 .iter()
-                .map(|d| d.state.color_temp_kelvin.unwrap() as u32)
+                .map(|d| {
+                    d.state
+                        .color_temp_kelvin
+                        .expect("resolve_room_targets keeps those with colour temperature")
+                        as u32
+                })
                 .sum::<u32>()
                 / targets.len() as u32) as u16;
             let new = base.saturating_add_signed(delta_kelvin).clamp(2000, 6500);

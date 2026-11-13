@@ -63,6 +63,10 @@ curve, Sonos, accounts, add-ons and their keys. A key that comes from
 `.env` shows in the app as "from the environment" and is changed in
 `.env`.
 
+The Compose file sets `NILES_SUPERVISOR: docker` beside
+`restart: unless-stopped`, which is what lets Settings offer
+**Restart now**. See [Restarting](/docs/self-hosting#restarting).
+
 ## Upgrading
 
 `latest` is the newest release, and pulling it upgrades Niles:

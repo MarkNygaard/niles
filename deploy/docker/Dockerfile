@@ -20,6 +20,11 @@ FROM rust:1-bookworm AS builder
 WORKDIR /src
 COPY . .
 COPY --from=web /web/dist ./web/dist
+# Which build this is: an ARG is in the RUN's environment, where
+# `option_env!` reads it at compile time. A build without them, such as
+# CI's compose job or a local one, is a dev build.
+ARG NILES_GIT_SHA=""
+ARG NILES_BUILD_TIME=""
 # Cache the cargo registry + target dir across builds (BuildKit cache
 # mounts). The binary must be copied OUT of the cache mount within the
 # same RUN, since cache-mount contents aren't part of the image layer.
