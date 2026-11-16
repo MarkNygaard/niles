@@ -18,7 +18,7 @@ use base64::Engine;
 
 use crate::browser::Browser;
 use crate::proxy::Proxy;
-use crate::session::Session;
+use crate::session::{Returned, Session};
 use crate::tab::{Asks, Checkout, Filled, Reference, Tab};
 
 /// Where the test Chromium's DevTools listens.
@@ -32,7 +32,9 @@ fn devtools() -> SocketAddr {
 /// proxy.
 async fn session() -> Arc<Session> {
     let devtools = devtools();
-    let proxy = Proxy::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let proxy = Proxy::bind("127.0.0.1:0".parse().unwrap(), devtools.ip())
+        .await
+        .unwrap();
     let port = proxy.local_addr().unwrap().port();
     tokio::spawn(proxy.serve());
     let browser = Browser::connect(devtools, port)
@@ -167,7 +169,7 @@ async fn value_of(session: &Session, frame_index: usize, selector: &str) -> Stri
         .evaluate_in(
             context,
             format!("(() => {{ const el = document.querySelector({selector:?}); return el ? el.value : '' }})()"),
-            true,
+            Returned::ByValue,
         )
         .await
         .unwrap();
@@ -473,6 +475,54 @@ async fn a_form_without_a_form_element_submits_with_enter() {
 
 #[tokio::test]
 #[ignore = "needs a Chromium's DevTools at NILES_TEST_CHROMIUM, such as 127.0.0.1:9222"]
+async fn after_enter_the_next_look_sees_where_it_went() {
+    // Finding: Enter was pressed and the page read at once, so the old
+    // form still asked for the password and a good login looked wrong.
+    let session = session().await;
+    serve(
+        &session,
+        vec![
+            (
+                "https://shop.example/enter",
+                Page::html(
+                    r#"<input id="u" type="email" autocomplete="username">
+                       <input id="p" type="password" autocomplete="current-password">
+                       <script>
+                       document.getElementById("p").addEventListener("keydown", (e) => {
+                         if (e.key === "Enter") {
+                           setTimeout(() => { location.href = "/welcome"; }, 300);
+                         }
+                       });
+                       </script>"#,
+                ),
+            ),
+            (
+                "https://shop.example/welcome",
+                Page::html("<h1>Welcome back</h1>"),
+            ),
+        ],
+    )
+    .await;
+    session
+        .open(&Url::parse("https://shop.example/enter").unwrap())
+        .await
+        .unwrap();
+    let shop = vec!["https://shop.example".to_string()];
+
+    session
+        .fill_login(&shop, Some("u@example.com"), Some("p4ssw0rd"))
+        .await
+        .unwrap();
+    assert_eq!(Tab::asks(&*session, &shop).await.unwrap(), Asks::Nothing);
+    assert_eq!(
+        session.address().await.unwrap(),
+        "https://shop.example/welcome"
+    );
+    Tab::close(&*session).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Chromium's DevTools at NILES_TEST_CHROMIUM, such as 127.0.0.1:9222"]
 async fn a_code_reaches_its_origin_only() {
     let session = session().await;
     let shop = vec!["https://shop.example".to_string()];
@@ -749,7 +799,11 @@ async fn a_profile_keeps_the_logins_cookies_and_storage_only() {
     assert!(names.contains(&"sid"), "{names:?}");
     let context = session.world().await.unwrap();
     let value = session
-        .evaluate_in(context, "localStorage.getItem(\"k\")".to_string(), true)
+        .evaluate_in(
+            context,
+            "localStorage.getItem(\"k\")".to_string(),
+            Returned::ByValue,
+        )
         .await
         .unwrap();
     assert_eq!(value.get("value").and_then(Value::as_str), Some("v"));

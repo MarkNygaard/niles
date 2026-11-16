@@ -83,6 +83,9 @@ pub(crate) struct FakeState {
     pub(crate) asks_code: bool,
     /// What `checkout` answers; its `card_details` is the reading's too.
     pub(crate) checkout: Checkout,
+    /// When true, the tab closes right after a fill: what the page did
+    /// with it can't be seen.
+    pub(crate) lost_after_fill: bool,
 }
 
 /// What `asks` answers for the state: the standing ask. A submit moves
@@ -117,7 +120,7 @@ impl FakeTab {
         }
     }
 
-    fn state(&self) -> std::sync::MutexGuard<'_, FakeState> {
+    pub(crate) fn state(&self) -> std::sync::MutexGuard<'_, FakeState> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
@@ -337,6 +340,9 @@ impl Tab for FakeTab {
                 // Signed in: the page asks for nothing more.
                 state.asks = Asks::Nothing;
             }
+        }
+        if state.lost_after_fill {
+            state.closed = true;
         }
         Ok(filled)
     }

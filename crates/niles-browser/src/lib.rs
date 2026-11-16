@@ -52,6 +52,5 @@ pub const HOST: &str = "niles-browser";
 /// The port Chromium's DevTools listens on in the browser container.
 pub const DEVTOOLS_PORT: u16 = 9222;
 
-/// The port Niles's proxy listens on, which the NetworkPolicy lets the
-/// browser reach.
+/// The port Niles's proxy listens on, for the browser alone.
 pub const PROXY_PORT: u16 = 3128;

@@ -96,7 +96,10 @@ pub(crate) async fn run_tool_calling_chat_with_messages(
             tools: Some(llm_tools.clone()),
             tool_choice: Some(ToolChoice::Auto),
         };
-        let resp = client.chat(req).await.context("calling LLM")?;
+        let private = read_private(&messages);
+        let resp = niles_llm::reasoning_kept_private(private, client.chat(req))
+            .await
+            .context("calling LLM")?;
 
         if resp.tool_calls.is_empty() {
             return Ok((LoopOutcome::Done(resp.content.unwrap_or_default()), trace));
@@ -202,14 +205,17 @@ pub(crate) async fn run_tool_calling_chat_with_messages(
     messages.push(Message::System {
         content: OUT_OF_STEPS.into(),
     });
-    let last = client
-        .chat(ChatRequest {
+    let private = read_private(&messages);
+    let last = niles_llm::reasoning_kept_private(
+        private,
+        client.chat(ChatRequest {
             messages,
             tools: Some(llm_tools),
             tool_choice: Some(ToolChoice::None),
-        })
-        .await
-        .context("calling LLM")?;
+        }),
+    )
+    .await
+    .context("calling LLM")?;
     match last.content.filter(|c| !c.trim().is_empty()) {
         Some(answer) if last.tool_calls.is_empty() => Ok((LoopOutcome::Done(answer), trace)),
         _ => Err(anyhow::anyhow!(
@@ -223,11 +229,30 @@ pub(crate) async fn run_tool_calling_chat_with_messages(
 /// its text is a page a person browses, or the site they asked for, and
 /// /logs is read by everyone signed in.
 fn logged_result(name: &str, result: &serde_json::Value) -> String {
-    if name.starts_with("browser_") || name == "request_login" {
+    if private_tool(name) {
         format!("{} bytes", result.to_string().len())
     } else {
         result.to_string()
     }
+}
+
+/// A tool whose result is a page a person browses, or the site they
+/// asked a login for: kept out of `/logs`, with whatever the model makes
+/// of it.
+pub(crate) fn private_tool(name: &str) -> bool {
+    name.starts_with("browser_") || name == "request_login"
+}
+
+/// Whether `messages` hold a private tool's call, so the model answering
+/// them may quote what it read.
+fn read_private(messages: &[Message]) -> bool {
+    messages.iter().any(|m| match m {
+        Message::Assistant {
+            tool_calls: Some(calls),
+            ..
+        } => calls.iter().any(|call| private_tool(&call.name)),
+        _ => false,
+    })
 }
 
 /// What the model is told when it has used every step it has.
@@ -734,6 +759,27 @@ mod tests {
             !logged.contains("Shop"),
             "the site the person was asked for never reaches the log"
         );
+    }
+
+    #[test]
+    fn a_turn_that_called_a_browser_tool_reasons_in_private() {
+        // Finding: after a page was read, the model's reasoning, which
+        // quotes it, went to /logs whole.
+        let asked = |name: &str| Message::Assistant {
+            content: None,
+            tool_calls: Some(vec![niles_llm::ToolCall {
+                id: "c1".into(),
+                name: name.into(),
+                arguments: json!({}),
+            }]),
+        };
+        let user = Message::User {
+            content: "what's in my basket?".into(),
+        };
+        assert!(!read_private(std::slice::from_ref(&user)));
+        assert!(!read_private(&[user.clone(), asked("set_device")]));
+        assert!(read_private(&[user.clone(), asked("browser_read")]));
+        assert!(read_private(&[user, asked("request_login")]));
     }
 
     #[test]

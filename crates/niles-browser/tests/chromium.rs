@@ -40,7 +40,9 @@ fn page(html: &str) -> Url {
 /// of the session goes through.
 async fn session() -> (Arc<dyn Tab>, SocketAddr) {
     let devtools = devtools();
-    let proxy = Proxy::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let proxy = Proxy::bind("127.0.0.1:0".parse().unwrap(), devtools.ip())
+        .await
+        .unwrap();
     let proxy_addr = proxy.local_addr().unwrap();
     tokio::spawn(proxy.serve());
     let browser = Browser::connect(devtools, proxy_addr.port())

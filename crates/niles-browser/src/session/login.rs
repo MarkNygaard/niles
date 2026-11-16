@@ -13,11 +13,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 
 use crate::cdp::{Connection, Event};
 use crate::error::{Error, Result};
-use crate::session::{PAGE_JS, Session};
+use crate::session::{PAGE_JS, Returned, Session};
 use crate::tab::{Asks, Filled, on_sites};
 
 /// How long a fill waits after setting the values before submitting:
@@ -92,7 +92,8 @@ impl Session {
                         method: "Page.createIsolatedWorld",
                         reason: "no executionContextId".into(),
                     })?;
-                self.evaluate_in(context, PAGE_JS.to_string(), true).await?;
+                self.evaluate_in(context, PAGE_JS.to_string(), Returned::ByValue)
+                    .await?;
                 Ok(Some(context))
             }
             Err(Error::Protocol { .. }) => Ok(None),
@@ -288,7 +289,9 @@ impl Session {
                     }
                     self.on("Input.dispatchKeyEvent", event).await?;
                 }
-                Ok(())
+                // As for a button: the next look at the page must see
+                // where Enter went, not the form it left.
+                self.settle(rx).await
             }
             Some("no") => Ok(()),
             _ => self.settle(rx).await,
@@ -300,9 +303,9 @@ impl Session {
     /// an earlier page of another site back.
     pub(super) async fn stay_on_in(&self, origins: &[String]) -> Result<()> {
         self.on("Page.resetNavigationHistory", Value::Null).await?;
-        // Subscribe before enabling, so no paused request is missed and
-        // none hangs.
-        let events = self.conn.subscribe();
+        // Taken before enabling, so no paused request is missed, and on
+        // the guard's own channel, so none is dropped and none hangs.
+        let events = self.conn.paused_requests(&self.session);
         let task = tokio::spawn(guard_loop(
             Arc::clone(&self.conn),
             self.session.clone(),
@@ -343,41 +346,28 @@ async fn guard_loop(
     session: String,
     frame: String,
     origins: Vec<String>,
-    mut events: broadcast::Receiver<Event>,
+    mut events: mpsc::UnboundedReceiver<Event>,
 ) {
-    loop {
-        match events.recv().await {
-            Ok(event) => {
-                if event.session.as_deref() != Some(session.as_str())
-                    || event.method != "Fetch.requestPaused"
-                {
-                    continue;
-                }
-                let params = &event.params;
-                let main = params.get("frameId").and_then(Value::as_str) == Some(frame.as_str());
-                let allowed = !main
-                    || params
-                        .get("request")
-                        .and_then(|r| r.get("url"))
-                        .and_then(Value::as_str)
-                        .is_some_and(|url| on_sites(url, &origins));
-                let request_id = params.get("requestId").cloned().unwrap_or(Value::Null);
-                let (method, call) = if allowed {
-                    ("Fetch.continueRequest", json!({ "requestId": request_id }))
-                } else {
-                    tracing::info!(
-                        "[browser] a signed-in session's page was kept on its login's sites"
-                    );
-                    (
-                        "Fetch.failRequest",
-                        json!({ "requestId": request_id, "errorReason": "BlockedByClient" }),
-                    )
-                };
-                let _ = conn.call(method, call, Some(&session)).await;
-            }
-            Err(broadcast::error::RecvError::Lagged(_)) => continue,
-            Err(broadcast::error::RecvError::Closed) => return,
-        }
+    while let Some(event) = events.recv().await {
+        let params = &event.params;
+        let main = params.get("frameId").and_then(Value::as_str) == Some(frame.as_str());
+        let allowed = !main
+            || params
+                .get("request")
+                .and_then(|r| r.get("url"))
+                .and_then(Value::as_str)
+                .is_some_and(|url| on_sites(url, &origins));
+        let request_id = params.get("requestId").cloned().unwrap_or(Value::Null);
+        let (method, call) = if allowed {
+            ("Fetch.continueRequest", json!({ "requestId": request_id }))
+        } else {
+            tracing::info!("[browser] a signed-in session's page was kept on its login's sites");
+            (
+                "Fetch.failRequest",
+                json!({ "requestId": request_id, "errorReason": "BlockedByClient" }),
+            )
+        };
+        let _ = conn.call(method, call, Some(&session)).await;
     }
 }
 

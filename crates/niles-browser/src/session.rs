@@ -84,6 +84,14 @@ impl Info {
     }
 }
 
+/// What a page script's result comes back as: the value itself, or a
+/// handle to the object in the page, for a node to act on.
+#[derive(Clone, Copy)]
+pub(crate) enum Returned {
+    ByValue,
+    AsHandle,
+}
+
 impl Session {
     /// Attaches to the session's page: viewport fixed so screenshot
     /// pixels equal CSS pixels, dialogs answered, the frame noted.
@@ -178,26 +186,32 @@ impl Session {
             })?;
         // Install the page script. Its value is nothing; an exception
         // would mean the script broke, which is an Answer.
-        self.evaluate_in(context, PAGE_JS.to_string(), true).await?;
+        self.evaluate_in(context, PAGE_JS.to_string(), Returned::ByValue)
+            .await?;
         *cached = Some((loader, context));
         Ok(context)
     }
 
     /// Runs `expression` in the isolated world.
-    async fn evaluate(&self, expression: String, by_value: bool) -> Result<Value> {
+    async fn evaluate(&self, expression: String, returned: Returned) -> Result<Value> {
         let context = self.world().await?;
-        self.evaluate_in(context, expression, by_value).await
+        self.evaluate_in(context, expression, returned).await
     }
 
     /// Runs `expression` in a known context id.
-    async fn evaluate_in(&self, context: i64, expression: String, by_value: bool) -> Result<Value> {
+    async fn evaluate_in(
+        &self,
+        context: i64,
+        expression: String,
+        returned: Returned,
+    ) -> Result<Value> {
         let answer = self
             .on(
                 "Runtime.evaluate",
                 json!({
                     "expression": expression,
                     "contextId": context,
-                    "returnByValue": by_value,
+                    "returnByValue": matches!(returned, Returned::ByValue),
                     "timeout": 10000
                 }),
             )
@@ -255,7 +269,7 @@ impl Session {
     /// reference is on this page now.
     async fn find(&self, reference: Reference) -> Result<Option<(i64, Info)>> {
         let object = self
-            .evaluate(format!("__niles.node({})", reference.0), false)
+            .evaluate(format!("__niles.node({})", reference.0), Returned::AsHandle)
             .await?;
         let Some(object_id) = object.get("objectId").and_then(Value::as_str) else {
             return Ok(None);
@@ -317,7 +331,7 @@ async fn dialog_loop(conn: Arc<Connection>, session: String) {
 impl Tab for Session {
     async fn read(&self) -> Result<Reading> {
         let answer = self
-            .evaluate("__niles.read(12000)".to_string(), true)
+            .evaluate("__niles.read(12000)".to_string(), Returned::ByValue)
             .await?;
         serde_json::from_value(answer.get("value").cloned().unwrap_or(Value::Null)).map_err(|_| {
             Error::Answer {
@@ -329,7 +343,7 @@ impl Tab for Session {
 
     async fn checkout(&self) -> Result<Checkout> {
         let answer = self
-            .evaluate("__niles.checkout()".to_string(), true)
+            .evaluate("__niles.checkout()".to_string(), Returned::ByValue)
             .await?;
         serde_json::from_value(answer.get("value").cloned().unwrap_or(Value::Null)).map_err(|_| {
             Error::Answer {
@@ -361,7 +375,7 @@ impl Tab for Session {
                 let target = if way == Scroll::Top { "0" } else { "1e9" };
                 self.evaluate(
                     format!("document.scrollingElement?.scrollTo(0, {target})"),
-                    true,
+                    Returned::ByValue,
                 )
                 .await?;
             }
@@ -372,7 +386,9 @@ impl Tab for Session {
     }
 
     async fn address(&self) -> Result<String> {
-        let answer = self.evaluate("location.href".to_string(), true).await?;
+        let answer = self
+            .evaluate("location.href".to_string(), Returned::ByValue)
+            .await?;
         answer
             .get("value")
             .and_then(Value::as_str)

@@ -29,7 +29,8 @@ impl Scrub {
 
     /// The person's saved values, in their page forms: exact,
     /// whitespace-squeezed, form-urlencoded (`+` for a space, `*`
-    /// literal) and percent-encoded.
+    /// literal), percent-encoded, and as JavaScript's
+    /// `encodeURIComponent` and `encodeURI` write them.
     pub(crate) fn new(credentials: Vec<Credentials>) -> Scrub {
         let mut values: Vec<String> = Vec::new();
         for creds in &credentials {
@@ -145,21 +146,31 @@ fn push_forms(value: &str, out: &mut Vec<String>) {
         out.push(form);
     }
     // Percent-encoded as a URL writes it: unreserved bytes stay, the
-    // rest go uppercase %XX.
-    let encoded: String = value
+    // rest go %XX (case doesn't matter: matching ignores it).
+    out.push(percent_encoded(value, b""));
+    // As a page script writes it into an address: encodeURIComponent
+    // also leaves `!'()*`, and encodeURI the URL's own punctuation too.
+    out.push(percent_encoded(value, b"!'()*"));
+    out.push(percent_encoded(value, b"!'()*;,/?:@&=+$#"));
+    let plus = value.replace(' ', "+");
+    if plus != value {
+        out.push(plus);
+    }
+}
+
+/// `value` percent-encoded, with the unreserved bytes and `kept` left as
+/// they are.
+fn percent_encoded(value: &str, kept: &[u8]) -> String {
+    value
         .bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
                 (b as char).to_string()
             }
+            b if kept.contains(&b) => (b as char).to_string(),
             b => format!("%{b:02X}"),
         })
-        .collect();
-    out.push(encoded);
-    let plus = value.replace(' ', "+");
-    if plus != value {
-        out.push(plus);
-    }
+        .collect()
 }
 
 #[cfg(test)]
@@ -212,6 +223,20 @@ mod tests {
         let starred = scrub_with("jo*star@example.com", "irrelevant");
         assert_eq!(starred.text("u=jo*star%40example.com"), "u=•••");
         assert_eq!(starred.text("u=jo%2Astar%40example.com"), "u=•••");
+    }
+
+    #[test]
+    fn what_a_page_script_writes_into_an_address_is_masked() {
+        // Finding: encodeURIComponent leaves `!` as it is, and
+        // "Hunter 2!" went out as "Hunter%202!", in no form kept.
+        let scrub = scrub_with("irrelevant", "Hunter 2!");
+        assert_eq!(scrub.text("?p=Hunter%202!"), "?p=•••");
+        // encodeURI keeps the URL's own punctuation as well.
+        let urlish = scrub_with("irrelevant", "a b/c@d!");
+        assert_eq!(urlish.text("/go/a%20b/c@d!"), "/go/•••");
+        // Some encoders write lowercase hex.
+        assert_eq!(scrub.text("?p=Hunter%202%21"), "?p=•••");
+        assert_eq!(scrub.text("?p=hunter%202%21"), "?p=•••");
     }
 
     #[test]

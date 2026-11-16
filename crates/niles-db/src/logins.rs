@@ -71,32 +71,64 @@ impl PostgresLogins {
         niles_logins::Error::Storage(format!("{}: {e}", self.describe))
     }
 
-    fn seal(&self, value: &str) -> Result<Vec<u8>> {
-        self.sealer.seal(value).map_err(|e| self.storage(e))
+    /// `value` sealed to its person, login and field.
+    fn seal(&self, value: &str, person: &str, id: i64, field: Field) -> Result<Vec<u8>> {
+        self.sealer
+            .seal_for(value, &sealed_to(person, id, field))
+            .map_err(|e| self.storage(e))
     }
 
-    fn open(&self, sealed: &[u8]) -> Result<String> {
-        self.sealer.open(sealed).map_err(|e| self.storage(e))
+    fn open(&self, sealed: &[u8], person: &str, id: i64, field: Field) -> Result<String> {
+        self.sealer
+            .open_for(sealed, &sealed_to(person, id, field))
+            .map_err(|e| self.storage(e))
     }
 
     /// One row of the logins-with-secrets join as its owner sees it. A
     /// stored origin that no longer parses is skipped rather than
     /// failing the whole list; a username that won't open is a storage
     /// error, like `PostgresTraining`.
-    async fn login(&self, row: &PgRow) -> Result<Login> {
+    async fn login(&self, row: &PgRow, person: &str) -> Result<Login> {
         let stored: Vec<String> = row.get("origins");
+        let id: i64 = row.get("id");
         Ok(Login {
-            id: row.get("id"),
+            id,
             label: row.get("label"),
             origins: stored
                 .iter()
                 .filter_map(|o| Origin::parse(o).ok())
                 .collect(),
-            username: self.open(&row.get::<Vec<u8>, _>("username_enc"))?,
+            username: self.open(
+                &row.get::<Vec<u8>, _>("username_enc"),
+                person,
+                id,
+                Field::Username,
+            )?,
             last_used: row.get("last_used"),
             signed_in: row.get("signed_in"),
         })
     }
+}
+
+/// Which of a login's sealed values a context names.
+#[derive(Clone, Copy)]
+enum Field {
+    Username,
+    Password,
+    Profile,
+}
+
+/// What a login's value is sealed to: its person, its login and its
+/// field. A value moved to another person, another login or another
+/// column, such as a password copied into a username a list shows,
+/// doesn't open there.
+fn sealed_to(person: &str, id: i64, field: Field) -> String {
+    let field = match field {
+        Field::Username => "username",
+        Field::Password => "password",
+        Field::Profile => "browser profile",
+    };
+    format!("niles saved login\u{0}{person}\u{0}{id}\u{0}{field}")
 }
 
 impl std::fmt::Debug for PostgresLogins {
@@ -136,7 +168,7 @@ impl LoginStore for PostgresLogins {
             .map_err(|e| self.storage(e))?;
         let mut logins = Vec::with_capacity(rows.len());
         for row in &rows {
-            logins.push(self.login(row).await?);
+            logins.push(self.login(row, person).await?);
         }
         Ok(logins)
     }
@@ -153,7 +185,7 @@ impl LoginStore for PostgresLogins {
         else {
             return Ok(None);
         };
-        Ok(Some(self.login(&row).await?))
+        Ok(Some(self.login(&row, person).await?))
     }
 
     async fn add(&self, person: &str, new: &NewLogin) -> Result<Login> {
@@ -175,8 +207,18 @@ impl LoginStore for PostgresLogins {
              values ($1, $2, $3)",
         )
         .bind(id)
-        .bind(self.seal(new.credentials.username.expose())?)
-        .bind(self.seal(new.credentials.password.expose())?)
+        .bind(self.seal(
+            new.credentials.username.expose(),
+            person,
+            id,
+            Field::Username,
+        )?)
+        .bind(self.seal(
+            new.credentials.password.expose(),
+            person,
+            id,
+            Field::Password,
+        )?)
         .execute(&mut *tx)
         .await
         .map_err(|e| self.storage(e))?;
@@ -224,8 +266,12 @@ impl LoginStore for PostgresLogins {
             .map(|o| o.as_str().to_string())
             .collect();
         after.sort();
-        let account_changed = self.open(&row.get::<Vec<u8>, _>("username_enc"))?
-            != edit.username.expose()
+        let account_changed = self.open(
+            &row.get::<Vec<u8>, _>("username_enc"),
+            person,
+            id,
+            Field::Username,
+        )? != edit.username.expose()
             || before != after;
         let origins: Vec<&str> = edit.origins.iter().map(Origin::as_str).collect();
         sqlx::query(
@@ -244,7 +290,7 @@ impl LoginStore for PostgresLogins {
         let password_enc = edit
             .password
             .as_ref()
-            .map(|p| self.seal(p.expose()))
+            .map(|p| self.seal(p.expose(), person, id, Field::Password))
             .transpose()?;
         sqlx::query(
             "update saved_login_secrets set username_enc = $2,
@@ -252,7 +298,7 @@ impl LoginStore for PostgresLogins {
              where login_id = $1",
         )
         .bind(id)
-        .bind(self.seal(edit.username.expose())?)
+        .bind(self.seal(edit.username.expose(), person, id, Field::Username)?)
         .bind(password_enc)
         .execute(&mut *tx)
         .await
@@ -318,8 +364,18 @@ impl LoginStore for PostgresLogins {
             return Ok(None);
         };
         Ok(Some(Credentials {
-            username: Secret::new(self.open(&row.get::<Vec<u8>, _>("username_enc"))?),
-            password: Secret::new(self.open(&row.get::<Vec<u8>, _>("password_enc"))?),
+            username: Secret::new(self.open(
+                &row.get::<Vec<u8>, _>("username_enc"),
+                person,
+                id,
+                Field::Username,
+            )?),
+            password: Secret::new(self.open(
+                &row.get::<Vec<u8>, _>("password_enc"),
+                person,
+                id,
+                Field::Password,
+            )?),
         }))
     }
 
@@ -337,7 +393,7 @@ impl LoginStore for PostgresLogins {
         )
         .bind(id)
         .bind(person)
-        .bind(self.seal(profile.expose())?)
+        .bind(self.seal(profile.expose(), person, id, Field::Profile)?)
         .execute(&self.pool)
         .await
         .map_err(|e| self.storage(e))?;
@@ -374,9 +430,12 @@ impl LoginStore for PostgresLogins {
         else {
             return Ok(None);
         };
-        Ok(Some(Secret::new(
-            self.open(&row.get::<Vec<u8>, _>("profile_enc"))?,
-        )))
+        Ok(Some(Secret::new(self.open(
+            &row.get::<Vec<u8>, _>("profile_enc"),
+            person,
+            id,
+            Field::Profile,
+        )?)))
     }
 
     async fn used(&self, person: &str, id: i64, at: DateTime<Utc>) -> Result<bool> {
@@ -409,7 +468,7 @@ impl LoginStore for PostgresLogins {
     async fn secrets(&self, person: &str) -> Result<Vec<Credentials>> {
         self.ensure_schema().await?;
         let rows = sqlx::query(
-            "select s.username_enc, s.password_enc
+            "select l.id, s.username_enc, s.password_enc
              from saved_login_secrets s
              join saved_logins l on l.id = s.login_id
              where l.person = $1",
@@ -420,9 +479,20 @@ impl LoginStore for PostgresLogins {
         .map_err(|e| self.storage(e))?;
         let mut out = Vec::with_capacity(rows.len());
         for row in &rows {
+            let id: i64 = row.get("id");
             out.push(Credentials {
-                username: Secret::new(self.open(&row.get::<Vec<u8>, _>("username_enc"))?),
-                password: Secret::new(self.open(&row.get::<Vec<u8>, _>("password_enc"))?),
+                username: Secret::new(self.open(
+                    &row.get::<Vec<u8>, _>("username_enc"),
+                    person,
+                    id,
+                    Field::Username,
+                )?),
+                password: Secret::new(self.open(
+                    &row.get::<Vec<u8>, _>("password_enc"),
+                    person,
+                    id,
+                    Field::Password,
+                )?),
             });
         }
         Ok(out)

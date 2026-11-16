@@ -143,6 +143,8 @@ another site to pay, add that site's address to the shop's login.
 
 Browsing needs Niles's browser, a headless Chromium in a container of its
 own, and Niles's database, which keeps the cards with their conversation.
+On Kubernetes the browser's container sits in Niles's pod; with Docker
+Compose it runs beside Niles.
 
 - On Kubernetes, add `components: [../../components/browser]` to your
   overlay's `kustomization.yaml`. See
@@ -158,9 +160,9 @@ isn't set up.
 
 The browser reaches the internet only through Niles, which lets it open
 public `https` sites and nothing on your home network or in your cluster.
-On Kubernetes the component adds a NetworkPolicy as a second wall. It
-holds only where the cluster's network plugin enforces NetworkPolicies:
-Cilium and Calico do, and Flannel, Talos's default, doesn't.
+Nothing else can drive the browser or use that way out: on Kubernetes both
+listen only inside Niles's pod, and with Docker Compose only on a network
+Niles and the browser share alone.
 
 ## What Niles keeps
 

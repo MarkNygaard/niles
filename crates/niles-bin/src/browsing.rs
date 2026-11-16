@@ -27,6 +27,7 @@ use crate::approvals::{Approvals, Asker};
 use niles_browser::{Browser, DEVTOOLS_PORT, Driver, HOST, PROXY_PORT, Tab};
 use niles_logins::{LoginStore, Secret};
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -97,6 +98,23 @@ pub(crate) enum Save {
     Nothing,
 }
 
+impl Open {
+    fn opened(&self) -> Opened {
+        Opened {
+            tab: self.tab.clone(),
+            lock: self.lock.clone(),
+            serial: self.serial,
+        }
+    }
+}
+
+/// Which session [`Browsing::session`] kept: the one just made, or one
+/// made by another call while the browser worked.
+enum Kept {
+    Ours(Opened),
+    Older(Opened),
+}
+
 /// The clones of an [`Open`] a tool works with.
 #[derive(Clone)]
 pub(crate) struct Opened {
@@ -112,7 +130,8 @@ pub(crate) struct Browsing {
     sessions: Mutex<HashMap<String, Open>>,
     serial: AtomicU64,
     restarted: Mutex<Option<Instant>>,
-    proxy: Mutex<Option<(IpAddr, JoinHandle<()>)>>,
+    /// Where the proxy listens, the browser it answers, and its task.
+    proxy: Mutex<Option<(IpAddr, IpAddr, JoinHandle<()>)>>,
     /// The saved-logins store, when Niles has one: what signs a session
     /// in, and what the scrub reads.
     store: Option<Arc<dyn LoginStore>>,
@@ -316,7 +335,7 @@ impl Browsing {
         };
         let product = browser.product().to_string();
         let ip = browser.local_ip();
-        if let Err(e) = self.listen(ip).await {
+        if let Err(e) = self.listen(ip, addr.ip()).await {
             tracing::error!("[browser] the proxy could not listen on {ip}: {e}");
             return Seen::Silent(e);
         }
@@ -329,18 +348,18 @@ impl Browsing {
 
     /// Bind the proxy on the address the browser reaches Niles at — the
     /// local end of its DevTools connection — so the proxy listens on no
-    /// other network.
-    async fn listen(&self, ip: IpAddr) -> Result<(), String> {
+    /// other network, answering only the browser at `browser`.
+    async fn listen(&self, ip: IpAddr, browser: IpAddr) -> Result<(), String> {
         let already = self
             .proxy
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .is_some_and(|(old, _)| *old == ip);
+            .is_some_and(|(old, old_browser, _)| *old == ip && *old_browser == browser);
         if already {
             return Ok(());
         }
-        let proxy = niles_browser::Proxy::bind(SocketAddr::new(ip, PROXY_PORT))
+        let proxy = niles_browser::Proxy::bind(SocketAddr::new(ip, PROXY_PORT), browser)
             .await
             .map_err(|e| e.to_string())?;
         let handle = tokio::spawn(proxy.serve());
@@ -348,8 +367,8 @@ impl Browsing {
             .proxy
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .replace((ip, handle));
-        if let Some((_, old)) = old {
+            .replace((ip, browser, handle));
+        if let Some((_, _, old)) = old {
             old.abort();
         }
         Ok(())
@@ -404,25 +423,27 @@ impl Browsing {
             self.close(&person, open, Save::Profile).await;
         }
         self.drop_lapsed_codes();
-        let empty = self
-            .sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty();
         let restarted = *self.restarted.lock().unwrap_or_else(|e| e.into_inner());
-        if !empty || !restart_due(restarted, now) {
+        if !restart_due(restarted, now) {
             return;
+        }
+        {
+            // Decided under the sessions lock, and the browser marked as
+            // looking before it is let go: a session started meanwhile
+            // either got in first, and the restart waits for another
+            // day's tick, or finds the browser gone and says so.
+            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            if !sessions.is_empty() {
+                return;
+            }
+            *self.found.lock().unwrap_or_else(|e| e.into_inner()) = Found::Looking;
         }
         match driver.restart().await {
             Ok(()) => {
                 *self.restarted.lock().unwrap_or_else(|e| e.into_inner()) = Some(now);
-                *self.found.lock().unwrap_or_else(|e| e.into_inner()) = Found::Looking;
                 tracing::info!("[browser] restarting the idle browser, as once a day");
             }
-            Err(e) => {
-                tracing::warn!("[browser] restarting the idle browser failed: {e}");
-                *self.found.lock().unwrap_or_else(|e| e.into_inner()) = Found::Looking;
-            }
+            Err(e) => tracing::warn!("[browser] restarting the idle browser failed: {e}"),
         }
     }
 
@@ -451,7 +472,9 @@ impl Browsing {
 
     /// The person's open session, touched. With `Create::No`, none open
     /// is the model's error to fix; with `Create::Yes` a new one is made
-    /// outside the lock, and a duplicate made meanwhile is closed.
+    /// outside the lock, and kept only if, under the lock, no other was
+    /// kept meanwhile and the browser it came from is still the one in
+    /// use. Otherwise the new tab is closed.
     pub(crate) async fn session(
         &self,
         asker: &Asker,
@@ -476,7 +499,7 @@ impl Browsing {
         };
         let tab = driver.session().await.map_err(|_| NOT_ANSWERING)?;
         let open = Open {
-            tab,
+            tab: tab.clone(),
             lock: Arc::new(tokio::sync::Mutex::new(())),
             serial: self.serial.fetch_add(1, Ordering::SeqCst),
             used: Instant::now(),
@@ -484,30 +507,39 @@ impl Browsing {
             login: None,
             code: None,
         };
-        let existing = {
-            let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-            sessions.get(&asker.person).map(|existing| Opened {
-                tab: existing.tab.clone(),
-                lock: existing.lock.clone(),
-                serial: existing.serial,
-            })
+        let kept = {
+            let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            if !self.still_in_use(&driver) {
+                Err(NOT_ANSWERING)
+            } else {
+                match sessions.entry(asker.person.clone()) {
+                    // One was kept while the browser worked: use the
+                    // older, close ours.
+                    Entry::Occupied(existing) => Ok(Kept::Older(existing.get().opened())),
+                    Entry::Vacant(slot) => Ok(Kept::Ours(slot.insert(open).opened())),
+                }
+            }
         };
-        if let Some(opened) = existing {
-            // One appeared while the browser worked: keep the older,
-            // close ours.
-            open.tab.close().await;
-            return Ok(opened);
+        match kept {
+            Ok(Kept::Ours(opened)) => Ok(opened),
+            Ok(Kept::Older(opened)) => {
+                tab.close().await;
+                Ok(opened)
+            }
+            Err(e) => {
+                tab.close().await;
+                Err(e)
+            }
         }
-        let opened = Opened {
-            tab: open.tab.clone(),
-            lock: open.lock.clone(),
-            serial: open.serial,
-        };
-        self.sessions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(asker.person.clone(), open);
-        Ok(opened)
+    }
+
+    /// Whether `driver` is still the browser in use: not lost, and not
+    /// let go for the daily restart.
+    fn still_in_use(&self, driver: &Arc<dyn Driver>) -> bool {
+        matches!(
+            &*self.found.lock().unwrap_or_else(|e| e.into_inner()),
+            Found::Ready(current) if Arc::ptr_eq(current, driver)
+        )
     }
 
     /// The person's session, if it is still the one `serial` names: an
@@ -746,5 +778,91 @@ mod tests {
         );
         assert!(!restart_due(Some(now), now), "not twice in a day");
         assert!(restart_due(Some(now - RESTART_EVERY), now), "a day after");
+    }
+
+    /// A fake driver that yields once while it opens a tab, so another
+    /// call, or the daily restart, runs in between.
+    struct Yielding(fake::FakeDriver);
+
+    #[async_trait::async_trait]
+    impl Driver for Yielding {
+        async fn session(&self) -> niles_browser::Result<Arc<dyn Tab>> {
+            tokio::task::yield_now().await;
+            self.0.session().await
+        }
+
+        async fn restart(&self) -> niles_browser::Result<()> {
+            self.0.restart().await
+        }
+
+        fn closed(&self) -> bool {
+            self.0.closed()
+        }
+    }
+
+    fn mark() -> Asker {
+        Asker {
+            person: "mark@example.com".into(),
+            slug: Some("mark".into()),
+            satellite: None,
+            conversation: Some(1),
+            in_chat: true,
+        }
+    }
+
+    fn yielding() -> (Arc<Yielding>, Arc<Browsing>) {
+        let driver = Arc::new(Yielding(fake::FakeDriver::default()));
+        let approvals = Arc::new(Approvals::new(niles_core::EventBus::default(), None));
+        let browsing = built(approvals, Found::Ready(driver.clone()), None);
+        (driver, browsing)
+    }
+
+    fn closed_tabs(driver: &Yielding) -> usize {
+        driver
+            .0
+            .tabs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|tab| tab.state().closed)
+            .count()
+    }
+
+    #[tokio::test]
+    async fn two_sessions_started_at_once_share_one_and_close_the_other() {
+        let (driver, browsing) = yielding();
+        let asker = mark();
+        let (first, second) = tokio::join!(
+            browsing.session(&asker, Create::Yes),
+            browsing.session(&asker, Create::Yes)
+        );
+        let (first, second) = (first.expect("a session"), second.expect("a session"));
+        assert_eq!(first.serial, second.serial, "both calls use one session");
+        assert_eq!(
+            closed_tabs(&driver),
+            1,
+            "the tab that wasn't kept is closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_opened_while_the_browser_restarts_is_not_kept() {
+        let (driver, browsing) = yielding();
+        let asker = mark();
+        let (opened, ()) = tokio::join!(
+            browsing.session(&asker, Create::Yes),
+            browsing.tend(Instant::now())
+        );
+        assert_eq!(opened.err(), Some(NOT_ANSWERING));
+        assert!(driver.closed(), "the idle browser was restarted");
+        assert_eq!(closed_tabs(&driver), 1, "the late tab is closed");
+        assert!(
+            browsing
+                .sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty(),
+            "nothing is kept on the browser that was let go"
+        );
     }
 }

@@ -6,9 +6,13 @@
 //! before any of those addresses is connected to. A redirect is a new
 //! connection, checked the same way from scratch. The proxy logs its
 //! refusals and nothing it lets through.
+//!
+//! It answers the browser and nothing else: a connection from any other
+//! address is closed unread, so a pod or container that can reach the
+//! port still can't borrow the proxy to reach the internet.
 
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -29,6 +33,10 @@ const HEAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// How long one connect attempt to a checked address may take.
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The pause after a failed accept: out of file descriptors, `accept`
+/// fails at once every time, and retrying without one spins a core.
+const ACCEPT_PAUSE: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// What looks up and dials addresses: the system, or a test fake.
 #[async_trait]
@@ -60,11 +68,13 @@ pub struct Proxy {
     listener: TcpListener,
     network: Arc<dyn Network>,
     room: Arc<Semaphore>,
+    /// The browser's address, the only one answered.
+    browser: IpAddr,
 }
 
 impl Proxy {
-    /// Binds the proxy at `at`.
-    pub async fn bind(at: SocketAddr) -> Result<Proxy> {
+    /// Binds the proxy at `at`, for the browser at `browser`.
+    pub async fn bind(at: SocketAddr, browser: IpAddr) -> Result<Proxy> {
         let listener = TcpListener::bind(at).await.map_err(|e| Error::Listen {
             address: at.to_string(),
             reason: e.to_string(),
@@ -73,6 +83,7 @@ impl Proxy {
             listener,
             network: Arc::new(System),
             room: Arc::new(Semaphore::new(ROOM)),
+            browser: browser.to_canonical(),
         })
     }
 
@@ -87,9 +98,21 @@ impl Proxy {
     /// Accepts connections forever, one task per connection.
     pub async fn serve(self) {
         loop {
-            let Ok((stream, _)) = self.listener.accept().await else {
-                continue;
+            let (stream, peer) = match self.listener.accept().await {
+                Ok(accepted) => accepted,
+                Err(e) => {
+                    tracing::warn!("[browser] the proxy couldn't accept a connection: {e}");
+                    tokio::time::sleep(ACCEPT_PAUSE).await;
+                    continue;
+                }
             };
+            if peer.ip().to_canonical() != self.browser {
+                tracing::warn!(
+                    "[browser] proxy refused a connection from {}, which isn't the browser",
+                    peer.ip()
+                );
+                continue;
+            }
             let network = Arc::clone(&self.network);
             let room = Arc::clone(&self.room);
             tokio::spawn(async move {
@@ -100,6 +123,10 @@ impl Proxy {
                         "[browser] proxy refused a connection: all {ROOM} tunnels are in use"
                     );
                     let mut stream = stream;
+                    // Read before refusing: closing on an unread request
+                    // resets the connection on some systems, and the
+                    // browser would never see the 503.
+                    let _ = read_head(&mut stream).await;
                     refuse(
                         &mut stream,
                         "503 Service Unavailable",
@@ -120,6 +147,7 @@ impl Proxy {
             listener,
             network,
             room: Arc::new(Semaphore::new(ROOM)),
+            browser: IpAddr::from([127, 0, 0, 1]),
         }
     }
 }
@@ -378,7 +406,6 @@ async fn refuse(stream: &mut TcpStream, status: &str, target: Option<(&str, u16)
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::net::IpAddr;
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -698,6 +725,7 @@ mod tests {
             listener,
             network: fake,
             room: Arc::new(Semaphore::new(1)),
+            browser: IpAddr::from([127, 0, 0, 1]),
         };
         tokio::spawn(proxy.serve());
 
@@ -736,5 +764,39 @@ mod tests {
             .await
             .expect("echo in time");
         assert_eq!(echoed, b"ping");
+    }
+
+    #[tokio::test]
+    async fn answers_only_the_browser() {
+        // Finding: any pod that could reach the port could tunnel out
+        // through Niles. Here the browser is 127.0.0.2 and the caller
+        // 127.0.0.1, so the connection is closed without an answer.
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let proxy = Proxy {
+            listener,
+            network: Arc::new(Fake::default()),
+            room: Arc::new(Semaphore::new(ROOM)),
+            browser: IpAddr::from([127, 0, 0, 2]),
+        };
+        tokio::spawn(proxy.serve());
+
+        let mut stream = TcpStream::connect(addr).await.expect("connect");
+        let _ = stream
+            .write_all(
+                b"CONNECT shop.example:443 HTTP/1.1
+Host: shop.example:443
+
+",
+            )
+            .await;
+        let mut buf = [0u8; 64];
+        let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf))
+            .await
+            .expect("closed in time");
+        assert!(
+            matches!(read, Ok(0) | Err(_)),
+            "a caller that isn't the browser got an answer"
+        );
     }
 }

@@ -32,6 +32,9 @@ const LEFT_ITS_SITES: &str =
     "The page left the login's sites before the card was answered, so nothing was typed.";
 const LEFT_MID_SIGN_IN: &str =
     "The page left the login's sites while Niles signed in, so it typed nothing more there.";
+/// Typing began and then the page couldn't be read: the login may
+/// have gone through, so it is never typed again on a guess.
+const UNCERTAIN: &str = "Niles typed the saved login into the page, but then couldn't see what the page did with it, so whether it signed in is uncertain. Read the page with browser_read before anything else, and sign in again only if the page shows its sign-in form.";
 const CAPTCHA_STOP: &str = "The site wants a person to show they aren't a robot (a CAPTCHA). Niles doesn't solve those, so it stopped there.";
 const NO_FORM: &str = "Niles finds no sign-in form on this page to fill. Open the site's sign-in page first; a link or button on the page usually leads there.";
 
@@ -458,6 +461,7 @@ impl SignInStep {
             )),
             Round::OffSite => Err(niles_tools::Error::Remote(LEFT_MID_SIGN_IN.into())),
             Round::Gone => Err(lapsed(SESSION_ENDED)),
+            Round::Uncertain => Ok(Value::String(UNCERTAIN.into())),
         }
     }
 }
@@ -471,11 +475,15 @@ enum Round {
     StillAsks,
     OffSite,
     Gone,
+    /// A value was typed, or may have been, and then the page couldn't
+    /// be read.
+    Uncertain,
 }
 
 /// Fill the form over at most four rounds, checking the top origin
 /// again after every redirect. Each value is typed at most once a run,
-/// so a wrong password is never retried.
+/// so a wrong password is never retried. Once a fill has begun, a page
+/// that can't be read is [`Round::Uncertain`], never "nothing typed".
 async fn rounds(
     tab: &Arc<dyn niles_browser::Tab>,
     origins: &[String],
@@ -483,9 +491,11 @@ async fn rounds(
 ) -> niles_tools::Result<Round> {
     let mut typed_user = false;
     let mut typed_pass = false;
+    let mut began = false;
     for _ in 0..4 {
         let address = match tab.address().await {
             Ok(address) => address,
+            Err(_) if began => return Ok(Round::Uncertain),
             Err(niles_browser::Error::Closed) => return Ok(Round::Gone),
             Err(e) => return Err(remote(e)),
         };
@@ -494,6 +504,7 @@ async fn rounds(
         }
         let asks = match tab.asks(origins).await {
             Ok(asks) => asks,
+            Err(_) if began => return Ok(Round::Uncertain),
             Err(niles_browser::Error::Closed) => return Ok(Round::Gone),
             Err(e) => return Err(remote(e)),
         };
@@ -512,7 +523,13 @@ async fn rounds(
                     return Ok(Round::StillAsks);
                 }
                 let user = (username && !typed_user).then(|| creds.username.expose());
-                let filled = fill(tab, origins, user, Some(creds.password.expose())).await?;
+                began = true;
+                let Ok(filled) = tab
+                    .fill_login(origins, user, Some(creds.password.expose()))
+                    .await
+                else {
+                    return Ok(Round::Uncertain);
+                };
                 if !filled.password {
                     return Ok(if typed_user || filled.username {
                         Round::StillAsks
@@ -527,7 +544,13 @@ async fn rounds(
                 if typed_user {
                     return Ok(Round::StillAsks);
                 }
-                let filled = fill(tab, origins, Some(creds.username.expose()), None).await?;
+                began = true;
+                let Ok(filled) = tab
+                    .fill_login(origins, Some(creds.username.expose()), None)
+                    .await
+                else {
+                    return Ok(Round::Uncertain);
+                };
                 if !filled.username {
                     return Ok(if typed_pass {
                         Round::StillAsks
@@ -542,20 +565,6 @@ async fn rounds(
         }
     }
     Ok(Round::StillAsks)
-}
-
-/// One fill; a closed page ends the run.
-async fn fill(
-    tab: &Arc<dyn niles_browser::Tab>,
-    origins: &[String],
-    username: Option<&str>,
-    password: Option<&str>,
-) -> niles_tools::Result<niles_browser::Filled> {
-    match tab.fill_login(origins, username, password).await {
-        Ok(filled) => Ok(filled),
-        Err(niles_browser::Error::Closed) => Err(lapsed(SESSION_ENDED)),
-        Err(e) => Err(remote(e)),
-    }
 }
 
 /// The address's ASCII origin, or "" when it doesn't parse.
@@ -939,6 +948,24 @@ mod tests {
             "the password went in once: {:?}",
             state.typed
         );
+    }
+
+    #[tokio::test]
+    async fn a_login_typed_and_then_lost_sight_of_is_uncertain() {
+        // Finding: after typing, a page that couldn't be read came back
+        // as an error or "session ended", and nothing told the model
+        // the login might have gone through.
+        let h = harness().await;
+        let tab = h.page(LOGIN, Asks::Password { username: true }).await;
+        tab.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .lost_after_fill = true;
+        let (card, reply) = h.run(json!({ "login_id": h.login.id })).await;
+        assert_eq!(card.status, ApprovalStatus::Allowed, "{reply}");
+        assert!(reply.contains("uncertain"), "{reply}");
+        assert!(reply.contains("browser_read"), "{reply}");
+        assert!(!reply.contains("nothing was done"), "{reply}");
     }
 
     #[tokio::test]

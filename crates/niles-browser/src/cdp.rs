@@ -1,6 +1,11 @@
 //! The websocket connection to Chromium's DevTools: calls matched by id,
 //! events broadcast, close handling.
 //!
+//! The broadcast drops events for a subscriber that falls behind. That is
+//! fine for waiting on a load, never for `Fetch.requestPaused`: a paused
+//! request nobody answers hangs its page. So a session's guard gets those
+//! on its own channel, which keeps every one.
+//!
 //! No log line here carries parameters, results or event params.
 
 use std::collections::HashMap;
@@ -32,6 +37,9 @@ pub(crate) struct Event {
 
 type Pending = Mutex<HashMap<u64, (&'static str, oneshot::Sender<Result<Value>>)>>;
 
+/// Per session, where its paused requests go, when a guard takes them.
+type Paused = Mutex<HashMap<String, mpsc::UnboundedSender<Event>>>;
+
 /// One websocket to DevTools, shared by every session on it.
 pub(crate) struct Connection {
     writer: mpsc::Sender<String>,
@@ -40,6 +48,7 @@ pub(crate) struct Connection {
     /// Set to `None` when the stream ends, so every subscriber's
     /// receiver closes.
     events: Arc<Mutex<Option<broadcast::Sender<Event>>>>,
+    paused: Arc<Paused>,
     closed: Arc<AtomicBool>,
     reader_task: JoinHandle<()>,
     writer_task: JoinHandle<()>,
@@ -53,9 +62,11 @@ impl Connection {
         let (events_tx, _) = broadcast::channel(1024);
         let events = Arc::new(Mutex::new(Some(events_tx)));
         let pending = Arc::new(Mutex::new(HashMap::new()));
+        let paused: Arc<Paused> = Arc::new(Mutex::new(HashMap::new()));
 
         let reader_pending = Arc::clone(&pending);
         let reader_events = Arc::clone(&events);
+        let reader_paused = Arc::clone(&paused);
         let closed = Arc::new(AtomicBool::new(false));
         let reader_closed = Arc::clone(&closed);
 
@@ -70,7 +81,7 @@ impl Connection {
                     }
                     continue;
                 };
-                dispatch(&text, &reader_pending, &reader_events);
+                dispatch(&text, &reader_pending, &reader_events, &reader_paused);
             }
             reader_closed.store(true, Ordering::SeqCst);
             for (_, (_, reply)) in reader_pending
@@ -87,6 +98,10 @@ impl Connection {
                     .unwrap_or_else(|e| e.into_inner())
                     .take(),
             );
+            reader_paused
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
         });
 
         let writer_task = tokio::spawn(async move {
@@ -102,6 +117,7 @@ impl Connection {
             pending,
             next: AtomicU64::new(1),
             events,
+            paused,
             closed,
             reader_task,
             writer_task,
@@ -164,6 +180,20 @@ impl Connection {
         }
     }
 
+    /// Every `Fetch.requestPaused` on `session` from now on, none
+    /// dropped, replacing any earlier taker. A closed connection gives a
+    /// receiver that ends at once.
+    pub(crate) fn paused_requests(&self, session: &str) -> mpsc::UnboundedReceiver<Event> {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        if !self.closed() {
+            self.paused
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(session.to_string(), sender);
+        }
+        receiver
+    }
+
     /// Whether the stream to the browser has ended.
     pub(crate) fn closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
@@ -180,7 +210,12 @@ impl Drop for Connection {
 /// Routes one text frame: answers to the pending call, events to every
 /// subscriber. Malformed frames are dropped with a log that names no
 /// content.
-fn dispatch(text: &str, pending: &Pending, events: &Arc<Mutex<Option<broadcast::Sender<Event>>>>) {
+fn dispatch(
+    text: &str,
+    pending: &Pending,
+    events: &Arc<Mutex<Option<broadcast::Sender<Event>>>>,
+    paused: &Paused,
+) {
     let Ok(frame) = serde_json::from_str::<Value>(text) else {
         tracing::debug!("[browser] dropped a malformed DevTools frame");
         return;
@@ -212,17 +247,39 @@ fn dispatch(text: &str, pending: &Pending, events: &Arc<Mutex<Option<broadcast::
         return;
     }
     if let Some(method) = frame.get("method").and_then(Value::as_str) {
-        let guard = events.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(sender) = guard.as_ref() {
-            let _ = sender.send(Event {
-                session: frame
-                    .get("sessionId")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                method: method.to_string(),
-                params: frame.get("params").cloned().unwrap_or(Value::Null),
-            });
+        let event = Event {
+            session: frame
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            method: method.to_string(),
+            params: frame.get("params").cloned().unwrap_or(Value::Null),
+        };
+        if method == "Fetch.requestPaused"
+            && let Some(session) = event.session.clone()
+        {
+            let mut takers = paused.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(taker) = takers.get(&session) {
+                match taker.send(event) {
+                    Ok(()) => return,
+                    // The guard ended: forget it, and let the event go
+                    // the usual way.
+                    Err(mpsc::error::SendError(event)) => {
+                        takers.remove(&session);
+                        broadcast_event(events, event);
+                        return;
+                    }
+                }
+            }
         }
+        broadcast_event(events, event);
+    }
+}
+
+fn broadcast_event(events: &Arc<Mutex<Option<broadcast::Sender<Event>>>>, event: Event) {
+    let guard = events.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(sender) = guard.as_ref() {
+        let _ = sender.send(event);
     }
 }
 
@@ -231,6 +288,9 @@ mod tests {
     use super::*;
     use std::net::SocketAddr;
     use tokio::net::TcpListener;
+
+    /// More events than the broadcast's 1024.
+    const FLOOD: u64 = 3000;
 
     /// Starts a DevTools stand-in answering by a method-keyed script.
     async fn stand_in() -> SocketAddr {
@@ -284,6 +344,28 @@ mod tests {
                         ))
                         .await
                         .expect("send");
+                        ws.send(Message::Text(
+                            json!({"id": id, "result": {}}).to_string().into(),
+                        ))
+                        .await
+                        .expect("send");
+                    }
+                    // More paused requests than the broadcast holds,
+                    // then the answer.
+                    "flood" => {
+                        for n in 0..FLOOD {
+                            ws.send(Message::Text(
+                                json!({
+                                    "method": "Fetch.requestPaused",
+                                    "params": {"requestId": n},
+                                    "sessionId": frame["sessionId"],
+                                })
+                                .to_string()
+                                .into(),
+                            ))
+                            .await
+                            .expect("send");
+                        }
                         ws.send(Message::Text(
                             json!({"id": id, "result": {}}).to_string().into(),
                         ))
@@ -365,5 +447,20 @@ mod tests {
         assert_eq!(event.session.as_deref(), Some("s7"));
         assert_eq!(event.method, "Page.frameStartedLoading");
         assert_eq!(event.params, json!({"frameId": "f1"}));
+    }
+
+    #[tokio::test]
+    async fn a_guard_gets_every_paused_request_however_many() {
+        // Finding: on the shared broadcast a guard that fell behind lost
+        // paused requests, and each one lost hung its page.
+        let conn = connect().await;
+        let _idle = conn.subscribe();
+        let mut paused = conn.paused_requests("s7");
+        let answer = conn.call("flood", Value::Null, Some("s7")).await;
+        assert_eq!(answer.expect("answer"), json!({}));
+        for n in 0..FLOOD {
+            let event = paused.recv().await.expect("every paused request");
+            assert_eq!(event.params["requestId"], json!(n));
+        }
     }
 }
