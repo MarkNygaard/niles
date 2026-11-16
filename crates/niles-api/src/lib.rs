@@ -41,6 +41,7 @@ pub mod groceries;
 pub mod handlers;
 pub mod household;
 pub mod integrations;
+pub mod logins;
 pub mod logs;
 pub mod me;
 pub mod memory;

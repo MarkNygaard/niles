@@ -18,6 +18,7 @@ mod app;
 mod approvals;
 mod artifacts;
 mod assistant;
+mod browsing;
 mod calendar;
 mod chat_log;
 mod chat_loop;

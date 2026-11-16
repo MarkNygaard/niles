@@ -16,7 +16,7 @@
 //! arrive from outside, alongside the connection string. Those two are
 //! the whole of what Niles needs before the app can take over.
 
-use aes_gcm::aead::Aead;
+use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use base64::Engine;
 use niles_config::error::{Error, Result};
@@ -91,11 +91,27 @@ impl Sealer {
     }
 
     pub(crate) fn seal(&self, value: &str) -> Result<Vec<u8>> {
+        self.seal_for(value, "")
+    }
+
+    pub(crate) fn open(&self, sealed: &[u8]) -> Result<String> {
+        self.open_for(sealed, "")
+    }
+
+    /// `value` sealed to `context`: it opens only with the same context,
+    /// so a sealed value copied to another person's row, another row or
+    /// another column doesn't open there. Nothing about the context is
+    /// stored; the reader must name it again.
+    pub(crate) fn seal_for(&self, value: &str, context: &str) -> Result<Vec<u8>> {
         let mut nonce = [0u8; NONCE_LEN];
         rand::rng().fill_bytes(&mut nonce);
+        let payload = Payload {
+            msg: value.as_bytes(),
+            aad: context.as_bytes(),
+        };
         let ciphertext = self
             .cipher
-            .encrypt(&Nonce::from(nonce), value.as_bytes())
+            .encrypt(&Nonce::from(nonce), payload)
             .map_err(|_| bad_key("the value could not be sealed"))?;
         // Nonce first, so a reader knows where the ciphertext starts
         // without storing a length.
@@ -105,7 +121,8 @@ impl Sealer {
         Ok(out)
     }
 
-    pub(crate) fn open(&self, sealed: &[u8]) -> Result<String> {
+    /// A value [`Sealer::seal_for`] sealed to `context`.
+    pub(crate) fn open_for(&self, sealed: &[u8], context: &str) -> Result<String> {
         if sealed.len() <= NONCE_LEN {
             return Err(bad_key("the stored value is too short to be sealed"));
         }
@@ -114,9 +131,13 @@ impl Sealer {
         // cannot fail — but it is a `TryFrom`, and the length check
         // above is what makes it true.
         let nonce = Nonce::try_from(nonce).map_err(|_| bad_key("its nonce was the wrong size"))?;
+        let payload = Payload {
+            msg: ciphertext,
+            aad: context.as_bytes(),
+        };
         let plain = self
             .cipher
-            .decrypt(&nonce, ciphertext)
+            .decrypt(&nonce, payload)
             .map_err(|_| bad_key("it did not decrypt"))?;
         String::from_utf8(plain).map_err(|_| bad_key("it did not decrypt to text"))
     }
@@ -284,6 +305,26 @@ mod tests {
             .chunks(2)
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn a_value_sealed_to_a_context_opens_only_there() {
+        let sealer = sealer();
+        let sealed = sealer
+            .seal_for("hunter2!", "mark/7/password")
+            .expect("sealed");
+        assert_eq!(
+            sealer.open_for(&sealed, "mark/7/password").expect("opens"),
+            "hunter2!"
+        );
+        // Another person, another login, another field, or no context.
+        for elsewhere in ["majse/7/password", "mark/8/password", "mark/7/username", ""] {
+            assert!(
+                sealer.open_for(&sealed, elsewhere).is_err(),
+                "opened under {elsewhere:?}"
+            );
+        }
+        assert!(sealer.open(&sealed).is_err(), "opened with no context");
     }
 
     #[test]

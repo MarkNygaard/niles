@@ -1,10 +1,23 @@
-import type { DecidedApproval, PendingApproval } from "@/lib/api";
+import type { DecidedApproval, Decision, PendingApproval } from "@/lib/api";
 
 /** Everything about approvals: what waits, and what was decided. A
     change on the stream marks both stale. */
 export const APPROVALS = ["approvals"];
 export const PENDING = [...APPROVALS, "pending"];
 export const HISTORY = [...APPROVALS, "history"];
+
+/** The words app.rs keeps as said for a decision: what the pending
+    bubble shows while an answer is on its way. */
+export function answerSaid(decision: Decision): string {
+  switch (decision) {
+    case "once":
+      return "Allow once";
+    case "conversation":
+      return "Allow for this conversation";
+    case "deny":
+      return "Deny";
+  }
+}
 
 /** What became of one, as the history says it. */
 export function decidedLabel(entry: DecidedApproval): string {

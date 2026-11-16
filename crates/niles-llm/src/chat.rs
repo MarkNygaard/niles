@@ -48,6 +48,18 @@ pub enum ReasoningEffort {
     High,
 }
 
+tokio::task_local! {
+    /// Whether the model call running now has read something private.
+    static PRIVATE: bool;
+}
+
+/// Runs `call` with its reasoning kept out of the log when `private`:
+/// a turn that has read a page someone browses reasons about that page,
+/// and `/logs` is read by everyone signed in. Only its size is logged.
+pub async fn reasoning_kept_private<F: std::future::Future>(private: bool, call: F) -> F::Output {
+    PRIVATE.scope(private, call).await
+}
+
 /// A message in the conversation. Uses OpenAI's `role` discriminator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "lowercase")]
@@ -325,13 +337,20 @@ pub(crate) async fn post_chat_completions(
     if let Some(reasoning) = choice.message.reasoning.as_deref().map(str::trim)
         && !reasoning.is_empty()
     {
-        let shown: String = reasoning.chars().take(500).collect();
-        let more = if reasoning.chars().count() > 500 {
-            " …"
+        if PRIVATE.try_with(|private| *private).unwrap_or(false) {
+            tracing::info!(
+                "[llm] reasoning: {} characters, kept out of the log: the turn read a private page",
+                reasoning.chars().count()
+            );
         } else {
-            ""
-        };
-        tracing::info!("[llm] reasoning: {shown}{more}");
+            let shown: String = reasoning.chars().take(500).collect();
+            let more = if reasoning.chars().count() > 500 {
+                " …"
+            } else {
+                ""
+            };
+            tracing::info!("[llm] reasoning: {shown}{more}");
+        }
     }
     let content = choice.message.content;
     if content.is_none() && tool_calls.is_empty() {

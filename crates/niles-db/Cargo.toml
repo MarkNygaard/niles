@@ -14,6 +14,7 @@ niles-core.workspace = true
 niles-history.workspace = true
 niles-presence.workspace = true
 niles-calendar.workspace = true
+niles-logins.workspace = true
 niles-recognition.workspace = true
 aes-gcm.workspace = true
 base64.workspace = true

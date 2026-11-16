@@ -1,8 +1,9 @@
-import type { ReactNode } from "react";
-import { ChevronDown, ChevronRight, Mail, ShieldQuestion } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { ChevronDown, ChevronRight, Globe, Mail, ShieldQuestion } from "lucide-react";
 import { BrandMark, hasBrandMark } from "@/components/BrandMark";
 import { Button } from "@/components/ui/button";
 import type { ApprovalCard as Card, Decision } from "@/lib/api";
+import { approvalPictureUrl } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 /** A value longer than this is folded behind a chevron. */
@@ -80,6 +81,8 @@ export function ApprovalCard({
           <p className="text-muted-foreground text-sm">{card.subtitle}</p>
         </div>
       </div>
+
+      {card.picture && pending && <PagePicture id={card.id} site={card.subtitle} />}
 
       {folded ? (
         <>
@@ -178,11 +181,27 @@ export function ApprovalIcon({
       </span>
     );
   }
-  const Glyph = icon === "mail" ? Mail : ShieldQuestion;
+  const Glyph = icon === "mail" ? Mail : icon === "browser" ? Globe : ShieldQuestion;
   return (
     <span className={box}>
       <Glyph aria-hidden className={small ? "size-4" : "size-5"} />
     </span>
+  );
+}
+
+/** The page a held step would act on, outlined; full size in a new tab. */
+function PagePicture({ id, site }: { id: string; site: string }) {
+  const [gone, setGone] = useState(false);
+  if (gone) return null;
+  return (
+    <a href={approvalPictureUrl(id)} target="_blank" rel="noreferrer">
+      <img
+        src={approvalPictureUrl(id)}
+        alt={`The page on ${site}, with what Niles would act on outlined`}
+        className="ring-foreground/10 w-full rounded-xl ring-1"
+        onError={() => setGone(true)}
+      />
+    </a>
   );
 }
 

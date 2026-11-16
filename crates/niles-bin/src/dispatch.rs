@@ -115,6 +115,12 @@ pub(crate) struct DispatchCtx {
     )>,
     /// What is waiting for somebody's yes.
     pub(crate) approvals: Arc<approvals::Approvals>,
+    /// The saved logins, and the add-login cards on their way to the
+    /// turn that keeps them.
+    pub(crate) logins: Arc<crate::browsing::Logins>,
+    /// Niles's browser and its sessions, for the code cards. Absent
+    /// outside `serve`.
+    pub(crate) browsing: Option<Arc<crate::browsing::Browsing>>,
     /// Each person's artifacts, and the jobs that write them. Absent
     /// without a database, and outside `serve`.
     pub(crate) artifacts: Option<Arc<artifacts::Artifacts>>,
@@ -231,6 +237,8 @@ pub(crate) async fn handle_transcript(
                 approval: ctx
                     .approvals
                     .for_turn(&chat_log::person(Some(slug), ""), started),
+                login_request: None,
+                code_request: None,
                 artifacts: Vec::new(),
                 attachments: Vec::new(),
             };
@@ -259,6 +267,22 @@ pub(crate) async fn handle_transcript(
             .record(&conversation::Thread::Room(room), text, reply);
     }
     response
+}
+
+/// The reply as `/logs` gets it: whole, unless the turn read a page
+/// someone browses, which the reply may quote; then its size only.
+fn logged_reply(response: &str, trace: &[crate::review::ToolTrace]) -> String {
+    if trace
+        .iter()
+        .any(|t| crate::chat_loop::private_tool(&t.tool))
+    {
+        format!(
+            "a reply of {} characters, kept out of the log: the turn read a private page",
+            response.chars().count()
+        )
+    } else {
+        response.to_string()
+    }
 }
 
 /// Run the Tier 1 LLM (with Tier 2 escalation) for `text` and return the
@@ -346,8 +370,11 @@ pub(crate) async fn dispatch_tier1(
     )
     .await
     {
-        Ok((LoopOutcome::Done(response), _)) => {
-            tracing::info!("[{peer}] \"{text}\" -> (Tier 1) {response}");
+        Ok((LoopOutcome::Done(response), trace)) => {
+            tracing::info!(
+                "[{peer}] \"{text}\" -> (Tier 1) {}",
+                logged_reply(&response, &trace)
+            );
             Some(response)
         }
         Ok((LoopOutcome::HandOff { tool }, _)) => {
@@ -384,7 +411,7 @@ pub(crate) async fn dispatch_tier1(
                 }
             }
         }
-        Ok((LoopOutcome::EscalateRequested { reason, messages }, _tool_trace)) => {
+        Ok((LoopOutcome::EscalateRequested { reason, messages }, tier1_trace)) => {
             tracing::info!("[{peer}] Tier 1 requested escalation: {reason}");
             match &ctx.tier2 {
                 Some(tier2) => {
@@ -399,8 +426,12 @@ pub(crate) async fn dispatch_tier1(
                     )
                     .await
                     {
-                        Ok((LoopOutcome::Done(response), _)) => {
-                            tracing::info!("[{peer}] \"{text}\" -> (Tier 2) {response}");
+                        Ok((LoopOutcome::Done(response), trace)) => {
+                            let both: Vec<_> = tier1_trace.into_iter().chain(trace).collect();
+                            tracing::info!(
+                                "[{peer}] \"{text}\" -> (Tier 2) {}",
+                                logged_reply(&response, &both)
+                            );
                             Some(response)
                         }
                         Ok((
@@ -1000,5 +1031,35 @@ hand_off = false
             ("spotprice".to_string(), "spotprice_prices".to_string()),
         ];
         assert_eq!(handed(&servers, offered), ["linear__create_issue"]);
+    }
+}
+
+#[cfg(test)]
+mod reply_log_tests {
+    use super::logged_reply;
+    use crate::review::ToolTrace;
+    use serde_json::json;
+
+    fn called(tool: &str) -> ToolTrace {
+        ToolTrace {
+            tool: tool.into(),
+            arguments: json!({}),
+            result: json!({}),
+        }
+    }
+
+    #[test]
+    fn a_reply_after_reading_a_page_is_logged_by_its_size() {
+        // Finding: "Your basket has 3 items, delivering to Vestergade 12"
+        // reached /logs, which everyone signed in reads.
+        let reply = "Your basket has 3 items, delivering to Vestergade 12.";
+        let logged = logged_reply(reply, &[called("browser_open"), called("browser_read")]);
+        assert!(!logged.contains("Vestergade"), "{logged}");
+        assert!(
+            logged.contains(&reply.chars().count().to_string()),
+            "{logged}"
+        );
+        // Any other turn's reply is logged whole, as before.
+        assert_eq!(logged_reply("Done.", &[called("set_device")]), "Done.");
     }
 }

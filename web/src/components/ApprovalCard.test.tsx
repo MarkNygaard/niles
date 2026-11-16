@@ -32,6 +32,23 @@ const MAIL: Card = {
   allow_conversation: false,
 };
 
+const STEP: Card = {
+  id: "b1",
+  title: 'Click "Add to basket"?',
+  subtitle: "shop.example",
+  icon: "browser",
+  fields: [
+    { label: "Page", value: "shop.example/usb-c-cable-2m" },
+    { label: "Element", value: 'Button "Add to basket"' },
+    { label: "The model's reason", value: "The person asked for the cable in their basket." },
+  ],
+  body: null,
+  allow_conversation: false,
+  picture: true,
+  status: "pending",
+  outcome: null,
+};
+
 describe("ApprovalCard", () => {
   it("asks, shows what would happen, and offers the three answers", () => {
     const onDecide = vi.fn();
@@ -71,6 +88,29 @@ describe("ApprovalCard", () => {
     expect(screen.getByRole("region", { name: "Let Linear create issue?" })).not.toHaveAttribute(
       "aria-current",
     );
+  });
+
+  it("shows the page with what it acts on outlined while it waits, and only Allow once and Deny", () => {
+    render(<ApprovalCard card={STEP} onDecide={vi.fn()} />);
+    const img = screen.getByRole("img", { name: /shop\.example/ });
+    expect(img).toHaveAttribute("src", "/me/approvals/b1/picture");
+    expect(screen.getByText("The model's reason")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Allow for this conversation" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Deny" })).toBeInTheDocument();
+  });
+
+  it("drops the picture once it is answered", () => {
+    render(<ApprovalCard card={{ ...STEP, status: "allowed", outcome: "Done" }} onDecide={vi.fn()} />);
+    expect(screen.queryByRole("img", { name: /shop\.example/ })).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent("Allowed. Done.");
+  });
+
+  it("hides a picture that is gone", () => {
+    render(<ApprovalCard card={STEP} onDecide={vi.fn()} />);
+    const img = screen.getByRole("img", { name: /shop\.example/ });
+    fireEvent.error(img);
+    expect(screen.queryByRole("img", { name: /shop\.example/ })).toBeNull();
   });
 
   it("says why an allowed call failed", () => {

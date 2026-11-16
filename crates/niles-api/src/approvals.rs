@@ -11,7 +11,8 @@ use crate::state::AppState;
 use async_trait::async_trait;
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -41,6 +42,17 @@ pub trait Approvals: Send + Sync {
         speaker: Option<&str>,
         before: Option<i64>,
     ) -> Result<History, String>;
+
+    /// A held call's picture while it waits; theirs only.
+    async fn picture(&self, who: &str, speaker: Option<&str>, approval: &str) -> Option<Picture>;
+}
+
+/// A held call's picture while it waits, as it is served: its bytes and
+/// how to label them. Never logged or printed.
+#[derive(Clone)]
+pub struct Picture {
+    pub mime: &'static str,
+    pub bytes: Vec<u8>,
 }
 
 /// One held call, as the panel draws it: the card the chat shows, and
@@ -166,6 +178,42 @@ pub async fn history(
         .map_err(|e| failed(StatusCode::BAD_GATEWAY, e))
 }
 
+/// `GET /me/approvals/{approval}/picture` — a held call's picture while
+/// it waits, theirs only. Gone, with the call, once it is answered or
+/// lapses. The headers keep it a picture, whatever it is asked to be:
+/// not sniffed, nothing in it run or loaded if it is opened on its own,
+/// never kept, and not to be shown by another site.
+pub async fn picture(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(approval): Path<String>,
+) -> Result<Response, Failure> {
+    let approvals = approvals(&state)?;
+    let (who, speaker) = caller(&state, &headers);
+    let kept = approvals
+        .picture(&who, speaker.as_deref(), &approval)
+        .await
+        .ok_or_else(|| failed(StatusCode::NOT_FOUND, "no such picture".into()))?;
+    let mut response = kept.bytes.into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(kept.mime));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; sandbox"),
+    );
+    // Gone once the call is answered, so no cache is ever right.
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        "cross-origin-resource-policy",
+        HeaderValue::from_static("same-origin"),
+    );
+    Ok(response)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +255,7 @@ mod tests {
                 fields: Vec::new(),
                 body: None,
                 allow_conversation: true,
+                picture: false,
                 status: ApprovalStatus::Pending,
                 outcome: None,
             },
@@ -257,6 +306,22 @@ mod tests {
                 next: before.map(|b| b - 30),
                 kept: true,
             })
+        }
+
+        async fn picture(
+            &self,
+            _who: &str,
+            _speaker: Option<&str>,
+            approval: &str,
+        ) -> Option<Picture> {
+            if approval == "a1" {
+                Some(Picture {
+                    mime: "image/jpeg",
+                    bytes: vec![0xFF, 0xD8, 0xFF],
+                })
+            } else {
+                None
+            }
         }
     }
 
@@ -386,6 +451,56 @@ mod tests {
         let (_, body) = call(&app, "GET", "/me/approvals/history?before=90", None).await;
         assert_eq!(*held.asked_before.lock(), Some(Some(90)));
         assert_eq!(body["next"], 60);
+    }
+
+    async fn fetch(app: &axum::Router, uri: &str) -> (StatusCode, HeaderMap, Vec<u8>) {
+        let request = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, headers, bytes.to_vec())
+    }
+
+    #[tokio::test]
+    async fn a_waiting_picture_is_served_to_its_person_and_not_kept() {
+        let app = app(Some(Arc::new(Held::default())));
+        let (status, headers, bytes) = fetch(&app, "/me/approvals/a1/picture").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers[header::CONTENT_TYPE], "image/jpeg");
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+        assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(
+            headers[header::CONTENT_SECURITY_POLICY],
+            "default-src 'none'; sandbox"
+        );
+        assert_eq!(headers["cross-origin-resource-policy"], "same-origin");
+        assert_eq!(bytes, [0xFF, 0xD8, 0xFF]);
+    }
+
+    #[tokio::test]
+    async fn a_picture_that_is_gone_is_not_found() {
+        let app = app(Some(Arc::new(Held::default())));
+        let (status, _, bytes) = fetch(&app, "/me/approvals/gone/picture").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"], "no such picture");
+    }
+
+    #[test]
+    fn an_old_card_without_a_picture_flag_still_reads() {
+        let card: ApprovalCard = serde_json::from_value(json!({
+            "id": "a1",
+            "title": "Let it click?",
+            "subtitle": "Browser",
+            "status": "pending",
+        }))
+        .unwrap();
+        assert!(!card.picture);
     }
 
     #[tokio::test]

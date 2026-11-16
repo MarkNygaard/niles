@@ -120,3 +120,14 @@ Each satellite streams to port 10300 on the machine running Compose, so
 put that machine's IP address in the satellite's settings. Niles calls each
 satellite back on its port 10301 to ring timers and speak announcements,
 which needs no port opened on the Niles side.
+
+## Browsing
+
+Niles can drive a headless Chromium of its own, for reading pages and
+acting on a site on a card. Add it to the stack with
+`docker compose -f compose.yaml -f browser.yaml up -d`, which starts the
+browser from `browser.yaml` beside Niles. The browser lives on an internal
+network that Niles is the only other member of: it reaches the internet
+only through Niles's proxy, and nothing but Niles reaches its DevTools
+port. Niles finds it by its name, `niles-browser`, and turns browsing on
+by itself once it answers. There is nothing to set in `niles.toml`.

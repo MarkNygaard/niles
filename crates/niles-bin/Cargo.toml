@@ -52,6 +52,7 @@ niles-memory.workspace = true
 niles-skills.workspace = true
 niles-weather.workspace = true
 niles-websearch.workspace = true
+niles-browser.workspace = true
 niles-podcasts.workspace = true
 niles-mcp.workspace = true
 niles-notifications.workspace = true
@@ -61,6 +62,7 @@ niles-calendar.workspace = true
 niles-plugins.workspace = true
 niles-recognition.workspace = true
 niles-training.workspace = true
+niles-logins.workspace = true
 niles-artifacts.workspace = true
 niles-webpush.workspace = true
 niles-update.workspace = true
@@ -70,6 +72,7 @@ iana-time-zone.workspace = true
 hound.workspace = true
 reqwest.workspace = true
 futures-util.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 image.workspace = true
