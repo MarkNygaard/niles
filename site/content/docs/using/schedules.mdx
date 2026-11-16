@@ -1,0 +1,71 @@
+---
+title: "Schedules"
+description: "Things Niles does for you on a schedule, under My profile: Claude or ChatGPT answers as you, with your own tools, and you get a notification."
+---
+
+A schedule is a task Niles does for you again and again: "every Monday
+at 8, my open Linear issues by priority", "each weekday at 7, what's in
+my calendar today". At its time, Claude or ChatGPT answers it as you, with
+the tools you have in the chat: the household's, your mail and calendars,
+Strava, your Vault's logins and [your own MCP servers](/docs/using/my-servers).
+The answer lands as a new conversation in your chat, named after the
+schedule, and you get a notification.
+
+Schedules are yours alone. They are under **My profile → Schedules**,
+and nobody else sees them, changes them or runs them. They are never
+spoken on a satellite. For the house's lights and devices, use
+[automations](/docs/using/automations): those are the household's,
+and run without a model.
+
+## Making one
+
+**In My profile.** Press **Add a schedule**, give it a name, write what
+Niles should do, and pick when:
+
+- every day at a time,
+- weekdays (Monday to Friday) at a time,
+- chosen days of the week at a time,
+- or every 1, 2, 3, 4, 6, 8 or 12 hours, on the hour from midnight.
+
+Times are in the household's time zone and follow daylight saving. A
+schedule runs once an hour at most, since every run is the assistant's
+time.
+
+**In the chat.** Say it the way you would to a person: "every Monday at
+8, give me my open Linear issues by priority". Niles shows a card with
+the name, what it will do and when; nothing is kept until you press
+**Allow once**.
+
+Write the instruction so it stands on its own. Each run starts a fresh
+conversation and doesn't remember the one the schedule was made in.
+
+## Each schedule
+
+- **Run now** runs it once, straight away, without moving its next time.
+- **Pause** stops it until you **Resume** it; it then runs at its next
+  time, not the ones it skipped.
+- **Edit** changes its name, instruction or time.
+- **Runs** lists its latest runs: when each was due, and whether it was
+  done, is waiting for you, failed or was missed. **Open** goes to the
+  run's conversation.
+- **Remove** deletes it and its runs. The conversations it started stay
+  in your chat.
+
+## When a tool asks first
+
+A tool that asks before it acts (see [Approvals](/docs/using/approvals))
+asks in a schedule too. The run puts its card in the conversation and
+waits for you rather than guess, and the run reads **Waiting for your
+yes**. The card lapses as any card does if nobody answers.
+
+## When a run doesn't happen
+
+- **Missed.** If Niles wasn't running at a schedule's time, the run is
+  marked missed and isn't caught up later. The next one runs on time.
+- **Failed.** The run says why, in its notification and in its runs:
+  no assistant switched on, the assistant couldn't answer, or you're no
+  longer on Settings → People.
+
+Schedules need Niles's database, and Claude or ChatGPT switched on under
+Settings → Voice \& AI. Without an assistant, the page says so and
+nothing runs.

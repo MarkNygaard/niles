@@ -55,6 +55,7 @@ niles-websearch.workspace = true
 niles-browser.workspace = true
 niles-podcasts.workspace = true
 niles-mcp.workspace = true
+niles-schedules.workspace = true
 niles-notifications.workspace = true
 niles-presence.workspace = true
 niles-automations.workspace = true

@@ -19,8 +19,8 @@ use crate::timers::spawn_timer_driver;
 use crate::voice::{hush_on_wake, spawn_dispatch_task};
 use crate::wiring::accounts::{
     build_calendars, build_logins, build_notify, build_personal_servers, build_push,
-    build_secret_store, build_strava, build_tado_tokens, build_weather_client, ensure_session_key,
-    forget_retired_provider_keys,
+    build_schedules, build_secret_store, build_strava, build_tado_tokens, build_weather_client,
+    ensure_session_key, forget_retired_provider_keys,
 };
 use crate::wiring::automations::{
     CenterNotifier, MqttDeviceSink, automation_rules, automation_waits, build_automation_store,
@@ -41,7 +41,7 @@ use crate::wiring::stores::{
 };
 use crate::{
     LOG_BUFFER, approvals, artifacts, assistant, calendar, courtesy, grocery_delivery, last_target,
-    mail, music, personal_servers, plugins, profile, review, ringer, shutdown, speakers,
+    mail, music, personal_servers, plugins, profile, review, ringer, schedules, shutdown, speakers,
     tool_servers, training, tv, vocabulary, wake_up,
 };
 use anyhow::Context;
@@ -732,7 +732,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     niles_tools::register_notification_tools(&mut tools, notifications.clone());
     // Taken before the plugins' tools join: the names no plugin may use.
     let builtin_tool_names = tools.builtin_names();
-    tools.attach_dynamic(plugin_tools);
+    tools.attach_dynamic(plugin_tools.clone());
 
     let tools = Arc::new(tools);
     if let Some(artifacts) = &artifacts {
@@ -825,6 +825,23 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         ctx: chat_ctx.clone(),
         stt: whisper.clone(),
     });
+    // Each person's schedules, answered by the chat as they would be
+    // typed.
+    let schedules = build_schedules(&cfg).map(|kept| {
+        schedules::Schedules::new(
+            kept,
+            Arc::new(schedules::ChatAnswer {
+                chat: app_chat.clone(),
+                settings: store.clone(),
+            }),
+            notify.clone(),
+            store.clone(),
+        )
+    });
+    let _schedules_clock = schedules.as_ref().map(schedules::Schedules::spawn);
+    if let Some(schedules) = &schedules {
+        schedules::offer(schedules, &plugin_tools, approvals.clone());
+    }
     let restart = Arc::new(
         niles_api::Restart::new(
             boot,
@@ -918,6 +935,10 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_personal_servers(personal_servers.map(|servers| {
         Arc::new(personal_servers::AppPersonalServers(servers))
             as Arc<dyn niles_api::personal_servers::PersonalToolServers>
+    }))
+    .with_schedules(schedules.clone().map(|schedules| {
+        Arc::new(schedules::AppSchedules(schedules))
+            as Arc<dyn niles_api::schedules::PersonalSchedules>
     }));
 
     // Starting no longer proves Niles is configured — every section has

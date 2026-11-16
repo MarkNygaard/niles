@@ -48,6 +48,7 @@ mod plugins;
 mod push;
 mod room_music;
 mod scenes;
+mod schedules;
 mod secrets;
 mod skills;
 mod tado_tokens;
@@ -82,6 +83,7 @@ pub use plugins::{
 pub use push::PostgresPush;
 pub use room_music::PostgresRoomMusic;
 pub use scenes::PostgresScenes;
+pub use schedules::PostgresSchedules;
 pub use secrets::{PostgresSecrets, Sealer};
 pub use skills::PostgresSkills;
 pub use tado_tokens::PostgresTadoTokens;

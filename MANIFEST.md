@@ -253,6 +253,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-todays-run-card` | Today's run under Now on your Notifications page: the session, the next, the week's km, the coach's note, Done, Skipped | [#438](https://github.com/MarkNygaard/niles/pull/438) |
 | `config-live-speaking-integrations` | Speaking and integration settings say they apply at once, as they always did, and the voice lock asks for no restart | [#507](https://github.com/MarkNygaard/niles/pull/507) |
 | `my-mcp-servers` | My profile → MCP servers: a person's own MCP servers, by key or sign-in, whose tools only they get in the written chat | [#530](https://github.com/MarkNygaard/niles/pull/530) |
+| `my-schedules` | My profile → Schedules: a person's own tasks the assistant answers on time as them, into a new conversation | [#531](https://github.com/MarkNygaard/niles/pull/531) |
 | `ui-about-niles` | About Niles in Settings: version, commit and build date; Update available lists what's new and how to update | [#516](https://github.com/MarkNygaard/niles/pull/516) |
 | `ui-api-access` | Settings → API access: the key masked, with reveal, copy, a curl example and New key, for a signed-in person only | [#405](https://github.com/MarkNygaard/niles/pull/405) |
 | `ui-profile-sections` | My profile laid out like Settings: About you, My phone, Notifications, each add-on a page, Approvals | [#455](https://github.com/MarkNygaard/niles/pull/455) |
@@ -271,6 +272,11 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 - find my notes on the trip in Notion
 - what's assigned to me in Linear?
+
+### `my-schedules` — example phrasings
+
+- every Monday at 8, give me my open Linear issues by priority
+- each weekday at 7, what's in my calendar today
 
 ## voice
 

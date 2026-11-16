@@ -1159,6 +1159,13 @@ phrasings = ["find my notes on the trip in Notion", "what's assigned to me in Li
 since_pr = 530
 
 [[feature]]
+id = "my-schedules"
+category = "ui.settings"
+summary = "My profile → Schedules: a person's own tasks the assistant answers on time as them, into a new conversation"
+phrasings = ["every Monday at 8, give me my open Linear issues by priority", "each weekday at 7, what's in my calendar today"]
+since_pr = 531
+
+[[feature]]
 id = "vault-activity"
 category = "ui.settings"
 summary = "Vault shows what each saved login was used for: sign-ins, codes and changes, with the site and the conversation"

@@ -327,6 +327,17 @@ pub fn router(state: AppState) -> Router {
             "/me/tool-servers/{id}/reconnect",
             post(crate::personal_servers::reconnect),
         )
+        .route(
+            "/me/schedules",
+            get(crate::schedules::list).post(crate::schedules::add),
+        )
+        .route(
+            "/me/schedules/{id}",
+            put(crate::schedules::update).delete(crate::schedules::remove),
+        )
+        .route("/me/schedules/{id}/pause", post(crate::schedules::pause))
+        .route("/me/schedules/{id}/run", post(crate::schedules::run))
+        .route("/me/schedules/{id}/runs", get(crate::schedules::runs))
         .route("/me/logins/{id}/activity", get(crate::logins::activity))
         .route("/presence/device", get(crate::presence::device_status))
         .route("/presence/device", post(crate::presence::pair_device))

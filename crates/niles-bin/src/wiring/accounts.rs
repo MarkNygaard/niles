@@ -261,6 +261,18 @@ pub(crate) fn build_personal_servers(cfg: &Config) -> Option<Arc<dyn niles_mcp::
     }
 }
 
+/// Each person's schedules. None without a database: a schedule is
+/// kept nowhere else.
+pub(crate) fn build_schedules(cfg: &Config) -> Option<Arc<dyn niles_schedules::ScheduleStore>> {
+    let database = cfg.database.as_ref()?;
+    let url = database.resolve_url().ok()?;
+    let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
+    Some(Arc::new(niles_db::PostgresSchedules::new(
+        backend.pool(),
+        backend.describe_target(),
+    )))
+}
+
 pub(crate) fn build_tado_tokens(
     cfg: &Config,
 ) -> anyhow::Result<Option<Arc<dyn niles_presence::TokenStore>>> {

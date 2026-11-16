@@ -35,6 +35,7 @@ niles-llm.workspace = true
 niles-training.workspace = true
 niles-logins.workspace = true
 niles-mcp.workspace = true
+niles-schedules.workspace = true
 niles-artifacts.workspace = true
 niles-podcasts.workspace = true
 niles-webpush.workspace = true

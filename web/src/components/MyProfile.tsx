@@ -5,6 +5,7 @@ import {
   ChevronLeft,
   KeyRound,
   PlugZap,
+  Repeat,
   ShieldCheck,
   Smartphone,
   UserRound,
@@ -12,6 +13,7 @@ import {
 import { Approvals } from "@/components/ApprovalsList";
 import { CALENDARS } from "@/components/CalendarsPanel";
 import { McpServersPanel, signInReturn } from "@/components/McpServersPanel";
+import { SchedulesPanel } from "@/components/SchedulesPanel";
 import { VaultPanel } from "@/components/VaultPanel";
 import { AboutYou, PhoneCard } from "@/components/MeCard";
 import { Notifications } from "@/components/NotificationsCard";
@@ -77,6 +79,12 @@ export function profileSections(addOns: PersonalAddOn[]): { group: string; items
           label: "MCP servers",
           hint: "Your own tools for the chat",
           icon: PlugZap,
+        },
+        {
+          id: "schedules",
+          label: "Schedules",
+          hint: "What Niles does for you on a schedule",
+          icon: Repeat,
         },
       ],
     },
@@ -232,6 +240,7 @@ export function MyProfile() {
         {shown === "notifications" && <Notifications />}
         {shown === "vault" && <ProfileVault />}
         {shown === "mcp" && <ProfileMcpServers returned={signInReturn(hashQuery(window.location.hash))} />}
+        {shown === "schedules" && <ProfileSchedules />}
         {addOns
           .filter((a) => a.id === shown)
           .map((a) => (
@@ -275,6 +284,25 @@ function ProfileMcpServers({ returned }: { returned: "done" | "failed" | null })
       </CardHeader>
       <CardContent>
         <McpServersPanel returned={returned} />
+      </CardContent>
+    </Card>
+  );
+}
+
+/** The person's own schedules: agent tasks answered on time, as them. */
+function ProfileSchedules() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Schedules</CardTitle>
+        <CardDescription>
+          Tasks Niles does for you on a schedule, with your own tools. Each run is a new
+          conversation in your chat, and you get a notification. Only you see yours. For the
+          house's lights and devices, use automations.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <SchedulesPanel />
       </CardContent>
     </Card>
   );

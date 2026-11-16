@@ -48,6 +48,7 @@ mod response;
 mod review;
 mod ringer;
 mod satellites;
+mod schedules;
 mod serve;
 mod shutdown;
 mod speak;

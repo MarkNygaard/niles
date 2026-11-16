@@ -133,6 +133,51 @@ export interface ToolServer {
   tools: RemoteTool[];
 }
 
+/** A day of the week, as the server writes it. */
+export type Weekday = "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
+
+/** When a schedule runs, in the household's time zone. Mirrors `When` in
+ * crates/niles-schedules/src/model.rs. */
+export type ScheduleWhen =
+  | { kind: "daily"; at: string }
+  | { kind: "weekdays"; at: string }
+  | { kind: "days"; days: Weekday[]; at: string }
+  | { kind: "every_hours"; hours: number };
+
+/** One of the person's own schedules. Mirrors `Schedule` in
+ * crates/niles-schedules/src/model.rs. */
+export interface Schedule {
+  id: number;
+  name: string;
+  instruction: string;
+  when: ScheduleWhen;
+  paused: boolean;
+  /** When it runs next; null while paused. */
+  next_due: string | null;
+}
+
+export interface ScheduleDraft {
+  name: string;
+  instruction: string;
+  when: ScheduleWhen;
+}
+
+export interface ScheduleList {
+  schedules: Schedule[];
+  /** Whether an assistant is switched on to run them. */
+  assistant: boolean;
+}
+
+/** One run of a schedule. Mirrors `Run` in crates/niles-schedules/src/model.rs. */
+export interface ScheduleRun {
+  id: number;
+  due: string;
+  finished: string | null;
+  outcome: "running" | "done" | "waiting" | "failed" | "missed";
+  conversation: number | null;
+  reason: string | null;
+}
+
 /** What the model may do with one of a person's own tools. */
 export type PersonalToolMode = "on" | "ask" | "off";
 
@@ -1554,7 +1599,13 @@ export interface DecidedApproval {
 }
 
 /** What a notification is about. Mirrors `Kind` in crates/niles-webpush/src/inbox.rs. */
-export type NotificationKind = "artifact" | "shared" | "plan_changed" | "workout" | "approval";
+export type NotificationKind =
+  | "artifact"
+  | "shared"
+  | "plan_changed"
+  | "workout"
+  | "approval"
+  | "schedule";
 
 /** One notification Niles kept for the signed-in person. */
 export interface AppNotification {
@@ -2070,6 +2121,19 @@ export const api = {
     request<void>(`/me/tool-servers/${id}/reconnect`, { method: "POST" }),
   signInMyServer: (id: number) =>
     request<{ url: string }>(`/me/tool-servers/${id}/sign-in`, { method: "POST" }),
+  schedules: () => request<ScheduleList>("/me/schedules"),
+  addSchedule: (draft: ScheduleDraft) =>
+    request<Schedule>("/me/schedules", { method: "POST", body: JSON.stringify(draft) }),
+  updateSchedule: (id: number, draft: ScheduleDraft) =>
+    request<Schedule>(`/me/schedules/${id}`, { method: "PUT", body: JSON.stringify(draft) }),
+  removeSchedule: (id: number) => request<void>(`/me/schedules/${id}`, { method: "DELETE" }),
+  pauseSchedule: (id: number, paused: boolean) =>
+    request<void>(`/me/schedules/${id}/pause`, {
+      method: "POST",
+      body: JSON.stringify({ paused }),
+    }),
+  runSchedule: (id: number) => request<void>(`/me/schedules/${id}/run`, { method: "POST" }),
+  scheduleRuns: (id: number) => request<{ runs: ScheduleRun[] }>(`/me/schedules/${id}/runs`),
   refreshToolServer: (id: string) =>
     request<void>(`/tool-servers/${encodeURIComponent(id)}/refresh`, { method: "POST" }),
   previewPlugin: (repo: string) =>

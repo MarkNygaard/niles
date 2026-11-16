@@ -5,6 +5,7 @@ import {
   CalendarClock,
   FileText,
   Footprints,
+  Repeat,
   ShieldCheck,
   UsersRound,
 } from "lucide-react";
@@ -160,6 +161,7 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   plan_changed: CalendarClock,
   workout: Footprints,
   approval: ShieldCheck,
+  schedule: Repeat,
 };
 
 function Item({ notification: n, fresh }: { notification: AppNotification; fresh: boolean }) {
