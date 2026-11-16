@@ -109,6 +109,7 @@ describe("profileSections", () => {
       "My phone",
       "Notifications",
       "Vault",
+      "MCP servers",
     ]);
     expect(sections[1].items.map((s) => s.id)).toEqual(["calendars", "mail", "strava"]);
   });

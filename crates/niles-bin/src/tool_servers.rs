@@ -248,7 +248,7 @@ impl ToolServers {
 
 /// What a tool does, as the end of "Let Linear …?": its title, or its
 /// name, in lower case.
-fn action(tool: &RemoteTool) -> String {
+pub(crate) fn action(tool: &RemoteTool) -> String {
     let words = tool
         .title
         .clone()
@@ -266,7 +266,7 @@ fn owner(id: &str) -> String {
 
 /// One tool as the model sees it: its name prefixed with the server's
 /// id, and its schema without the `$schema` some providers refuse.
-fn describe(id: &str, tool: &RemoteTool) -> Option<ToolDescriptor> {
+pub(crate) fn describe(id: &str, tool: &RemoteTool) -> Option<ToolDescriptor> {
     let name = format!("{id}__{}", tool.name);
     let acceptable = name.len() <= MAX_NAME
         && !tool.name.is_empty()
@@ -327,7 +327,7 @@ impl Tool for RemoteToolAdapter {
 }
 
 /// Compact JSON as JSON, anything else as text, never more than 16 KiB.
-fn result_value(text: String) -> Value {
+pub(crate) fn result_value(text: String) -> Value {
     if text.len() <= MAX_RESULT
         && let Ok(value) = serde_json::from_str(&text)
     {
@@ -336,7 +336,7 @@ fn result_value(text: String) -> Value {
     Value::String(cap(text))
 }
 
-fn cap(text: String) -> String {
+pub(crate) fn cap(text: String) -> String {
     if text.len() <= MAX_RESULT {
         return text;
     }

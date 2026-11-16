@@ -2733,6 +2733,7 @@ dependencies = [
  "niles-integration-linear",
  "niles-llm",
  "niles-logins",
+ "niles-mcp",
  "niles-memory",
  "niles-mqtt",
  "niles-nemlig",
@@ -2865,7 +2866,7 @@ dependencies = [
 
 [[package]]
 name = "niles-browser"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -2967,6 +2968,7 @@ dependencies = [
  "niles-core",
  "niles-history",
  "niles-logins",
+ "niles-mcp",
  "niles-presence",
  "niles-recognition",
  "niles-training",
@@ -3044,7 +3046,7 @@ dependencies = [
 
 [[package]]
 name = "niles-logins"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3064,12 +3066,19 @@ dependencies = [
 name = "niles-mcp"
 version = "0.7.0"
 dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "chrono",
+ "niles-websearch",
+ "rand 0.10.3",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "url",
  "wiremock",
 ]
 

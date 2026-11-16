@@ -792,7 +792,10 @@ impl Held {
     async fn run(mut self) -> (ApprovalCard, String) {
         // The picture goes with the answer: nothing waits any more.
         self.card.picture = false;
-        match self.tool.execute(self.args).await {
+        // As the person it was asked for, wherever the yes came from: a
+        // person's own tool runs only for them.
+        let asker = self.asker.clone();
+        match ASKER.scope(asker, self.tool.execute(self.args)).await {
             Ok(result) => {
                 self.card.status = ApprovalStatus::Allowed;
                 self.card.outcome = Some("Done".into());
@@ -958,6 +961,11 @@ impl AskFirst {
 impl Tool for AskFirst {
     fn descriptor(&self) -> ToolDescriptor {
         self.inner.descriptor()
+    }
+
+    // A tool that is hidden stays hidden behind its card.
+    fn offered(&self) -> bool {
+        self.inner.offered()
     }
 
     async fn execute(&self, args: Value) -> niles_tools::Result<Value> {
@@ -1262,6 +1270,47 @@ mod tests {
             approvals.take(&id, "person:mark").is_none(),
             "answered once"
         );
+    }
+
+    /// Says whose turn it runs in.
+    struct Whose;
+
+    #[async_trait]
+    impl Tool for Whose {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "my-linear__create_issue".into(),
+                description: "Whose.".into(),
+                parameters: json!({ "type": "object" }),
+            }
+        }
+        async fn execute(&self, _args: Value) -> niles_tools::Result<Value> {
+            Ok(json!({ "for": asker().map(|a| a.person) }))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_allowed_call_runs_as_the_person_it_was_asked_for() {
+        let approvals = Arc::new(Approvals::default());
+        let started = Instant::now();
+        let card = ToolCard {
+            title: "Let Linear create issue?".into(),
+            subtitle: "Linear".into(),
+            icon: None,
+            schema: json!({}),
+        };
+        ASKER
+            .scope(
+                in_the_app(None),
+                AskFirst::new(Arc::new(Whose), approvals.clone(), card).execute(json!({})),
+            )
+            .await
+            .unwrap();
+        let id = approvals.for_turn("person:mark", started).unwrap().id;
+        let held = approvals.take(&id, "person:mark").unwrap();
+        // Answered from the panel, outside any turn.
+        let (_, reply) = approvals.settle(held, Decision::Once, Via::App, None).await;
+        assert_eq!(reply, "Done. {\"for\":\"person:mark\"}");
     }
 
     #[tokio::test]

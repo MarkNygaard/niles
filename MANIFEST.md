@@ -252,6 +252,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-notifications-page` | Notifications, by the avatar: Now (today's run, a delivery, pair this phone), then all Niles told you; Home is the house | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `ui-todays-run-card` | Today's run under Now on your Notifications page: the session, the next, the week's km, the coach's note, Done, Skipped | [#438](https://github.com/MarkNygaard/niles/pull/438) |
 | `config-live-speaking-integrations` | Speaking and integration settings say they apply at once, as they always did, and the voice lock asks for no restart | [#507](https://github.com/MarkNygaard/niles/pull/507) |
+| `my-mcp-servers` | My profile → MCP servers: a person's own MCP servers, by key or sign-in, whose tools only they get in the written chat | [#530](https://github.com/MarkNygaard/niles/pull/530) |
 | `ui-about-niles` | About Niles in Settings: version, commit and build date; Update available lists what's new and how to update | [#516](https://github.com/MarkNygaard/niles/pull/516) |
 | `ui-api-access` | Settings → API access: the key masked, with reveal, copy, a curl example and New key, for a signed-in person only | [#405](https://github.com/MarkNygaard/niles/pull/405) |
 | `ui-profile-sections` | My profile laid out like Settings: About you, My phone, Notifications, each add-on a page, Approvals | [#455](https://github.com/MarkNygaard/niles/pull/455) |
@@ -265,6 +266,11 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-update-dot` | While a newer Niles is published, Settings and its About Niles entry carry a dot | [#516](https://github.com/MarkNygaard/niles/pull/516) |
 | `ui-voice-roles` | Picking a hearing or thinking provider sets it up: its API key sits beside it, and one save declares it | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `vault-activity` | Vault shows what each saved login was used for: sign-ins, codes and changes, with the site and the conversation | [#528](https://github.com/MarkNygaard/niles/pull/528) |
+
+### `my-mcp-servers` — example phrasings
+
+- find my notes on the trip in Notion
+- what's assigned to me in Linear?
 
 ## voice
 

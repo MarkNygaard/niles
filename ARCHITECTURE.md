@@ -95,7 +95,7 @@ A Cargo workspace of 39 crates; `niles-bin` is the only binary and wires the res
 | `niles-webpush` | Web Push to a person's devices, RFC 8291 and 8292 in pure Rust, and the record of what each person was told, for their Notifications page. |
 | `niles-websearch` | The SearXNG client, and the fetcher that goes only to the public internet. |
 | `niles-browser` | Niles's own Chrome DevTools Protocol client for headless Chromium in a container of its own: a browser context per session, each page read as text for the model, screenshots for the cards, what a checkout page shows (its total, its delivery address, and whether it asks for card details), filling a saved login or a code only on its origins, and the guard that keeps a signed-in session on them, and the `CONNECT` proxy the browser reaches the internet through. |
-| `niles-mcp` | Niles as an MCP client, for remote tool servers such as Linear's. |
+| `niles-mcp` | Niles as an MCP client, for remote tool servers such as Linear's and each person's own: the client, held to the public internet for a person's; MCP's OAuth sign-in; and the model and store of each person's servers. |
 | `niles-plugins` | Third-party plugins: WebAssembly components run in wasmtime, installed from GitHub releases and found in the add-on library. |
 | `niles-integration-linear` | Linear's webhook, turned into notifications. |
 | `niles-tls` | TLS to devices that sign their own certificate (an LG TV). |
@@ -330,6 +330,17 @@ The other limits:
 - A confirm a step needs is dismissed, so that step does nothing.
 - Frames aren't read, so what a page shows only inside a frame the model never sees.
 
+## Each person's own tool servers
+
+NIL-80. A person adds remote MCP servers of their own under My profile → MCP servers; the household's stay in `[tool_servers]` and Settings.
+
+- **Theirs alone.** Kept per person (`personal_tool_servers`, in `niles-db`), every query scoped by the person's key as Vault's are; another person's id answers like one never kept. A key, or a browser sign-in's client and tokens, is sealed to its person, server and field (`personal_tool_server_secrets`), write-only in the API, and goes with its server.
+- **Two ways in.** A pasted key, sent as `Authorization: Bearer` or under a header the person names. Or the server's own sign-in: MCP authorization's OAuth 2.1 with PKCE. Niles reads the server's protected-resource metadata (RFC 9728, from its `401` or the well-known address), then its authorization server's (RFC 8414, or OpenID's), registers itself as a client (RFC 7591), and sends the browser from My profile to sign in. It comes back to `/me/tool-servers/callback` with the state that began it, answered only for the person who began it and only once, and Niles keeps the tokens and refreshes them two minutes before they run out. The sign-in link never goes through the chat or the model.
+- **Only the public internet.** The address must be `https` on a public name or address; the client's resolver refuses a name with any non-public address each time it connects, and redirects aren't followed. The same holds for every address the sign-in uses. So a person can't point Niles at the house, the cluster or Niles itself.
+- **Only their written chat.** A server's tools go into the shared dynamic tools as `my-<slug>__<tool>` under an owner of the person's own. A dash is never in a household server's id, so these names never meet a household tool's. A tool is offered, listed and callable only while the turn's asker is its person, typing in the app (`in_chat`) and not on a satellite: never in a spoken turn, a household automation, a review or a job's artifact. The registry's dynamic tools ask each tool whether it is offered now, both to list it and to find it by name, so two people's tools with one name never cross. The assistant reaches them through Niles's own MCP server under the same asker.
+- **What runs.** A tool the server marks read-only (`readOnlyHint`) starts On; any other starts at Ask, an Allow once / Deny card in the chat. The person sets each On, Ask or Off.
+- **What comes back** is capped at 16 KiB as a household server's is, with the server's key and tokens taken out; a call's result, the reply and the reasoning of that turn reach `/logs` by size only, as browsing's do.
+
 ## House rules
 
 Every change keeps these. Each is one rule and, in italics, its reason.
@@ -401,6 +412,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 - Third-party add-ons as sandboxed WebAssembly components installed from GitHub releases (spec #384, #388, #390, #391); MQTT in 0.2 (#392); accounts and webhooks in 0.3 (#439, #444). **Rejected:** native Rust dylibs, because Rust has no stable ABI and a native library has the whole process's rights; and a subprocess or container per plugin, because it is sandboxed differently on every OS and Niles in Kubernetes can't start containers. A component is one portable file whose imports are all it can touch. Trust model: see Security notes.
 - The add-on library (NIL-35): found by a GitHub topic, listed through pull requests to a registry repo, read from one `index.json` on GitHub Pages, and counted by GitHub's download count of a `niles-installed` file each fresh install fetches once. **Rejected:** a server of Niles's own, which someone would have to run and trust; counts reported by each Niles, which is telemetry; and the component's own download count, which previews and updates inflate.
 - Linear through Linear's own MCP server, as a remote tool server; Niles files and queries issues and never talks to the ai-harness (#417, #419).
+- Each person's own MCP servers (NIL-80), in the same client and registry as the household's, but per person, sealed, held to the public internet and offered only in that person's written chat. **Rejected:** a hosted connection service such as Composio, which would hold the household's tokens and see every call.
 - Approvals: Ask-first tools and every mail wait for the person's yes (spec #422, #423); the panel and the history (#455).
 - Approvals reach the person's own devices by Web Push (NIL-16). One asked in the open chat is pushed only if it still waits a minute later, and anything else at once. Every notification has Deny. Approve is only where a spoken yes would count too, and a mail gets Review instead. Answered or lapsed, it is replaced on the person's other devices by a quiet push with the same tag, never a hidden one, since Safari drops a subscription whose push shows nothing. iOS draws no buttons on a Home Screen app's notification, so a tap opens the card there. That comes from Apple's forums in October 2026 and is still to be checked on a current iPhone, along with whether iOS honours a quiet push.
 - Accounts: one sign-in per provider serves Calendar, Mail or both (#424); mail (#425); iCloud over IMAP and SMTP (#426). App registrations: see Operations notes.
@@ -471,7 +483,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 - **Voice print**: the 192-float embedding of a voice, matched against the enrolled ones.
 - **Notification**: something Niles says unprompted at a satellite, with a chime and quiet hours; a person's own things also go to their devices by Web Push.
 - **Automation**: when X, do Y. Rules are stored in Postgres; the curve and the morning routine are code.
-- **Tool server**: a remote MCP server whose tools Niles offers, named `<id>__<tool>`.
+- **Tool server**: a remote MCP server whose tools Niles offers, named `<id>__<tool>`. A person's own is named `my-<slug>__<tool>` and offered only to them, in the written chat.
 - **Add-on library**: the add-ons other people published, read from the registry's `index.json` and shown under Add-ons → Browse. Each is Listed (reviewed into the registry), Unreviewed (found by the `niles-addon` topic) or, once taken off the list, No longer listed.
 - **Plugin**: a WebAssembly component installed from a GitHub release, targeting the `niles:integration/plugin` world in `schemas/niles-integration.wit`.
 - **features.toml / MANIFEST.md**: the catalogue of what Niles does, and the LLM-facing file `niles generate-manifest` makes from it.

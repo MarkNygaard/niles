@@ -148,6 +148,8 @@ export function connection(server: ToolServer | undefined, tools: number, on: nu
       return "Connecting…";
     case "needs_key":
       return "Add its API key to connect.";
+    case "needs_sign_in":
+      return "Sign in to connect.";
     case "failed":
       return `Not connected: ${server.message ?? "it did not answer"}`;
     case "working":

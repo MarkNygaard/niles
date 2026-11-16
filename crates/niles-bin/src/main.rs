@@ -38,6 +38,7 @@ mod mail;
 mod manifest;
 mod music;
 mod notify;
+mod personal_servers;
 mod plugins;
 mod profile;
 mod prompt;

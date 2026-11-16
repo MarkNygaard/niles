@@ -19,6 +19,9 @@ pub enum ServerStatus {
     Working,
     /// No key, so nothing was tried.
     NeedsKey,
+    /// A server that signs in in the browser, not signed in yet, or
+    /// whose sign-in ran out.
+    NeedsSignIn,
     Failed,
 }
 

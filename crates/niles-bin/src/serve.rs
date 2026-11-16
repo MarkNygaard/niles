@@ -18,8 +18,9 @@ use crate::speech_stream::{
 use crate::timers::spawn_timer_driver;
 use crate::voice::{hush_on_wake, spawn_dispatch_task};
 use crate::wiring::accounts::{
-    build_calendars, build_logins, build_notify, build_push, build_secret_store, build_strava,
-    build_tado_tokens, build_weather_client, ensure_session_key, forget_retired_provider_keys,
+    build_calendars, build_logins, build_notify, build_personal_servers, build_push,
+    build_secret_store, build_strava, build_tado_tokens, build_weather_client, ensure_session_key,
+    forget_retired_provider_keys,
 };
 use crate::wiring::automations::{
     CenterNotifier, MqttDeviceSink, automation_rules, automation_waits, build_automation_store,
@@ -40,8 +41,8 @@ use crate::wiring::stores::{
 };
 use crate::{
     LOG_BUFFER, approvals, artifacts, assistant, calendar, courtesy, grocery_delivery, last_target,
-    mail, music, plugins, profile, review, ringer, shutdown, speakers, tool_servers, training, tv,
-    vocabulary, wake_up,
+    mail, music, personal_servers, plugins, profile, review, ringer, shutdown, speakers,
+    tool_servers, training, tv, vocabulary, wake_up,
 };
 use anyhow::Context;
 use chrono::{Datelike, Utc};
@@ -205,6 +206,11 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let _approvals_sweep = approvals.clone().spawn_sweep();
     let tool_servers =
         tool_servers::ToolServers::start(store.clone(), plugin_tools.clone(), approvals.clone());
+    // Each person's own servers: their tools sit beside the household's,
+    // offered only to them in the app's chat.
+    let personal_servers = build_personal_servers(&cfg).map(|servers| {
+        personal_servers::PersonalTools::start(servers, plugin_tools.clone(), approvals.clone())
+    });
     let plugin_database = plugin_host.as_ref().is_some_and(|(_, database)| *database);
     let plugin_runtime = plugin_host.map(|(runtime, _)| runtime);
     let router = Arc::new(match &plugin_runtime {
@@ -908,7 +914,11 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_tool_servers(Some(
         Arc::new(tool_servers::AppToolServers(tool_servers.clone()))
             as Arc<dyn niles_api::tool_servers::ToolServers>,
-    ));
+    ))
+    .with_personal_servers(personal_servers.map(|servers| {
+        Arc::new(personal_servers::AppPersonalServers(servers))
+            as Arc<dyn niles_api::personal_servers::PersonalToolServers>
+    }));
 
     // Starting no longer proves Niles is configured — every section has
     // a default, which is what lets the app be the way in. So say what

@@ -47,6 +47,7 @@ pub mod me;
 pub mod memory;
 pub mod music;
 pub mod notifications;
+pub mod personal_servers;
 pub mod places;
 pub mod plugins;
 pub mod podcasts;

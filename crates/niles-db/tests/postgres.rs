@@ -1589,3 +1589,77 @@ async fn secrets_round_trip_for_their_owner_only() {
     assert_eq!(for_the_other.len(), 1);
     assert_eq!(for_the_other[0].username.expose(), "mark@example.com");
 }
+
+// ---- each person's own MCP servers ------------------------------------
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn a_persons_server_and_its_key_are_theirs_and_sealed() {
+    use niles_mcp::{Credential, Key, Mode, NewServer, PersonalServers, SignInKind};
+    let Some(backend) = backend() else {
+        return;
+    };
+    let pool = backend.pool();
+    let store = niles_db::PostgresServers::new(
+        backend.pool(),
+        backend.describe_target(),
+        &niles_db::Sealer::generate_key(),
+    )
+    .expect("store");
+    let person = format!("person:test-{}", rand::random::<u64>());
+    let other = format!("{person}-else");
+    let new = NewServer::new(
+        "Notion",
+        "https://mcp.notion.com/mcp",
+        SignInKind::Key,
+        "",
+        Some(Key::new("a-key-nobody-else-sees")),
+    )
+    .expect("valid");
+    let server = store.add(&person, &new).await.expect("add");
+    assert!(server.signed_in);
+    assert_eq!(
+        store.add(&person, &new).await.expect("again").slug,
+        "notion_2"
+    );
+    assert_eq!(
+        store.credential(&person, server.id).await.expect("read"),
+        Some(Credential::Key(Key::new("a-key-nobody-else-sees")))
+    );
+    assert!(
+        store
+            .credential(&other, server.id)
+            .await
+            .expect("read")
+            .is_none()
+    );
+    assert!(store.list(&other).await.expect("list").is_empty());
+    assert!(
+        store
+            .set_mode(&person, server.id, "search", Mode::On)
+            .await
+            .expect("mode")
+    );
+    assert_eq!(
+        store
+            .get(&person, server.id)
+            .await
+            .expect("get")
+            .expect("hers")
+            .modes
+            .get("search"),
+        Some(&Mode::On)
+    );
+    let sealed: Vec<u8> =
+        sqlx::query_scalar("select key_enc from personal_tool_server_secrets where server_id = $1")
+            .bind(server.id)
+            .fetch_one(&pool)
+            .await
+            .expect("raw row");
+    let plain = "a-key-nobody-else-sees";
+    assert!(
+        !sealed.windows(plain.len()).any(|w| w == plain.as_bytes()),
+        "the key is in the clear"
+    );
+    assert!(store.remove(&person, server.id).await.expect("remove"));
+}
