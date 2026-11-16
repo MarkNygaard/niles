@@ -176,6 +176,7 @@ pub(crate) fn start(
 
 /// The profile sweep: stale profiles are deleted every six hours, so a
 /// login unused for a month stops restoring even where nothing reads it.
+/// Activity older than 90 days goes with the same sweep.
 async fn sweep_profiles(store: Arc<dyn LoginStore>) {
     loop {
         let before = chrono::Utc::now() - chrono::Duration::days(niles_logins::PROFILE_DAYS);
@@ -187,6 +188,10 @@ async fn sweep_profiles(store: Arc<dyn LoginStore>) {
             Err(e) => {
                 tracing::warn!("[browser] stale browser profiles weren't dropped: {e}");
             }
+        }
+        let before = chrono::Utc::now() - chrono::Duration::days(niles_logins::ACTIVITY_DAYS);
+        if let Err(e) = store.drop_old_activity(before).await {
+            tracing::warn!("[browser] old login activity wasn't dropped: {e}");
         }
         tokio::time::sleep(PROFILE_SWEEP_EVERY).await;
     }
@@ -585,6 +590,29 @@ impl Browsing {
         self.store.clone()
     }
 
+    /// Notes one use of a login for Vault. A use that can't be noted is
+    /// logged and browsing carries on: the activity is a record, not a
+    /// gate.
+    pub(crate) async fn note(
+        &self,
+        person: &str,
+        login: i64,
+        used: niles_logins::Used,
+        site: Option<String>,
+        conversation: Option<i64>,
+    ) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        let context = niles_logins::Context {
+            site: site.filter(|s| !s.is_empty()),
+            conversation,
+        };
+        if let Err(e) = store.record(person, login, used, &context).await {
+            tracing::warn!("[browser] a login's use wasn't noted: {e}");
+        }
+    }
+
     /// The scrub for what this person's browsing sends the model, the
     /// log and tracing. With no store there is nothing to scrub; when
     /// the store can't be read, browsing fails closed.
@@ -652,7 +680,7 @@ impl Browsing {
     }
 
     /// End the person's session when it is signed in with `login`:
-    /// what the Logins page changes calls first.
+    /// what Vault changes calls first.
     pub(crate) async fn end_login(&self, person: &str, login: i64, save: Save) {
         let open = {
             let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());

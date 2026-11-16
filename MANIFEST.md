@@ -65,6 +65,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 | Feature | Summary | Since |
 | --- | --- | --- |
+| `browsing-authenticator-codes` | A saved login can keep its authenticator key, and Niles types the sign-in code itself | [#528](https://github.com/MarkNygaard/niles/pull/528) |
 | `browsing-sign-in` | Niles signs in with a saved login only on its own sites, asks for a sign-in code on a card, and stops at a CAPTCHA | [#526](https://github.com/MarkNygaard/niles/pull/526) |
 | `tool-browsing` | Do something on a website from the chat: Niles reads the pages, and each click, typing or submit waits on a card | [#520](https://github.com/MarkNygaard/niles/pull/520) |
 | `tool-command-history` | Ask what was said to Niles and when, from 14 days of spoken turns kept in Postgres | [#508](https://github.com/MarkNygaard/niles/pull/508) |
@@ -257,12 +258,13 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-push-notifications` | My profile → Notifications: on for this device, your devices, Send a test; iPhone asks for the Home Screen app | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `ui-restart-now` | Restart now under Kubernetes or a declared supervisor: says what a restart cuts short, waits for the new Niles, reloads | [#507](https://github.com/MarkNygaard/niles/pull/507) |
 | `ui-restart-pending` | While a change waits for a restart, the top of Settings names it and its menu has a dot; changing it back clears both | [#507](https://github.com/MarkNygaard/niles/pull/507) |
-| `ui-saved-logins` | My profile → Logins: a site's login for browsing, added there or from the chat; the password is never shown again | [#521](https://github.com/MarkNygaard/niles/pull/521) |
+| `ui-saved-logins` | My profile → Vault: a site's login for browsing, added there or from the chat; the password is never shown again | [#521](https://github.com/MarkNygaard/niles/pull/521) |
 | `ui-settings-system` | Settings splits the system (Devices: the broker; Voice & AI: hearing, thinking, speaking) from optional add-ons | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `ui-setup-checklist` | On a new install each System page leads with what it still needs, and the settings list counts it | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `ui-strava-connect` | My profile → Strava: set up your own Strava app, save its keys, connect, last sync, Sync now, disconnect | [#418](https://github.com/MarkNygaard/niles/pull/418) |
 | `ui-update-dot` | While a newer Niles is published, Settings and its About Niles entry carry a dot | [#516](https://github.com/MarkNygaard/niles/pull/516) |
 | `ui-voice-roles` | Picking a hearing or thinking provider sets it up: its API key sits beside it, and one save declares it | [#394](https://github.com/MarkNygaard/niles/pull/394) |
+| `vault-activity` | Vault shows what each saved login was used for: sign-ins, codes and changes, with the site and the conversation | [#528](https://github.com/MarkNygaard/niles/pull/528) |
 
 ## voice
 

@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, ChevronLeft, KeyRound, ShieldCheck, Smartphone, UserRound } from "lucide-react";
 import { Approvals } from "@/components/ApprovalsList";
 import { CALENDARS } from "@/components/CalendarsPanel";
-import { LoginsPanel } from "@/components/LoginsPanel";
+import { VaultPanel } from "@/components/VaultPanel";
 import { AboutYou, PhoneCard } from "@/components/MeCard";
 import { Notifications } from "@/components/NotificationsCard";
 import {
@@ -58,9 +58,9 @@ export function profileSections(addOns: PersonalAddOn[]): { group: string; items
           icon: Bell,
         },
         {
-          id: "logins",
-          label: "Logins",
-          hint: "Sites Niles signs in to for you",
+          id: "vault",
+          label: "Vault",
+          hint: "Your saved logins, and what Niles used them for",
           icon: KeyRound,
         },
       ],
@@ -215,7 +215,7 @@ export function MyProfile() {
           </>
         )}
         {shown === "notifications" && <Notifications />}
-        {shown === "logins" && <ProfileLogins />}
+        {shown === "vault" && <ProfileVault />}
         {addOns
           .filter((a) => a.id === shown)
           .map((a) => (
@@ -227,19 +227,19 @@ export function MyProfile() {
   );
 }
 
-/** The person's saved logins: what Niles signs in to for them, sealed. */
-function ProfileLogins() {
+/** The person's Vault: what Niles signs in to for them, sealed. */
+function ProfileVault() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Logins</CardTitle>
+        <CardTitle>Vault</CardTitle>
         <CardDescription>
           The sites Niles signs in to for you when it browses. Only you see yours. A password is
           never shown again, and the model never sees it.
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <LoginsPanel />
+        <VaultPanel />
       </CardContent>
     </Card>
   );

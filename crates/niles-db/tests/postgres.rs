@@ -1092,6 +1092,107 @@ async fn logins_round_trip_sealed() {
 
 #[tokio::test]
 #[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn a_key_and_the_activity_are_the_persons_own() {
+    use niles_logins::{Context, KeyChange, LoginEdit, LoginStore, NewLogin, Secret, Used};
+    let Some((store, pool, person)) = logins() else {
+        return;
+    };
+    let someone_else = format!("{person}-else");
+    let new = NewLogin::new(
+        "Shop",
+        &["shop.example".to_string()],
+        Secret::new("majse@example.com"),
+        Secret::new("correct horse battery staple"),
+    )
+    .expect("valid login")
+    .with_authenticator(Some(Secret::new("JBSWY3DPEHPK3PXP")))
+    .expect("a valid key");
+    let login = store.add(&person, &new).await.expect("add");
+    assert!(login.authenticator);
+    assert!(
+        store
+            .authenticator(&person, login.id)
+            .await
+            .expect("read")
+            .is_some()
+    );
+    assert!(
+        store
+            .authenticator(&someone_else, login.id)
+            .await
+            .expect("read")
+            .is_none()
+    );
+
+    let shop = Context {
+        site: Some("https://shop.example".into()),
+        conversation: Some(7),
+    };
+    assert!(
+        store
+            .record(&person, login.id, Used::CodeMade, &shop)
+            .await
+            .expect("note")
+    );
+    assert!(
+        !store
+            .record(&someone_else, login.id, Used::CodeMade, &shop)
+            .await
+            .expect("note")
+    );
+    let uses = store
+        .activity(&person, login.id)
+        .await
+        .expect("read")
+        .expect("hers");
+    assert_eq!(
+        uses.iter().map(|a| a.used).collect::<Vec<_>>(),
+        [Used::CodeMade, Used::Added]
+    );
+    assert_eq!(uses[0].conversation, Some(7));
+    assert!(
+        store
+            .activity(&someone_else, login.id)
+            .await
+            .expect("read")
+            .is_none()
+    );
+
+    let removed = LoginEdit::new(
+        "Shop",
+        &["shop.example".to_string()],
+        Secret::new("majse@example.com"),
+        None,
+    )
+    .expect("valid edit")
+    .with_authenticator(KeyChange::Remove)
+    .expect("valid");
+    let edited = store
+        .update(&person, login.id, &removed)
+        .await
+        .expect("edit")
+        .expect("hers");
+    assert!(!edited.authenticator);
+    assert!(
+        store
+            .authenticator(&person, login.id)
+            .await
+            .expect("read")
+            .is_none()
+    );
+
+    // A sealed value moved to another column doesn't open there: the
+    // password copied into the username Vault lists.
+    sqlx::query("update saved_login_secrets set username_enc = password_enc where login_id = $1")
+        .bind(login.id)
+        .execute(&pool)
+        .await
+        .expect("raw update");
+    assert!(store.list(&person).await.is_err(), "a moved value opened");
+}
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
 async fn an_empty_password_keeps_the_sealed_one() {
     use niles_logins::{LoginEdit, LoginStore, Secret};
     let Some((store, _pool, person)) = logins() else {

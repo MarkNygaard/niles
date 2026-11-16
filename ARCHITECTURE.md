@@ -207,7 +207,7 @@ The answer is kept in memory. A failed check keeps the last answer and says how 
 
 ## Browsing on someone's behalf
 
-NIL-74 built the browser, the proxy, sessions and the cards described below, and NIL-75 saved logins and My profile → Logins. NIL-76 built signing in with a saved login, sign-in codes, CAPTCHAs and browser profiles, and NIL-77 the order card and the stop at card details. The household's guide is `site/content/docs/using/browsing.mdx`.
+NIL-74 built the browser, the proxy, sessions and the cards described below, and NIL-75 saved logins and My profile → Logins, which NIL-78 renamed Vault and gave each login's activity. NIL-79 lets a login keep its authenticator key. NIL-76 built signing in with a saved login, sign-in codes, CAPTCHAs and browser profiles, and NIL-77 the order card and the stop at card details. The household's guide is `site/content/docs/using/browsing.mdx`.
 
 A person asks in the chat for something done on a website, for example "put a 2 m USB-C cable in my basket on shop.example". Niles opens and reads pages without asking. Every click, typing, choice and form submission waits on a card with a picture of the page, and runs only after the person's Allow. When the site needs a login Niles doesn't have, the person adds one in a form the model never sees, and Niles fills it in only on that login's own origins. `read_page` stays the way to read a public page. The browser is for pages that need clicks, scripts or a login.
 
@@ -261,8 +261,11 @@ A person asks in the chat for something done on a website, for example "put a 2 
 - Remove and Sign out forget the profile, and end a session open with the login first without keeping its profile; an edit ends it after keeping it. `last_used` is set at each sign-in and each profile kept.
 - The API token gets 401, and another person's login answers 404 on every route (rule 18).
 - The password is the credential rule 7 covers; no response type can carry one. The username is sealed too, and goes back only to its owner, never to the model or a log. `Debug` prints `…` for both values.
-- Saved logins need the database and the secrets key. Without them, the Logins page says so.
-- **My profile → Logins** in the app lists the person's logins, with Add, Edit, Remove and Sign out. The password field is write-only: it shows as set, leaving it empty keeps the current password, and Niles never sends it back.
+- Saved logins need the database and the secrets key. Without them, Vault says so.
+- **My profile → Vault** in the app lists the person's logins, with Add, Edit, Remove and Sign out. The password field is write-only: it shows as set, leaving it empty keeps the current password, and Niles never sends it back.
+- A login may keep an authenticator key: the setup key, or the `otpauth://totp` link behind a site's QR code, checked and kept as one canonical link. It is sealed like the password and write-only the same way, and `Login` carries only whether one is kept. When a page asks for a code in a session signed in with that login, Niles makes the current code (RFC 6238; SHA-1, SHA-256 or SHA-512, 6 or 8 digits) and types it with `fill_code`, once, with no card; a page still asking gets the code card, since the site may have sent a code by SMS or mail too. Neither key nor code reaches the model, a log or a response.
+- Each username, password, authenticator key and browser profile is sealed to its person, its login and its column (AES-GCM's associated data), so a sealed value copied to another row or column doesn't open there.
+- Each login's activity, in `login_activity`: added, edited, signed out, a profile dropped, a sign-in typed and how it ended, a profile restored, a code typed from its card, a code made from the key; each with the site and the conversation, never a value. The store notes the first four itself, browsing the rest. `GET /me/logins/{id}/activity` lists a person's own, newest first, 200 at most; rows go after 90 days, with the login, or with its removal.
 - `request_login(site, label)` asks the person for a saved login, and is offered in the app chat while the browser answers and logins can be kept.
   - A saved login for the site answers at once with `{logins: [{id, label, site}]}`.
   - Otherwise the chat shows "Shop wants a login", Shop being the label, with **Add login**, kept with the turn and the conversation, so a restart doesn't lapse it and it stays answerable. The card's form shows the site's whole origin fixed.

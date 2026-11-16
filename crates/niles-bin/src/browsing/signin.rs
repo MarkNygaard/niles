@@ -8,7 +8,7 @@ use std::sync::{Arc, Weak};
 use chrono::Utc;
 use niles_api::chat::{ApprovalCard, ApprovalStatus, CardField};
 use niles_browser::{Asks, on_sites};
-use niles_logins::{Credentials, Login};
+use niles_logins::{Credentials, Login, Used};
 use niles_tools::{Tool, ToolDescriptor};
 use serde_json::{Value, json};
 use url::Url;
@@ -399,6 +399,8 @@ impl SignInStep {
                     Ok(()) => {
                         restored = true;
                         browsing.mark_signed_in(&self.asker.person, opened.serial);
+                        self.note(browsing, Used::ProfileRestored, origin_of(&address))
+                            .await;
                     }
                     Err(e) => {
                         tracing::warn!("[browser] a browser profile wasn't restored: {e}");
@@ -413,6 +415,81 @@ impl SignInStep {
         }
         self.outcome(browsing, &opened, &label, &origins, &creds, restored)
             .await
+    }
+
+    /// Notes a use of this step's login for Vault.
+    async fn note(&self, browsing: &Arc<Browsing>, used: Used, site: String) {
+        browsing
+            .note(
+                &self.asker.person,
+                self.login,
+                used,
+                Some(site),
+                self.asker.conversation,
+            )
+            .await;
+    }
+
+    /// The page's site now, for the activity.
+    async fn site_now(opened: &Opened) -> String {
+        origin_of(&opened.tab.address().await.unwrap_or_default())
+    }
+
+    /// When the page asks for a code and the login keeps an authenticator
+    /// key: Niles types the current code, once. `None` sends the person a
+    /// code card as before: no key, nothing typed, or the page still
+    /// asking, since the site may have sent a code by SMS or mail too.
+    async fn code_from_key(
+        &self,
+        browsing: &Arc<Browsing>,
+        opened: &Opened,
+        label: &str,
+        origins: &[String],
+    ) -> Option<niles_tools::Result<Value>> {
+        let store = browsing.store()?;
+        let key = match store.authenticator(&self.asker.person, self.login).await {
+            Ok(key) => key?,
+            Err(e) => {
+                tracing::warn!("[browser] a login's authenticator key wasn't read: {e}");
+                return None;
+            }
+        };
+        let code = key.code_at(Utc::now());
+        let site = Self::site_now(opened).await;
+        match opened.tab.fill_code(origins, code.expose()).await {
+            Ok(true) => {}
+            Ok(false) => return None,
+            Err(_) => {
+                self.note(browsing, Used::SignInUncertain, site).await;
+                return Some(Ok(Value::String(UNCERTAIN.into())));
+            }
+        }
+        self.note(browsing, Used::CodeMade, site).await;
+        let site = Self::site_now(opened).await;
+        match opened.tab.asks(origins).await {
+            Ok(Asks::Nothing) => {
+                browsing.mark_signed_in(&self.asker.person, opened.serial);
+                if let Some(bound) = browsing.bound(&self.asker.person, opened.serial) {
+                    browsing.save(&self.asker.person, &bound, &opened.tab).await;
+                }
+                self.note(browsing, Used::SignedIn, site).await;
+                Some(Ok(Value::String(format!(
+                    "Signed in to {label}: Niles entered the code from the saved authenticator key, and the page asks for nothing more."
+                ))))
+            }
+            Ok(Asks::Code) => None,
+            Ok(Asks::Captcha) => Some(Err(niles_tools::Error::Remote(CAPTCHA_STOP.into()))),
+            Ok(Asks::Password { .. } | Asks::Username) => {
+                self.note(browsing, Used::SignInFailed, site).await;
+                Some(Ok(Value::String(format!(
+                    "Didn't sign in: after the code from the saved authenticator key, {label} asks for the login again. Read the page with browser_read before carrying on."
+                ))))
+            }
+            _ => {
+                self.note(browsing, Used::SignInUncertain, site).await;
+                Some(Ok(Value::String(UNCERTAIN.into())))
+            }
+        }
     }
 
     /// The rounds' outcome in the model's words: signed in or not,
@@ -432,6 +509,8 @@ impl SignInStep {
                 if let Some(bound) = browsing.bound(&self.asker.person, opened.serial) {
                     browsing.save(&self.asker.person, &bound, &opened.tab).await;
                 }
+                self.note(browsing, Used::SignedIn, Self::site_now(opened).await)
+                    .await;
                 Ok(Value::String(format!(
                     "Signed in to {label}, as far as Niles can tell: the page no longer asks for the login."
                 )))
@@ -450,18 +529,33 @@ impl SignInStep {
                 let Some(bound) = browsing.bound(&self.asker.person, opened.serial) else {
                     return Err(lapsed(SESSION_ENDED));
                 };
+                if let Some(done) = self.code_from_key(browsing, opened, label, origins).await {
+                    return done;
+                }
                 browsing.ask_code(&self.asker.person, opened.serial, &bound, site);
                 Ok(Value::String(format!(
                     "{label} sent the person a code to finish signing in."
                 )))
             }
             Round::Captcha => Err(niles_tools::Error::Remote(CAPTCHA_STOP.into())),
-            Round::StillAsks => Ok(Value::String(
-                "Didn't sign in: the page still asks for the login, so the saved one may be wrong. The person can check it under My profile → Logins.".into(),
-            )),
+            Round::StillAsks => {
+                self.note(browsing, Used::SignInFailed, Self::site_now(opened).await)
+                    .await;
+                Ok(Value::String(
+                    "Didn't sign in: the page still asks for the login, so the saved one may be wrong. The person can check it under My profile → Vault.".into(),
+                ))
+            }
             Round::OffSite => Err(niles_tools::Error::Remote(LEFT_MID_SIGN_IN.into())),
             Round::Gone => Err(lapsed(SESSION_ENDED)),
-            Round::Uncertain => Ok(Value::String(UNCERTAIN.into())),
+            Round::Uncertain => {
+                self.note(
+                    browsing,
+                    Used::SignInUncertain,
+                    Self::site_now(opened).await,
+                )
+                .await;
+                Ok(Value::String(UNCERTAIN.into()))
+            }
         }
     }
 }
@@ -979,6 +1073,128 @@ mod tests {
         let request = h.browsing.code_for_turn(MARK, since).expect("a code card");
         assert_eq!(request.label, "Shop");
         assert_eq!(request.site, SHOP);
+    }
+
+    /// Gives the harness's login an authenticator key.
+    async fn give_key(h: &Harness) {
+        let edit =
+            niles_logins::LoginEdit::new("Shop", &[SHOP.to_string()], Secret::new(HER_USER), None)
+                .expect("a valid edit")
+                .with_authenticator(niles_logins::KeyChange::Set(Secret::new(
+                    "JBSWY3DPEHPK3PXP",
+                )))
+                .expect("a valid key");
+        h.store
+            .update(MARK, h.login.id, &edit)
+            .await
+            .expect("kept")
+            .expect("his");
+    }
+
+    fn uses(activity: Option<Vec<niles_logins::Activity>>) -> Vec<niles_logins::Used> {
+        activity.expect("his").iter().map(|a| a.used).collect()
+    }
+
+    #[tokio::test]
+    async fn a_keyed_login_gets_its_code_typed_without_a_card() {
+        let h = harness().await;
+        give_key(&h).await;
+        h.page("https://shop.example/code", Asks::Code).await;
+        let since = std::time::Instant::now();
+        let (card, reply) = h.run(json!({ "login_id": h.login.id })).await;
+        assert_eq!(card.status, ApprovalStatus::Allowed, "{reply}");
+        assert!(reply.contains("saved authenticator key"), "{reply}");
+        assert!(
+            h.browsing.code_for_turn(MARK, since).is_none(),
+            "no code card"
+        );
+        let codes: Vec<String> = h
+            .tab()
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .typed
+            .iter()
+            .filter(|(_, field, _)| field == "code")
+            .map(|(_, _, code)| code.clone())
+            .collect();
+        assert_eq!(codes.len(), 1, "one code, once");
+        assert!(codes[0].len() == 6 && codes[0].chars().all(|c| c.is_ascii_digit()));
+        assert!(
+            !reply.contains(codes[0].as_str()),
+            "the model never sees the code"
+        );
+        let used = uses(h.store.activity(MARK, h.login.id).await.expect("read"));
+        assert!(used.contains(&niles_logins::Used::CodeMade), "{used:?}");
+        assert!(used.contains(&niles_logins::Used::SignedIn), "{used:?}");
+    }
+
+    #[tokio::test]
+    async fn a_page_still_asking_after_the_keys_code_gets_the_card() {
+        // The site may have sent a code by SMS or mail as well.
+        let h = harness().await;
+        give_key(&h).await;
+        let tab = h.page("https://shop.example/code", Asks::Code).await;
+        tab.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .then
+            .push(("https://shop.example/code".to_string(), Asks::Code));
+        let since = std::time::Instant::now();
+        let (card, reply) = h.run(json!({ "login_id": h.login.id })).await;
+        assert_eq!(card.status, ApprovalStatus::Allowed, "{reply}");
+        assert!(reply.contains("sent the person a code"), "{reply}");
+        assert!(
+            h.browsing.code_for_turn(MARK, since).is_some(),
+            "a code card"
+        );
+        let typed = tab
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .typed
+            .clone();
+        assert_eq!(
+            typed.iter().filter(|(_, field, _)| field == "code").count(),
+            1,
+            "the key's code went in once, never again"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_login_without_a_key_still_gets_the_card() {
+        let h = harness().await;
+        h.page("https://shop.example/code", Asks::Code).await;
+        let since = std::time::Instant::now();
+        h.run(json!({ "login_id": h.login.id })).await;
+        assert!(h.browsing.code_for_turn(MARK, since).is_some());
+        assert!(
+            h.tab()
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .typed
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_is_noted_for_vault() {
+        let h = harness().await;
+        h.page(LOGIN, Asks::Password { username: true }).await;
+        let (_, reply) = h.run(json!({ "login_id": h.login.id })).await;
+        assert!(reply.contains("Signed in"), "{reply}");
+        let activity = h
+            .store
+            .activity(MARK, h.login.id)
+            .await
+            .expect("read")
+            .expect("his");
+        let signed_in = activity
+            .iter()
+            .find(|a| a.used == niles_logins::Used::SignedIn)
+            .expect("the sign-in is noted");
+        assert_eq!(signed_in.site.as_deref(), Some(SHOP));
     }
 
     #[tokio::test]

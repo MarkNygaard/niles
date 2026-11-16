@@ -15,6 +15,10 @@ niles-websearch.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 url.workspace = true
+hmac.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+data-encoding.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

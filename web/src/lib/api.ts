@@ -1765,15 +1765,40 @@ export interface SavedLogin {
   last_used: string | null;
   /** Niles keeps a signed-in browser profile for it. */
   signed_in: boolean;
+  /** An authenticator key is kept for it; the key is never sent. */
+  authenticator: boolean;
 }
 
-/** What the Logins form sends. In an edit, a missing password keeps the
-    saved one. */
+/** What Vault's form sends. In an edit, a missing password or key keeps
+    the saved one. */
 export interface LoginDraft {
   label: string;
   origins: string[];
   username: string;
   password?: string;
+  /** The setup key or otpauth:// link a site shows beside its QR code. */
+  authenticator?: string;
+  /** In an edit, forgets the saved key. */
+  remove_authenticator?: boolean;
+}
+
+/** One use of a saved login, as Vault lists it: never a value. Mirrors
+    `Activity` in crates/niles-logins/src/activity.rs. */
+export interface LoginActivity {
+  at: string;
+  used:
+    | "added"
+    | "edited"
+    | "signed_out"
+    | "profile_dropped"
+    | "signed_in"
+    | "sign_in_failed"
+    | "sign_in_uncertain"
+    | "profile_restored"
+    | "code_entered"
+    | "code_made";
+  site: string | null;
+  conversation: number | null;
 }
 
 /** A card asking the person to add a login. Mirrors `LoginRequest` in
@@ -2143,6 +2168,8 @@ export const api = {
     request<SavedLogin>(`/me/logins/${id}`, { method: "PUT", body: JSON.stringify(draft) }),
   removeLogin: (id: number) => request<void>(`/me/logins/${id}`, { method: "DELETE" }),
   signOutLogin: (id: number) => request<void>(`/me/logins/${id}/sign-out`, { method: "POST" }),
+  loginActivity: (id: number) =>
+    request<{ activity: LoginActivity[] }>(`/me/logins/${id}/activity`),
   /** Tells the chat a card's login was added: its id, never its values. */
   loginAdded: (conversation: number, loginRequest: string, login: number) =>
     request<{ reply: string }>(

@@ -1,10 +1,11 @@
 //! Each person's saved logins, and their browser profiles.
 //!
-//! Three tables. `saved_logins` holds what the Logins page lists: the
-//! label, the sites and when the login was last used. The username and
-//! password live in `saved_login_secrets`, and a login's sealed browser
-//! profile in `browser_profiles`; both hang off the login with
-//! `on delete cascade`, so removing a login takes them with it.
+//! Four tables. `saved_logins` holds what Vault lists: the label, the
+//! sites and when the login was last used. The username, password and
+//! authenticator key live in `saved_login_secrets`, a login's sealed
+//! browser profile in `browser_profiles`, and what it was used for in
+//! `login_activity`; all hang off the login with `on delete cascade`,
+//! so removing a login takes them with it.
 //!
 //! The secrets have a table of their own so a select on the logins
 //! never brings them along — the list page can't trip over ciphertext —
@@ -15,7 +16,10 @@
 use crate::secrets::Sealer;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use niles_logins::{Credentials, Login, LoginEdit, LoginStore, NewLogin, Origin, Result, Secret};
+use niles_logins::{
+    ACTIVITY_SHOWN, Activity, Authenticator, Context, Credentials, KeyChange, Login, LoginEdit,
+    LoginStore, NewLogin, Origin, Result, Secret, Used,
+};
 use sqlx::{Row, postgres::PgPool, postgres::PgRow};
 
 const SCHEMA: &str = "
@@ -30,6 +34,14 @@ create table if not exists saved_login_secrets (
 create table if not exists browser_profiles (
     login_id bigint primary key references saved_logins (id) on delete cascade,
     profile_enc bytea not null, saved_at timestamptz not null default now());
+alter table saved_login_secrets add column if not exists authenticator_enc bytea;
+create table if not exists login_activity (
+    id bigserial primary key,
+    login_id bigint not null references saved_logins (id) on delete cascade,
+    at timestamptz not null default now(), used text not null,
+    site text, conversation bigint);
+create index if not exists login_activity_login on login_activity (login_id, at desc);
+create index if not exists login_activity_at on login_activity (at);
 ";
 
 /// Saved logins and browser profiles in Postgres. See
@@ -106,6 +118,7 @@ impl PostgresLogins {
             )?,
             last_used: row.get("last_used"),
             signed_in: row.get("signed_in"),
+            authenticator: row.get("authenticator"),
         })
     }
 }
@@ -116,6 +129,7 @@ enum Field {
     Username,
     Password,
     Profile,
+    Authenticator,
 }
 
 /// What a login's value is sealed to: its person, its login and its
@@ -127,8 +141,29 @@ fn sealed_to(person: &str, id: i64, field: Field) -> String {
         Field::Username => "username",
         Field::Password => "password",
         Field::Profile => "browser profile",
+        Field::Authenticator => "authenticator key",
     };
     format!("niles saved login\u{0}{person}\u{0}{id}\u{0}{field}")
+}
+
+/// Forgets a login's profile, noting it when there was one.
+const DROP_PROFILE_SQL: &str = "with gone as (
+         delete from browser_profiles where login_id = $1 returning login_id)
+     insert into login_activity (login_id, used)
+         select login_id, 'profile_dropped' from gone";
+
+/// Notes a use the store itself makes, inside its transaction.
+async fn note(
+    tx: &mut sqlx::PgConnection,
+    id: i64,
+    used: Used,
+) -> std::result::Result<(), sqlx::Error> {
+    sqlx::query("insert into login_activity (login_id, used) values ($1, $2)")
+        .bind(id)
+        .bind(used.as_str())
+        .execute(tx)
+        .await
+        .map(|_| ())
 }
 
 impl std::fmt::Debug for PostgresLogins {
@@ -140,6 +175,7 @@ impl std::fmt::Debug for PostgresLogins {
 }
 
 const LIST_SQL: &str = "select l.id, l.label, l.origins, l.last_used, s.username_enc,
+     s.authenticator_enc is not null as authenticator,
      exists (select 1 from browser_profiles p where p.login_id = l.id
          and coalesce(l.last_used, p.saved_at)
              >= now() - make_interval(days => $2)) as signed_in
@@ -149,6 +185,7 @@ const LIST_SQL: &str = "select l.id, l.label, l.origins, l.last_used, s.username
      order by lower(l.label), l.id";
 
 const GET_SQL: &str = "select l.id, l.label, l.origins, l.last_used, s.username_enc,
+     s.authenticator_enc is not null as authenticator,
      exists (select 1 from browser_profiles p where p.login_id = l.id
          and coalesce(l.last_used, p.saved_at)
              >= now() - make_interval(days => $3)) as signed_in
@@ -202,9 +239,15 @@ impl LoginStore for PostgresLogins {
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| self.storage(e))?;
+        let authenticator = new
+            .authenticator
+            .as_ref()
+            .map(|key| self.seal(key.expose(), person, id, Field::Authenticator))
+            .transpose()?;
         sqlx::query(
-            "insert into saved_login_secrets (login_id, username_enc, password_enc)
-             values ($1, $2, $3)",
+            "insert into saved_login_secrets
+                 (login_id, username_enc, password_enc, authenticator_enc)
+             values ($1, $2, $3, $4)",
         )
         .bind(id)
         .bind(self.seal(
@@ -219,9 +262,13 @@ impl LoginStore for PostgresLogins {
             id,
             Field::Password,
         )?)
+        .bind(authenticator)
         .execute(&mut *tx)
         .await
         .map_err(|e| self.storage(e))?;
+        note(&mut tx, id, Used::Added)
+            .await
+            .map_err(|e| self.storage(e))?;
         tx.commit().await.map_err(|e| self.storage(e))?;
         Ok(Login {
             id,
@@ -230,6 +277,7 @@ impl LoginStore for PostgresLogins {
             username: new.credentials.username.expose().to_string(),
             last_used: None,
             signed_in: false,
+            authenticator: new.authenticator.is_some(),
         })
     }
 
@@ -303,8 +351,33 @@ impl LoginStore for PostgresLogins {
         .execute(&mut *tx)
         .await
         .map_err(|e| self.storage(e))?;
+        match &edit.authenticator {
+            KeyChange::Keep => {}
+            KeyChange::Set(key) => {
+                sqlx::query(
+                    "update saved_login_secrets set authenticator_enc = $2 where login_id = $1",
+                )
+                .bind(id)
+                .bind(self.seal(key.expose(), person, id, Field::Authenticator)?)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| self.storage(e))?;
+            }
+            KeyChange::Remove => {
+                sqlx::query(
+                    "update saved_login_secrets set authenticator_enc = null where login_id = $1",
+                )
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| self.storage(e))?;
+            }
+        }
+        note(&mut tx, id, Used::Edited)
+            .await
+            .map_err(|e| self.storage(e))?;
         if account_changed {
-            sqlx::query("delete from browser_profiles where login_id = $1")
+            sqlx::query(DROP_PROFILE_SQL)
                 .bind(id)
                 .execute(&mut *tx)
                 .await
@@ -339,11 +412,16 @@ impl LoginStore for PostgresLogins {
             return Ok(false);
         }
         // Forgetting a profile that isn't there is still a sign-out.
+        let mut tx = self.pool.begin().await.map_err(|e| self.storage(e))?;
         sqlx::query("delete from browser_profiles where login_id = $1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|e| self.storage(e))?;
+        note(&mut tx, id, Used::SignedOut)
+            .await
+            .map_err(|e| self.storage(e))?;
+        tx.commit().await.map_err(|e| self.storage(e))?;
         Ok(true)
     }
 
@@ -405,10 +483,14 @@ impl LoginStore for PostgresLogins {
         // A stale profile is forgotten, not just refused: the sweep may
         // not have run yet.
         sqlx::query(
-            "delete from browser_profiles p using saved_logins l
-             where p.login_id = l.id and l.id = $1 and l.person = $2
-                 and coalesce(l.last_used, p.saved_at)
-                     < now() - make_interval(days => $3)",
+            "with gone as (
+                 delete from browser_profiles p using saved_logins l
+                 where p.login_id = l.id and l.id = $1 and l.person = $2
+                     and coalesce(l.last_used, p.saved_at)
+                         < now() - make_interval(days => $3)
+                 returning p.login_id)
+             insert into login_activity (login_id, used)
+                 select login_id, 'profile_dropped' from gone",
         )
         .bind(id)
         .bind(person)
@@ -453,15 +535,103 @@ impl LoginStore for PostgresLogins {
 
     async fn drop_stale_profiles(&self, before: DateTime<Utc>) -> Result<u64> {
         self.ensure_schema().await?;
+        // One row of activity per profile dropped, so the count of
+        // rows inserted is the count of profiles that went.
         let done = sqlx::query(
-            "delete from browser_profiles p using saved_logins l
-             where p.login_id = l.id
-                 and coalesce(l.last_used, p.saved_at) < $1",
+            "with gone as (
+                 delete from browser_profiles p using saved_logins l
+                 where p.login_id = l.id
+                     and coalesce(l.last_used, p.saved_at) < $1
+                 returning p.login_id)
+             insert into login_activity (login_id, used)
+                 select login_id, 'profile_dropped' from gone",
         )
         .bind(before)
         .execute(&self.pool)
         .await
         .map_err(|e| self.storage(e))?;
+        Ok(done.rows_affected())
+    }
+
+    async fn authenticator(&self, person: &str, id: i64) -> Result<Option<Authenticator>> {
+        self.ensure_schema().await?;
+        let sealed: Option<Option<Vec<u8>>> = sqlx::query_scalar(
+            "select s.authenticator_enc
+             from saved_login_secrets s
+             join saved_logins l on l.id = s.login_id
+             where l.id = $1 and l.person = $2",
+        )
+        .bind(id)
+        .bind(person)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        let Some(Some(sealed)) = sealed else {
+            return Ok(None);
+        };
+        let key = self.open(&sealed, person, id, Field::Authenticator)?;
+        Authenticator::parse(&key).map(Some)
+    }
+
+    async fn record(&self, person: &str, id: i64, used: Used, context: &Context) -> Result<bool> {
+        self.ensure_schema().await?;
+        let done = sqlx::query(
+            "insert into login_activity (login_id, used, site, conversation)
+             select id, $3, $4, $5 from saved_logins where id = $1 and person = $2",
+        )
+        .bind(id)
+        .bind(person)
+        .bind(used.as_str())
+        .bind(context.site.as_deref())
+        .bind(context.conversation)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(done.rows_affected() == 1)
+    }
+
+    async fn activity(&self, person: &str, id: i64) -> Result<Option<Vec<Activity>>> {
+        self.ensure_schema().await?;
+        let found: Option<i64> =
+            sqlx::query_scalar("select id from saved_logins where id = $1 and person = $2")
+                .bind(id)
+                .bind(person)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| self.storage(e))?;
+        if found.is_none() {
+            return Ok(None);
+        }
+        let rows = sqlx::query(
+            "select at, used, site, conversation from login_activity
+             where login_id = $1 order by at desc, id desc limit $2",
+        )
+        .bind(id)
+        .bind(ACTIVITY_SHOWN as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| self.storage(e))?;
+        Ok(Some(
+            rows.iter()
+                .filter_map(|row| {
+                    Some(Activity {
+                        at: row.get("at"),
+                        used: Used::parse(row.get::<&str, _>("used"))?,
+                        site: row.get("site"),
+                        conversation: row.get("conversation"),
+                    })
+                })
+                .collect(),
+        ))
+    }
+
+    async fn drop_old_activity(&self, before: DateTime<Utc>) -> Result<u64> {
+        self.ensure_schema().await?;
+        let done = sqlx::query("delete from login_activity where at < $1")
+            .bind(before)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| self.storage(e))?;
         Ok(done.rows_affected())
     }
 

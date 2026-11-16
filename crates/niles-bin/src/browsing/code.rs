@@ -167,6 +167,21 @@ pub(super) enum Entered {
     Uncertain,
 }
 
+impl Entered {
+    /// What Vault notes of it: a code typed, and how the sign-in ended
+    /// when that is known. Nothing when nothing was typed.
+    fn uses(&self) -> Vec<niles_logins::Used> {
+        use niles_logins::Used;
+        match self {
+            Entered::SignedIn => vec![Used::CodeEntered, Used::SignedIn],
+            Entered::Uncertain => vec![Used::CodeEntered, Used::SignInUncertain],
+            Entered::NotSignedIn => vec![Used::CodeEntered, Used::SignInFailed],
+            Entered::Again(_) | Entered::CaptchaAfter => vec![Used::CodeEntered],
+            Entered::Gone | Entered::OffSite | Entered::Moved => Vec::new(),
+        }
+    }
+}
+
 /// Type the card's code into the page it belongs to. The code reaches
 /// nothing but `fill_code`.
 pub(super) async fn enter(browsing: &Arc<Browsing>, card: CodeCard, code: &Secret) -> Entered {
@@ -356,7 +371,19 @@ async fn run_entered(
         .clone();
     let label = card.bound.label.clone();
     let request = card.card.clone();
+    let login = card.bound.login;
     let entered = enter(&browsing, card, &code).await;
+    for used in entered.uses() {
+        browsing
+            .note(
+                &follow.person,
+                login,
+                used,
+                Some(request.site.clone()),
+                Some(follow.conversation),
+            )
+            .await;
+    }
     let (status, text, fallback, keep_for_model) = entered_words(&entered, &label);
     // The texts are Niles's own: no page text, so nothing to scrub but
     // the scrub is still applied where the store reads; on its failure

@@ -303,6 +303,7 @@ pub fn router(state: AppState) -> Router {
             put(crate::logins::update).delete(crate::logins::remove),
         )
         .route("/me/logins/{id}/sign-out", post(crate::logins::sign_out))
+        .route("/me/logins/{id}/activity", get(crate::logins::activity))
         .route("/presence/device", get(crate::presence::device_status))
         .route("/presence/device", post(crate::presence::pair_device))
         .route("/presence/tado", get(crate::presence::tado_status))

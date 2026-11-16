@@ -9,7 +9,7 @@ import { originOf, sitesOf } from "@/lib/logins";
 
 /**
  * The one form a saved login is written in, wherever it was asked
- * from: the Logins page, or a card's ask in the chat. It posts straight
+ * from: Vault, or a card's ask in the chat. It posts straight
  * to /me/logins; the values never go through the chat.
  */
 export function LoginForm({
@@ -32,6 +32,9 @@ export function LoginForm({
   // Always empty at first: the password is write-only, never filled
   // from the server.
   const [password, setPassword] = useState("");
+  // Write-only like the password: never filled from the server.
+  const [authenticator, setAuthenticator] = useState("");
+  const [removeKey, setRemoveKey] = useState(false);
   // The draft holds the password: it goes with the form, not kept for five minutes.
   const save = useMutation({
     mutationFn: (draft: LoginDraft) =>
@@ -62,6 +65,8 @@ export function LoginForm({
           origins,
           username: username.trim(),
           ...(password ? { password } : {}),
+          ...(authenticator.trim() && !removeKey ? { authenticator: authenticator.trim() } : {}),
+          ...(removeKey ? { remove_authenticator: true } : {}),
         });
       }}
     >
@@ -125,6 +130,41 @@ export function LoginForm({
         value={password}
         onChange={(e) => setPassword(e.target.value)}
       />
+      <div className="flex flex-col gap-1">
+        <Input
+          aria-label="Authenticator key"
+          type="password"
+          autoComplete="off"
+          placeholder={
+            login?.authenticator && !removeKey
+              ? "Saved; leave empty to keep it"
+              : "Authenticator key (optional)"
+          }
+          disabled={removeKey}
+          value={authenticator}
+          onChange={(e) => setAuthenticator(e.target.value)}
+        />
+        <p className="text-muted-foreground text-xs">
+          The setup key or otpauth:// link the site shows beside its QR code when you turn on an
+          authenticator app. With it, Niles types the sign-in code itself.
+        </p>
+        {login?.authenticator && (
+          <div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-pressed={removeKey}
+              onClick={() => {
+                setRemoveKey(!removeKey);
+                setAuthenticator("");
+              }}
+            >
+              {removeKey ? "Keep the authenticator key" : "Remove the authenticator key"}
+            </Button>
+          </div>
+        )}
+      </div>
       {save.error && <p className="text-destructive text-sm">{save.error.message}</p>}
       <div className="flex gap-2">
         <Button type="submit" disabled={!ready || save.isPending}>

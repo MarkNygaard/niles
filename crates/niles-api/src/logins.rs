@@ -11,7 +11,7 @@ use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use niles_logins::{Login, LoginEdit, LoginStore, NewLogin, Secret};
+use niles_logins::{Activity, KeyChange, Login, LoginEdit, LoginStore, NewLogin, Secret};
 use serde::{Deserialize, Serialize};
 
 type Failure = (StatusCode, Json<serde_json::Value>);
@@ -79,6 +79,13 @@ pub struct LoginBody {
     /// Absent (or empty, in an edit) keeps a saved password.
     #[serde(default)]
     pub password: Option<Secret>,
+    /// An authenticator key, as the site shows it. Absent or empty keeps
+    /// the saved one; it is never sent back.
+    #[serde(default)]
+    pub authenticator: Option<Secret>,
+    /// In an edit, forgets the saved authenticator key.
+    #[serde(default)]
+    pub remove_authenticator: bool,
 }
 
 fn read(body: Result<Json<LoginBody>, JsonRejection>) -> Result<LoginBody, Failure> {
@@ -107,7 +114,7 @@ pub async fn list(
     Ok(Json(LoginList { logins }))
 }
 
-/// `POST /me/logins` — what the Logins form, or a card's form, saves.
+/// `POST /me/logins` — what Vault's form, or a card's form, saves.
 pub async fn add(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -122,6 +129,7 @@ pub async fn add(
         b.username,
         b.password.unwrap_or_else(|| Secret::new("")),
     )
+    .and_then(|new| new.with_authenticator(b.authenticator))
     .map_err(refused)?;
     let login = store.add(&person, &new).await.map_err(refused)?;
     // The person key and the id only: never a label, a username or an
@@ -141,7 +149,14 @@ pub async fn update(
     let person = signed_in_person(&state, &headers)?;
     let store = store(&state)?;
     let b = read(body)?;
-    let edit = LoginEdit::new(&b.label, &b.origins, b.username, b.password).map_err(refused)?;
+    let change = match (b.remove_authenticator, b.authenticator) {
+        (true, _) => KeyChange::Remove,
+        (false, Some(key)) => KeyChange::Set(key),
+        (false, None) => KeyChange::Keep,
+    };
+    let edit = LoginEdit::new(&b.label, &b.origins, b.username, b.password)
+        .and_then(|edit| edit.with_authenticator(change))
+        .map_err(refused)?;
     let login = store
         .update(&person, id, &edit)
         .await
@@ -164,6 +179,27 @@ pub async fn remove(
     }
     tracing::info!("[logins] {person} removed login {id}");
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Serialize)]
+pub struct ActivityList {
+    pub activity: Vec<Activity>,
+}
+
+/// `GET /me/logins/{id}/activity` — what the person's login was used
+/// for, newest first. Another person's login answers like a missing one.
+pub async fn activity(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> Result<Json<ActivityList>, Failure> {
+    let person = signed_in_person(&state, &headers)?;
+    let activity = store(&state)?
+        .activity(&person, id)
+        .await
+        .map_err(refused)?
+        .ok_or_else(|| failed(StatusCode::NOT_FOUND, NO_SUCH))?;
+    Ok(Json(ActivityList { activity }))
 }
 
 /// `POST /me/logins/{id}/sign-out` — forget the browser profile, keep
@@ -478,9 +514,11 @@ allowed = [
             .map(String::as_str)
             .collect::<Vec<_>>();
         keys.sort_unstable();
+        // `authenticator` says whether a key is kept, never the key.
         assert_eq!(
             keys,
             [
+                "authenticator",
                 "id",
                 "label",
                 "last_used",
@@ -662,6 +700,92 @@ allowed = [
         assert_eq!(
             f.store.profile(MAJSE, id).await.unwrap(),
             Some(Secret::new("cookies"))
+        );
+    }
+
+    const KEY: &str = "JBSWY3DPEHPK3PXP";
+
+    #[tokio::test]
+    async fn a_key_is_kept_and_never_sent_back() {
+        let f = fixture(true).await;
+        let mut body = draft(Some(HER_PASSWORD));
+        body["authenticator"] = json!(KEY);
+        let (status, text) = send_text(
+            &f.app,
+            by("majse@example.com", "POST", "/me/logins", Some(body)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{text}");
+        assert!(!text.contains("JBSW"), "{text}");
+        let added: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(added["authenticator"], true);
+        let id = added["id"].as_i64().unwrap();
+
+        let (_, listed) =
+            send_text(&f.app, by("majse@example.com", "GET", "/me/logins", None)).await;
+        assert!(!listed.contains("JBSW"), "{listed}");
+        assert!(f.store.authenticator(MAJSE, id).await.unwrap().is_some());
+
+        // An edit without one keeps it; removing forgets it.
+        let (_, kept) = send(
+            &f.app,
+            by(
+                "majse@example.com",
+                "PUT",
+                &format!("/me/logins/{id}"),
+                Some(draft(None)),
+            ),
+        )
+        .await;
+        assert_eq!(kept["authenticator"], true);
+        let mut remove = draft(None);
+        remove["remove_authenticator"] = json!(true);
+        let (_, removed) = send(
+            &f.app,
+            by(
+                "majse@example.com",
+                "PUT",
+                &format!("/me/logins/{id}"),
+                Some(remove),
+            ),
+        )
+        .await;
+        assert_eq!(removed["authenticator"], false);
+        assert!(f.store.authenticator(MAJSE, id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_bad_key_is_refused_without_echoing_it() {
+        let f = fixture(true).await;
+        let mut body = draft(Some(HER_PASSWORD));
+        body["authenticator"] = json!("not-a-key-at-all!");
+        let (status, text) = send_text(
+            &f.app,
+            by("majse@example.com", "POST", "/me/logins", Some(body)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
+        assert!(!text.contains("not-a-key-at-all"), "{text}");
+        assert!(
+            f.store.list(MAJSE).await.unwrap().is_empty(),
+            "nothing kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn activity_is_listed_for_its_person_only() {
+        let f = fixture(true).await;
+        let id = add_login(&f, "majse@example.com").await;
+        let uri = format!("/me/logins/{id}/activity");
+        let (status, body) = send(&f.app, by("majse@example.com", "GET", &uri, None)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["activity"][0]["used"], "added");
+
+        let (status, _) = send(&f.app, by("mark@example.com", "GET", &uri, None)).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "his request reads nothing of hers"
         );
     }
 

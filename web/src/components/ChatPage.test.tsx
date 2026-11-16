@@ -6,6 +6,7 @@ import {
   landingOn,
   linkedApproval,
   linkedArtifact,
+  linkedConversation,
   linkedPanel,
   panelStatus,
 } from "@/components/ChatPage";
@@ -208,6 +209,15 @@ describe("linkedPanel", () => {
     expect(linkedPanel("#/chat?panel=approvals")).toBe("approvals");
     expect(linkedPanel("#/chat")).toBeNull();
     expect(linkedPanel("#/chat?panel=saved")).toBeNull();
+  });
+});
+
+describe("linkedConversation", () => {
+  it("is the conversation Vault's activity links to, and nothing else", () => {
+    expect(linkedConversation("#/chat?conversation=12")).toBe(12);
+    expect(linkedConversation("#/chat")).toBeNull();
+    expect(linkedConversation("#/chat?conversation=abc")).toBeNull();
+    expect(linkedConversation("#/chat?conversation=-1")).toBeNull();
   });
 });
 
@@ -513,6 +523,7 @@ describe("ChatPage", () => {
     username: "majse",
     last_used: null,
     signed_in: false,
+    authenticator: false,
   };
 
   /** The card's flow end to end: its form posts to /me/logins, and the

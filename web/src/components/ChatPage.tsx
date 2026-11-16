@@ -7,7 +7,7 @@ import { ArtifactView } from "@/components/ArtifactView";
 import { ChatView } from "@/components/ChatView";
 import type { ShownTurn } from "@/components/ChatView";
 import { ConversationList } from "@/components/ConversationList";
-import { LOGINS } from "@/components/LoginsPanel";
+import { LOGINS } from "@/components/VaultPanel";
 import { NilesPanel } from "@/components/NilesPanel";
 import type { PanelTab } from "@/components/NilesPanel";
 import { SavedList } from "@/components/SavedList";
@@ -74,6 +74,13 @@ export function linkedArtifact(hash: string): number | null {
     notification about one leads. */
 export function linkedApproval(hash: string): string | null {
   return hashQuery(hash).get("approval") || null;
+}
+
+/** The conversation a link opens: `#/chat?conversation=12`, where Vault's
+    activity leads. */
+export function linkedConversation(hash: string): number | null {
+  const id = Number(hashQuery(hash).get("conversation"));
+  return Number.isInteger(id) && id > 0 ? id : null;
 }
 
 /** The panel tab a link asks the chat to open: `#/chat?panel=approvals`. */
@@ -282,6 +289,7 @@ export function ChatPage() {
       const id = linkedArtifact(hash);
       const approval = linkedApproval(hash);
       const panel = linkedPanel(hash);
+      const conversation = linkedConversation(hash);
       const request = ++navigation.current;
       setFollowing(null);
       if (id !== null) {
@@ -307,6 +315,9 @@ export function ChatPage() {
       } else if (panel !== null) {
         setTab(panel);
         setPanelOpen(true);
+      } else if (conversation !== null) {
+        setChosen(conversation);
+        setPanelOpen(false);
       } else {
         return;
       }

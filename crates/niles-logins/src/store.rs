@@ -6,9 +6,11 @@
 //! password, and the browser profile, belong to the row and leave with
 //! it.
 
+use crate::activity::{ACTIVITY_SHOWN, Activity, Context, Used};
 use crate::error::Result;
-use crate::model::{Credentials, Login, LoginEdit, NewLogin, Secret};
+use crate::model::{Credentials, KeyChange, Login, LoginEdit, NewLogin, Secret};
 use crate::origin::Origin;
+use crate::totp::Authenticator;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::sync::Mutex;
@@ -58,6 +60,18 @@ pub trait LoginStore: Send + Sync {
     /// `before`, or was never used and saved before it; answers how many
     /// went.
     async fn drop_stale_profiles(&self, before: DateTime<Utc>) -> Result<u64>;
+    /// The login's authenticator key, ready to make a code: for Niles's
+    /// browser, never for a response or the model.
+    async fn authenticator(&self, person: &str, id: i64) -> Result<Option<Authenticator>>;
+    /// Notes one use of the login; false when the id isn't the person's.
+    /// Adding, editing, signing out and dropping a profile are noted by
+    /// the store itself.
+    async fn record(&self, person: &str, id: i64, used: Used, context: &Context) -> Result<bool>;
+    /// The login's latest uses, newest first, at most
+    /// [`ACTIVITY_SHOWN`]; `None` when the id isn't the person's.
+    async fn activity(&self, person: &str, id: i64) -> Result<Option<Vec<Activity>>>;
+    /// Forgets every use older than `before`; answers how many went.
+    async fn drop_old_activity(&self, before: DateTime<Utc>) -> Result<u64>;
 }
 
 struct Row {
@@ -69,6 +83,27 @@ struct Row {
     last_used: Option<DateTime<Utc>>,
     profile: Option<Secret>,
     profile_saved: Option<DateTime<Utc>>,
+    authenticator: Option<Secret>,
+    activity: Vec<Activity>,
+}
+
+impl Row {
+    fn note(&mut self, used: Used, context: &Context) {
+        self.activity.push(Activity {
+            at: Utc::now(),
+            used,
+            site: context.site.clone(),
+            conversation: context.conversation,
+        });
+    }
+
+    /// Forgets the profile, noting it when there was one.
+    fn drop_profile(&mut self) {
+        if self.profile.take().is_some() {
+            self.note(Used::ProfileDropped, &Context::default());
+        }
+        self.profile_saved = None;
+    }
 }
 
 struct Kept {
@@ -117,6 +152,7 @@ impl MemoryLogins {
             username: row.credentials.username.expose().to_string(),
             last_used: row.last_used,
             signed_in: Self::fresh(row, Utc::now()),
+            authenticator: row.authenticator.is_some(),
         }
     }
 }
@@ -150,10 +186,14 @@ impl LoginStore for MemoryLogins {
             last_used: None,
             profile: None,
             profile_saved: None,
+            authenticator: login.authenticator.clone(),
+            activity: Vec::new(),
         };
         kept.next += 1;
         kept.rows.push(row);
-        Ok(Self::login(kept.rows.last().expect("just pushed")))
+        let row = kept.rows.last_mut().expect("just pushed");
+        row.note(Used::Added, &Context::default());
+        Ok(Self::login(row))
     }
 
     async fn update(&self, person: &str, id: i64, edit: &LoginEdit) -> Result<Option<Login>> {
@@ -169,15 +209,20 @@ impl LoginStore for MemoryLogins {
         before.sort();
         let mut after = edit.origins.clone();
         after.sort();
+        row.note(Used::Edited, &Context::default());
         if row.credentials.username != edit.username || before != after {
-            row.profile = None;
-            row.profile_saved = None;
+            row.drop_profile();
         }
         row.label = edit.label.clone();
         row.origins = edit.origins.clone();
         row.credentials.username = edit.username.clone();
         if let Some(password) = &edit.password {
             row.credentials.password = password.clone();
+        }
+        match &edit.authenticator {
+            KeyChange::Keep => {}
+            KeyChange::Set(key) => row.authenticator = Some(key.clone()),
+            KeyChange::Remove => row.authenticator = None,
         }
         Ok(Some(Self::login(row)))
     }
@@ -200,6 +245,7 @@ impl LoginStore for MemoryLogins {
         };
         row.profile = None;
         row.profile_saved = None;
+        row.note(Used::SignedOut, &Context::default());
         Ok(true)
     }
 
@@ -248,8 +294,7 @@ impl LoginStore for MemoryLogins {
             return Ok(None);
         };
         if !Self::fresh(row, Utc::now()) {
-            row.profile = None;
-            row.profile_saved = None;
+            row.drop_profile();
             return Ok(None);
         }
         Ok(row.profile.clone())
@@ -278,10 +323,54 @@ impl LoginStore for MemoryLogins {
                     .or(row.profile_saved)
                     .is_some_and(|at| at < before);
             if stale {
-                row.profile = None;
-                row.profile_saved = None;
+                row.drop_profile();
                 dropped += 1;
             }
+        }
+        Ok(dropped)
+    }
+
+    async fn authenticator(&self, person: &str, id: i64) -> Result<Option<Authenticator>> {
+        let key = self
+            .lock()
+            .rows
+            .iter()
+            .find(|r| r.person == person && r.id == id)
+            .and_then(|r| r.authenticator.clone());
+        key.map(|k| Authenticator::parse(k.expose())).transpose()
+    }
+
+    async fn record(&self, person: &str, id: i64, used: Used, context: &Context) -> Result<bool> {
+        let mut kept = self.lock();
+        let Some(row) = kept
+            .rows
+            .iter_mut()
+            .find(|r| r.person == person && r.id == id)
+        else {
+            return Ok(false);
+        };
+        row.note(used, context);
+        Ok(true)
+    }
+
+    async fn activity(&self, person: &str, id: i64) -> Result<Option<Vec<Activity>>> {
+        let kept = self.lock();
+        let Some(row) = kept.rows.iter().find(|r| r.person == person && r.id == id) else {
+            return Ok(None);
+        };
+        let mut uses = row.activity.clone();
+        uses.reverse();
+        uses.truncate(ACTIVITY_SHOWN);
+        Ok(Some(uses))
+    }
+
+    async fn drop_old_activity(&self, before: DateTime<Utc>) -> Result<u64> {
+        let mut kept = self.lock();
+        let mut dropped = 0;
+        for row in &mut kept.rows {
+            let had = row.activity.len();
+            row.activity.retain(|a| a.at >= before);
+            dropped += (had - row.activity.len()) as u64;
         }
         Ok(dropped)
     }
@@ -629,5 +718,149 @@ mod tests {
         let login = store.add(MAJSE, &new_login()).await.unwrap();
         assert!(!store.used(MARK, login.id, Utc::now()).await.unwrap());
         assert!(store.get(MARK, login.id).await.unwrap().is_none());
+    }
+
+    const KEY: &str = "JBSWY3DPEHPK3PXP";
+
+    #[tokio::test]
+    async fn activity_is_the_persons_own_newest_first() {
+        let store = MemoryLogins::new();
+        let login = store.add(MAJSE, &new_login()).await.unwrap();
+        let shop = Context {
+            site: Some("https://shop.example".into()),
+            conversation: Some(7),
+        };
+        assert!(
+            store
+                .record(MAJSE, login.id, Used::SignedIn, &shop)
+                .await
+                .unwrap()
+        );
+        store.update(MAJSE, login.id, &edit()).await.unwrap();
+        let uses: Vec<Used> = store
+            .activity(MAJSE, login.id)
+            .await
+            .unwrap()
+            .expect("hers")
+            .iter()
+            .map(|a| a.used)
+            .collect();
+        assert_eq!(uses, [Used::Edited, Used::SignedIn, Used::Added]);
+
+        // Another person's id is a missing one: nothing to read, and
+        // nothing noted on it.
+        assert_eq!(store.activity(MARK, login.id).await.unwrap(), None);
+        assert!(
+            !store
+                .record(MARK, login.id, Used::SignedIn, &shop)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store
+                .activity(MAJSE, login.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .len(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn a_changed_account_notes_the_profile_it_drops() {
+        let store = MemoryLogins::new();
+        let login = store.add(MAJSE, &new_login()).await.unwrap();
+        store
+            .save_profile(MAJSE, login.id, &crate::Secret::new("{}"))
+            .await
+            .unwrap();
+        let other = LoginEdit::new(
+            "Shop",
+            &[SITES[0].to_string()],
+            crate::Secret::new("someone.else@example.com"),
+            None,
+        )
+        .unwrap();
+        store.update(MAJSE, login.id, &other).await.unwrap();
+        let uses: Vec<Used> = store
+            .activity(MAJSE, login.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .iter()
+            .map(|a| a.used)
+            .collect();
+        assert_eq!(uses, [Used::ProfileDropped, Used::Edited, Used::Added]);
+    }
+
+    #[tokio::test]
+    async fn a_key_is_kept_replaced_and_removed_and_never_anyone_elses() {
+        let store = MemoryLogins::new();
+        let new = new_login()
+            .with_authenticator(Some(crate::Secret::new(KEY)))
+            .unwrap();
+        let login = store.add(MAJSE, &new).await.unwrap();
+        assert!(login.authenticator, "Vault shows it is set");
+        assert!(
+            store
+                .authenticator(MAJSE, login.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(store.authenticator(MARK, login.id).await.unwrap().is_none());
+
+        // An empty field keeps it.
+        let keep = edit()
+            .with_authenticator(KeyChange::Set(crate::Secret::new("")))
+            .unwrap();
+        let kept = store.update(MAJSE, login.id, &keep).await.unwrap().unwrap();
+        assert!(kept.authenticator);
+
+        let remove = edit().with_authenticator(KeyChange::Remove).unwrap();
+        let removed = store
+            .update(MAJSE, login.id, &remove)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!removed.authenticator);
+        assert!(
+            store
+                .authenticator(MAJSE, login.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_bad_key_is_refused_before_anything_is_kept() {
+        assert!(
+            new_login()
+                .with_authenticator(Some(crate::Secret::new("not a key!")))
+                .is_err()
+        );
+        assert!(
+            edit()
+                .with_authenticator(KeyChange::Set(crate::Secret::new("not a key!")))
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn old_activity_is_swept() {
+        let store = MemoryLogins::new();
+        let login = store.add(MAJSE, &new_login()).await.unwrap();
+        let later = Utc::now() + chrono::Duration::seconds(1);
+        assert_eq!(store.drop_old_activity(later).await.unwrap(), 1);
+        assert!(
+            store
+                .activity(MAJSE, login.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_empty()
+        );
     }
 }

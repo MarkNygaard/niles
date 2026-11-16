@@ -108,7 +108,7 @@ describe("profileSections", () => {
       "About you",
       "My phone",
       "Notifications",
-      "Logins",
+      "Vault",
     ]);
     expect(sections[1].items.map((s) => s.id)).toEqual(["calendars", "mail", "strava"]);
   });

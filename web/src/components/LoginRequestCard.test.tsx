@@ -20,6 +20,7 @@ const SAVED = {
   username: "majse",
   last_used: null,
   signed_in: false,
+  authenticator: false,
 };
 
 function renderCard(props: Partial<Parameters<typeof LoginRequestCard>[0]> = {}) {
@@ -45,7 +46,7 @@ describe("LoginRequestCard", () => {
     expect(card).toHaveTextContent("https://xn--bcher-kva.example");
   });
 
-  it("opens the Logins form with the site fixed and the label filled in", async () => {
+  it("opens Vault's form with the site fixed and the label filled in", async () => {
     renderCard();
     fireEvent.click(screen.getByRole("button", { name: "Add login" }));
 

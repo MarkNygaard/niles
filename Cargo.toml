@@ -71,6 +71,10 @@ rand_chacha = "0.10"
 parking_lot = "0.13"
 hmac = "0.13"
 sha2 = "0.11"
+# Authenticator codes (RFC 6238) for saved logins: SHA-1 is what nearly
+# every site uses, and setup keys are base32.
+sha1 = "0.11"
+data-encoding = "2"
 # Web Push: P-256 for the message key agreement (RFC 8291) and the
 # VAPID signature (RFC 8292). Pure Rust, the same RustCrypto generation
 # as aes-gcm, sha2 and hmac above, so nothing here brings OpenSSL in.

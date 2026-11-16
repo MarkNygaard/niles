@@ -1,4 +1,4 @@
-//! What the Logins page changes ends a session open with that login
+//! What Vault changes ends a session open with that login
 //! first: Sign out and Remove close it without keeping its profile; an
 //! edit keeps the newest profile first. The order matters — the
 //! session's save must land before the store forgets, and the store's
@@ -8,18 +8,21 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use niles_logins::{Credentials, Login, LoginEdit, LoginStore, NewLogin, Result, Secret};
+use niles_logins::{
+    Activity, Authenticator, Context, Credentials, Login, LoginEdit, LoginStore, NewLogin, Result,
+    Secret, Used,
+};
 
 use super::{Browsing, Save};
 
-/// The store the Logins page and the API reach: every method delegates,
+/// The store Vault and the API reach: every method delegates,
 /// and the three that change a login end its open session first.
 pub(crate) struct EndsSessions {
     inner: Arc<dyn LoginStore>,
     browsing: Arc<Browsing>,
 }
 
-/// Wrap the store: what the Logins page changes ends a session open
+/// Wrap the store: what Vault changes ends a session open
 /// with that login first.
 pub(crate) fn ending(inner: Arc<dyn LoginStore>, browsing: Arc<Browsing>) -> Arc<dyn LoginStore> {
     Arc::new(EndsSessions { inner, browsing })
@@ -79,6 +82,22 @@ impl LoginStore for EndsSessions {
 
     async fn drop_stale_profiles(&self, before: DateTime<Utc>) -> Result<u64> {
         self.inner.drop_stale_profiles(before).await
+    }
+
+    async fn authenticator(&self, person: &str, id: i64) -> Result<Option<Authenticator>> {
+        self.inner.authenticator(person, id).await
+    }
+
+    async fn record(&self, person: &str, id: i64, used: Used, context: &Context) -> Result<bool> {
+        self.inner.record(person, id, used, context).await
+    }
+
+    async fn activity(&self, person: &str, id: i64) -> Result<Option<Vec<Activity>>> {
+        self.inner.activity(person, id).await
+    }
+
+    async fn drop_old_activity(&self, before: DateTime<Utc>) -> Result<u64> {
+        self.inner.drop_old_activity(before).await
     }
 }
 

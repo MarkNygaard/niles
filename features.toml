@@ -1148,8 +1148,20 @@ since_pr = 520
 [[feature]]
 id = "ui-saved-logins"
 category = "ui.settings"
-summary = "My profile → Logins: a site's login for browsing, added there or from the chat; the password is never shown again"
+summary = "My profile → Vault: a site's login for browsing, added there or from the chat; the password is never shown again"
 since_pr = 521
+
+[[feature]]
+id = "vault-activity"
+category = "ui.settings"
+summary = "Vault shows what each saved login was used for: sign-ins, codes and changes, with the site and the conversation"
+since_pr = 528
+
+[[feature]]
+id = "browsing-authenticator-codes"
+category = "llm.tools"
+summary = "A saved login can keep its authenticator key, and Niles types the sign-in code itself"
+since_pr = 528
 
 [[feature]]
 id = "browsing-sign-in"

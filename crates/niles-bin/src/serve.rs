@@ -492,7 +492,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         },
         logins.clone(),
     );
-    // What the Logins page changes ends a session open with that login
+    // What Vault changes ends a session open with that login
     // first, so its profile is kept or dropped by the right rule.
     let logins = logins.map(|store| crate::browsing::ending(store, browsing.clone()));
     let login_cards = Arc::new(crate::browsing::Logins::new(logins.clone()));

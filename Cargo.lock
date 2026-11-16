@@ -3048,9 +3048,13 @@ version = "0.6.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "data-encoding",
+ "hmac",
  "niles-websearch",
  "serde",
  "serde_json",
+ "sha1 0.11.0",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
  "tokio",
  "url",

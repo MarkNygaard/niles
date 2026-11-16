@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { KeyRound } from "lucide-react";
 import { LoginForm } from "@/components/LoginForm";
-import { LOGINS } from "@/components/LoginsPanel";
+import { LOGINS } from "@/components/VaultPanel";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,

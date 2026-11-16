@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { LoginsPanel } from "@/components/LoginsPanel";
+import { VaultPanel } from "@/components/VaultPanel";
 import { ApiError, api } from "@/lib/api";
 import type { SavedLogin } from "@/lib/api";
 
@@ -15,6 +15,7 @@ const SHOP: SavedLogin = {
   username: "majse",
   last_used: null,
   signed_in: true,
+  authenticator: true,
 };
 
 const BANK: SavedLogin = {
@@ -24,6 +25,7 @@ const BANK: SavedLogin = {
   username: "majse",
   last_used: new Date(Date.now() - 3 * 60 * 60_000).toISOString(),
   signed_in: false,
+  authenticator: false,
 };
 
 function renderPanel() {
@@ -31,7 +33,7 @@ function renderPanel() {
     <QueryClientProvider
       client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
     >
-      <LoginsPanel />
+      <VaultPanel />
     </QueryClientProvider>,
   );
 }
@@ -40,7 +42,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("LoginsPanel", () => {
+describe("VaultPanel", () => {
   it("lists each login with its sites, username and whether it is signed in, and never a password", async () => {
     vi.spyOn(api, "logins").mockResolvedValue({ logins: [SHOP, BANK] });
     renderPanel();
@@ -117,7 +119,9 @@ describe("LoginsPanel", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Remove Shop" }));
     expect(
-      await screen.findByText("Niles forgets its username and password, and the site's cookies with them."),
+      await screen.findByText(
+        "Niles forgets its username, password and authenticator key, the site's cookies, and what it was used for.",
+      ),
     ).toBeInTheDocument();
     expect(remove).not.toHaveBeenCalled();
 
@@ -128,6 +132,74 @@ describe("LoginsPanel", () => {
     );
     await waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
     expect(remove.mock.calls[0][0]).toBe(1);
+  });
+
+  it("takes an authenticator key, never shows it, and can remove it", async () => {
+    vi.spyOn(api, "logins").mockResolvedValue({ logins: [SHOP, BANK] });
+    const update = vi.spyOn(api, "updateLogin").mockResolvedValue(SHOP);
+    renderPanel();
+
+    // Shop keeps a key: it says so, and the field stays empty.
+    expect(await screen.findByText("Authenticator")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Edit Shop" }));
+    const key = screen.getByLabelText("Authenticator key");
+    expect(key).toHaveValue("");
+    expect(key).toHaveAttribute("type", "password");
+    expect(key).toHaveAttribute("placeholder", "Saved; leave empty to keep it");
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove the authenticator key" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    expect(update.mock.calls[0][1]).toMatchObject({ remove_authenticator: true });
+    expect(update.mock.calls[0][1]).not.toHaveProperty("authenticator");
+  });
+
+  it("sends a new key with the login, and none when the field is empty", async () => {
+    vi.spyOn(api, "logins").mockResolvedValue({ logins: [BANK] });
+    const update = vi.spyOn(api, "updateLogin").mockResolvedValue(BANK);
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Bank" }));
+    expect(screen.queryByRole("button", { name: "Remove the authenticator key" })).toBeNull();
+    fireEvent.change(screen.getByLabelText("Authenticator key"), {
+      target: { value: " JBSWY3DPEHPK3PXP " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    expect(update.mock.calls[0][1]).toMatchObject({ authenticator: "JBSWY3DPEHPK3PXP" });
+    expect(update.mock.calls[0][1]).not.toHaveProperty("remove_authenticator");
+  });
+
+  it("lists a login's activity with its site and a link to the conversation", async () => {
+    vi.spyOn(api, "logins").mockResolvedValue({ logins: [SHOP] });
+    const activity = vi.spyOn(api, "loginActivity").mockResolvedValue({
+      activity: [
+        {
+          at: new Date(Date.now() - 5 * 60_000).toISOString(),
+          used: "code_made",
+          site: "https://shop.example",
+          conversation: 12,
+        },
+        {
+          at: new Date(Date.now() - 2 * 24 * 60 * 60_000).toISOString(),
+          used: "added",
+          site: null,
+          conversation: null,
+        },
+      ],
+    });
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Activity of Shop" }));
+    const list = await screen.findByRole("list", { name: "Activity of Shop" });
+    expect(activity).toHaveBeenCalledWith(1);
+    expect(list).toHaveTextContent("Code from the authenticator key entered");
+    expect(list).toHaveTextContent("https://shop.example");
+    expect(list).toHaveTextContent("Added");
+    expect(screen.getByRole("link", { name: "the conversation" })).toHaveAttribute(
+      "href",
+      "#/chat?conversation=12",
+    );
   });
 
   it("offers Sign out only for a signed-in login", async () => {

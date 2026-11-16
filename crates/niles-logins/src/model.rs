@@ -65,6 +65,9 @@ pub struct Login {
     pub username: String,
     pub last_used: Option<DateTime<Utc>>,
     pub signed_in: bool,
+    /// Whether an authenticator key is kept. The key itself never
+    /// leaves the store but to make a code.
+    pub authenticator: bool,
 }
 
 impl std::fmt::Debug for Login {
@@ -208,6 +211,8 @@ pub struct NewLogin {
     pub label: String,
     pub origins: Vec<Origin>,
     pub credentials: Credentials,
+    /// The authenticator key, in its kept form, when one was given.
+    pub authenticator: Option<Secret>,
 }
 
 impl NewLogin {
@@ -224,8 +229,29 @@ impl NewLogin {
                 username: crate::model::username(username)?,
                 password: crate::model::password(password)?,
             },
+            authenticator: None,
         })
     }
+
+    /// With an authenticator key, checked; an empty one is none.
+    pub fn with_authenticator(mut self, key: Option<Secret>) -> Result<NewLogin> {
+        self.authenticator = key
+            .filter(|k| !k.is_empty())
+            .map(crate::totp::authenticator)
+            .transpose()?;
+        Ok(self)
+    }
+}
+
+/// What an edit does with a login's authenticator key.
+#[derive(Debug, Clone, Default)]
+pub enum KeyChange {
+    /// Leaves it as it is, set or not: what an empty field means.
+    #[default]
+    Keep,
+    /// A new key, in its kept form.
+    Set(Secret),
+    Remove,
 }
 
 /// A login as it is changed. A `None` password — also what an empty
@@ -236,6 +262,7 @@ pub struct LoginEdit {
     pub origins: Vec<Origin>,
     pub username: Secret,
     pub password: Option<Secret>,
+    pub authenticator: KeyChange,
 }
 
 impl LoginEdit {
@@ -250,7 +277,19 @@ impl LoginEdit {
             origins: crate::model::origins(origins)?,
             username: crate::model::username(username)?,
             password: password.filter(|p| !p.is_empty()),
+            authenticator: KeyChange::Keep,
         })
+    }
+
+    /// With a change to the authenticator key, a new one checked; a new
+    /// one left empty keeps the current one.
+    pub fn with_authenticator(mut self, change: KeyChange) -> Result<LoginEdit> {
+        self.authenticator = match change {
+            KeyChange::Set(key) if key.is_empty() => KeyChange::Keep,
+            KeyChange::Set(key) => KeyChange::Set(crate::totp::authenticator(key)?),
+            other => other,
+        };
+        Ok(self)
     }
 }
 
@@ -289,6 +328,7 @@ mod tests {
             username: USER.into(),
             last_used: None,
             signed_in: false,
+            authenticator: false,
         };
         for printed in [
             format!("{:?}", Credentials { username, password }),
