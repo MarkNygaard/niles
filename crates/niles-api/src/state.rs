@@ -109,6 +109,9 @@ pub struct AppState {
     pub plugins: Option<Arc<dyn crate::plugins::Plugins>>,
     /// The remote MCP servers whose tools the model is offered.
     pub tool_servers: Option<Arc<dyn crate::tool_servers::ToolServers>>,
+    /// Each person's own MCP servers. Absent without a database and its
+    /// secrets key: a key or token is not kept anywhere unsealed.
+    pub personal_servers: Option<Arc<dyn crate::personal_servers::PersonalToolServers>>,
     /// Each person's Strava and the workouts it brings. Absent without a
     /// database and its secrets key: an app secret and its tokens are
     /// not kept anywhere unsealed.
@@ -175,6 +178,7 @@ impl AppState {
             nemlig: None,
             plugins: None,
             tool_servers: None,
+            personal_servers: None,
             strava: None,
             logins: None,
             strava_attempts: Arc::new(crate::auth::flow::Attempts::new()),
@@ -285,6 +289,14 @@ impl AppState {
         servers: Option<Arc<dyn crate::tool_servers::ToolServers>>,
     ) -> Self {
         self.tool_servers = servers;
+        self
+    }
+
+    pub fn with_personal_servers(
+        mut self,
+        servers: Option<Arc<dyn crate::personal_servers::PersonalToolServers>>,
+    ) -> Self {
+        self.personal_servers = servers;
         self
     }
 

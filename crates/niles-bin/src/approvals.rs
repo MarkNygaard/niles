@@ -960,6 +960,11 @@ impl Tool for AskFirst {
         self.inner.descriptor()
     }
 
+    // A tool that is hidden stays hidden behind its card.
+    fn offered(&self) -> bool {
+        self.inner.offered()
+    }
+
     async fn execute(&self, args: Value) -> niles_tools::Result<Value> {
         let name = self.inner.descriptor().name;
         let Some(asker) = asker() else {

@@ -128,9 +128,49 @@ export interface RemoteTool {
  */
 export interface ToolServer {
   id: string;
-  status: "connecting" | "working" | "needs_key" | "failed";
+  status: "connecting" | "working" | "needs_key" | "needs_sign_in" | "failed";
   message: string | null;
   tools: RemoteTool[];
+}
+
+/** What the model may do with one of a person's own tools. */
+export type PersonalToolMode = "on" | "ask" | "off";
+
+/** How a person's server is signed in to. */
+export type ServerSignIn = "key" | "browser";
+
+/**
+ * One of the person's own MCP servers, as My profile shows it: never its
+ * key. Mirrors `PersonalServerView` in crates/niles-api/src/personal_servers.rs.
+ */
+export interface PersonalServer {
+  id: number;
+  slug: string;
+  name: string;
+  url: string;
+  sign_in: ServerSignIn;
+  header: string | null;
+  modes: Record<string, PersonalToolMode>;
+  signed_in: boolean;
+  status: ToolServer["status"];
+  message: string | null;
+  tools: (RemoteTool & { mode: PersonalToolMode })[];
+}
+
+/** What the add form sends. */
+export interface PersonalServerDraft {
+  name: string;
+  url: string;
+  sign_in: ServerSignIn;
+  header?: string;
+  key?: string;
+}
+
+/** What an edit sends. A missing key keeps the kept one. */
+export interface PersonalServerEdit {
+  name: string;
+  header?: string;
+  key?: string;
 }
 
 /**
@@ -2012,6 +2052,24 @@ export const api = {
   integrations: () => request<Integration[]>("/integrations"),
   plugins: () => request<PluginSummary[]>("/plugins"),
   toolServers: () => request<ToolServer[]>("/tool-servers"),
+  myServers: () => request<PersonalServer[]>("/me/tool-servers"),
+  addMyServer: (draft: PersonalServerDraft) =>
+    request<PersonalServer>("/me/tool-servers", { method: "POST", body: JSON.stringify(draft) }),
+  updateMyServer: (id: number, edit: PersonalServerEdit) =>
+    request<PersonalServer>(`/me/tool-servers/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(edit),
+    }),
+  removeMyServer: (id: number) => request<void>(`/me/tool-servers/${id}`, { method: "DELETE" }),
+  setMyServerMode: (id: number, tool: string, mode: PersonalToolMode) =>
+    request<void>(`/me/tool-servers/${id}/tools/${encodeURIComponent(tool)}`, {
+      method: "PUT",
+      body: JSON.stringify({ mode }),
+    }),
+  reconnectMyServer: (id: number) =>
+    request<void>(`/me/tool-servers/${id}/reconnect`, { method: "POST" }),
+  signInMyServer: (id: number) =>
+    request<{ url: string }>(`/me/tool-servers/${id}/sign-in`, { method: "POST" }),
   refreshToolServer: (id: string) =>
     request<void>(`/tool-servers/${encodeURIComponent(id)}/refresh`, { method: "POST" }),
   previewPlugin: (repo: string) =>

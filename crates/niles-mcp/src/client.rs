@@ -6,6 +6,7 @@
 //! never opens the optional GET stream for server-initiated messages.
 
 use crate::error::{Error, Result};
+use crate::public::Reach;
 use serde_json::{Value, json};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -54,10 +55,44 @@ struct Session {
     protocol: String,
 }
 
+/// How a request proves who it is for.
+#[derive(Clone, PartialEq, Eq)]
+pub enum Auth {
+    None,
+    /// `Authorization: Bearer <token>`: a key, or a signed-in token.
+    Bearer(String),
+    /// A header of the server's own naming, such as `X-API-Key`.
+    Header {
+        name: String,
+        value: String,
+    },
+}
+
+impl std::fmt::Debug for Auth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Auth::None => f.write_str("None"),
+            Auth::Bearer(_) => f.write_str("Bearer(…)"),
+            Auth::Header { name, .. } => write!(f, "Header({name}: …)"),
+        }
+    }
+}
+
+impl Auth {
+    /// A household key: none when it is empty.
+    pub fn bearer(key: &str) -> Auth {
+        if key.is_empty() {
+            Auth::None
+        } else {
+            Auth::Bearer(key.to_string())
+        }
+    }
+}
+
 pub struct McpClient {
     http: reqwest::Client,
     url: String,
-    key: String,
+    auth: Auth,
     session: Mutex<Session>,
     next_id: AtomicU64,
 }
@@ -79,14 +114,22 @@ impl From<Error> for Failure {
 impl McpClient {
     /// Open a session: `initialize`, then `notifications/initialized`.
     pub async fn connect(url: &str, key: &str, timeout: Duration) -> Result<(Self, ServerInfo)> {
-        let http = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(|e| Error::Unreachable(e.to_string()))?;
+        Self::connect_with(url, Auth::bearer(key), timeout, Reach::Anywhere).await
+    }
+
+    /// [`Self::connect`], with `auth` and held to `reach`.
+    pub async fn connect_with(
+        url: &str,
+        auth: Auth,
+        timeout: Duration,
+        reach: Reach,
+    ) -> Result<(Self, ServerInfo)> {
+        crate::public::check(url, reach)?;
+        let http = crate::public::client(reach, timeout)?;
         let client = Self {
             http,
             url: url.to_string(),
-            key: key.to_string(),
+            auth,
             session: Mutex::new(Session {
                 id: None,
                 protocol: PROTOCOL_VERSION.to_string(),
@@ -272,8 +315,10 @@ impl McpClient {
                 "application/json, text/event-stream",
             )
             .json(body);
-        if !self.key.is_empty() {
-            request = request.bearer_auth(&self.key);
+        match &self.auth {
+            Auth::None => {}
+            Auth::Bearer(token) => request = request.bearer_auth(token),
+            Auth::Header { name, value } => request = request.header(name.as_str(), value),
         }
         if let Some(session) = &session {
             request = request
@@ -291,6 +336,19 @@ impl McpClient {
         if status == reqwest::StatusCode::NOT_FOUND && session.is_some() {
             return Err(Failure::SessionGone);
         }
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            let resource_metadata = response
+                .headers()
+                .get(reqwest::header::WWW_AUTHENTICATE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(resource_metadata);
+            let reason = response.text().await.unwrap_or_default();
+            return Err(Error::Unauthorized {
+                reason: reason_of(status, &reason),
+                resource_metadata,
+            }
+            .into());
+        }
         let reason = response.text().await.unwrap_or_default();
         Err(Error::Refused {
             status: status.as_u16(),
@@ -302,6 +360,18 @@ impl McpClient {
     fn lock(&self) -> std::sync::MutexGuard<'_, Session> {
         self.session.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+/// The `resource_metadata` address in a `WWW-Authenticate` header
+/// (RFC 9728), if it names one.
+fn resource_metadata(header: &str) -> Option<String> {
+    let at = header.find("resource_metadata=")? + "resource_metadata=".len();
+    let rest = header[at..].trim_start();
+    let value = match rest.strip_prefix('"') {
+        Some(quoted) => quoted.split('"').next()?,
+        None => rest.split([',', ' ']).next()?,
+    };
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 /// The body's own words when they are short enough to show, else what
@@ -688,5 +758,65 @@ mod tests {
     fn falls_back_to_structured_content_when_there_is_no_text() {
         let result = call_result(&json!({ "content": [], "structuredContent": { "n": 1 } }));
         assert_eq!(result.text, "{\"n\":1}");
+    }
+
+    #[test]
+    fn a_401_names_where_its_sign_in_is_described() {
+        assert_eq!(
+            resource_metadata(
+                r#"Bearer realm="mcp", resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource""#
+            )
+            .as_deref(),
+            Some("https://mcp.example.com/.well-known/oauth-protected-resource")
+        );
+        assert_eq!(
+            resource_metadata("Bearer resource_metadata=https://x.example/m, error=\"x\"")
+                .as_deref(),
+            Some("https://x.example/m")
+        );
+        assert_eq!(resource_metadata("Bearer realm=\"mcp\""), None);
+    }
+
+    #[tokio::test]
+    async fn a_named_header_carries_the_key_and_nothing_prints_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(header("x-api-key", "k3y"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_json(json!({ "jsonrpc": "2.0", "id": 1, "result": { "protocolVersion": "2025-03-26" } })),
+            )
+            .mount(&server)
+            .await;
+        let auth = Auth::Header {
+            name: "X-API-Key".into(),
+            value: "k3y".into(),
+        };
+        assert!(!format!("{auth:?}").contains("k3y"));
+        let connected =
+            McpClient::connect_with(&server.uri(), auth, Duration::from_secs(5), Reach::Anywhere)
+                .await;
+        assert!(connected.is_ok(), "{:?}", connected.err());
+    }
+
+    #[tokio::test]
+    async fn a_person_s_server_on_loopback_is_refused_before_any_request() {
+        let server = MockServer::start().await;
+        let refused = McpClient::connect_with(
+            &server.uri(),
+            Auth::None,
+            Duration::from_secs(5),
+            Reach::PublicInternet,
+        )
+        .await;
+        assert!(matches!(refused, Err(Error::NotPublic(_))));
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .is_empty()
+        );
     }
 }

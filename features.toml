@@ -1152,6 +1152,13 @@ summary = "My profile → Vault: a site's login for browsing, added there or fro
 since_pr = 521
 
 [[feature]]
+id = "my-mcp-servers"
+category = "ui.settings"
+summary = "My profile → MCP servers: a person's own MCP servers, by key or sign-in, whose tools only they get in the written chat"
+phrasings = ["find my notes on the trip in Notion", "what's assigned to me in Linear?"]
+since_pr = 530
+
+[[feature]]
 id = "vault-activity"
 category = "ui.settings"
 summary = "Vault shows what each saved login was used for: sign-ins, codes and changes, with the site and the conversation"

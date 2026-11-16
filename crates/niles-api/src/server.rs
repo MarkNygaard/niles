@@ -303,6 +303,30 @@ pub fn router(state: AppState) -> Router {
             put(crate::logins::update).delete(crate::logins::remove),
         )
         .route("/me/logins/{id}/sign-out", post(crate::logins::sign_out))
+        .route(
+            "/me/tool-servers",
+            get(crate::personal_servers::list).post(crate::personal_servers::add),
+        )
+        .route(
+            crate::personal_servers::CALLBACK,
+            get(crate::personal_servers::callback),
+        )
+        .route(
+            "/me/tool-servers/{id}",
+            put(crate::personal_servers::update).delete(crate::personal_servers::remove),
+        )
+        .route(
+            "/me/tool-servers/{id}/tools/{tool}",
+            put(crate::personal_servers::set_mode),
+        )
+        .route(
+            "/me/tool-servers/{id}/sign-in",
+            post(crate::personal_servers::sign_in),
+        )
+        .route(
+            "/me/tool-servers/{id}/reconnect",
+            post(crate::personal_servers::reconnect),
+        )
         .route("/me/logins/{id}/activity", get(crate::logins::activity))
         .route("/presence/device", get(crate::presence::device_status))
         .route("/presence/device", post(crate::presence::pair_device))

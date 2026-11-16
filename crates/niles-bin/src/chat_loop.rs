@@ -236,11 +236,12 @@ fn logged_result(name: &str, result: &serde_json::Value) -> String {
     }
 }
 
-/// A tool whose result is a page a person browses, or the site they
-/// asked a login for: kept out of `/logs`, with whatever the model makes
+/// A tool whose result is a page a person browses, the site they asked
+/// a login for, or what one of their own servers (`my-…`) answered:
+/// kept out of `/logs`, with whatever the model makes
 /// of it.
 pub(crate) fn private_tool(name: &str) -> bool {
-    name.starts_with("browser_") || name == "request_login"
+    name.starts_with("browser_") || name == "request_login" || name.starts_with("my-")
 }
 
 /// Whether `messages` hold a private tool's call, so the model answering
