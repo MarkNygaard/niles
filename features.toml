@@ -1163,7 +1163,7 @@ id = "my-schedules"
 category = "ui.settings"
 summary = "My profile → Schedules: a person's own tasks the assistant answers on time as them, into a new conversation"
 phrasings = ["every Monday at 8, give me my open Linear issues by priority", "each weekday at 7, what's in my calendar today"]
-since_pr = 531
+since_pr = 532
 
 [[feature]]
 id = "vault-activity"
