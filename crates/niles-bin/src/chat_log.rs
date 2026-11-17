@@ -330,6 +330,7 @@ mod tests {
                 login: None,
             }),
             code_request: None,
+            handoff: None,
             artifacts: Vec::new(),
             attachments: Vec::new(),
         };
@@ -360,6 +361,7 @@ mod tests {
                 site: "https://shop.example".into(),
                 status,
             }),
+            handoff: None,
             artifacts: Vec::new(),
             attachments: Vec::new(),
         };

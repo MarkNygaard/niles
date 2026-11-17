@@ -26,6 +26,7 @@ pub mod approvals;
 pub mod artifacts;
 pub mod auth;
 pub mod automations;
+pub mod browser;
 pub mod calendars;
 pub mod captures;
 pub mod chat;

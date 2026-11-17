@@ -327,6 +327,12 @@ pub fn router(state: AppState) -> Router {
             "/me/tool-servers/{id}/reconnect",
             post(crate::personal_servers::reconnect),
         )
+        .route("/me/browser", get(crate::browser::view))
+        .route("/me/browser/take", post(crate::browser::take))
+        .route("/me/browser/give-back", post(crate::browser::give_back))
+        .route("/me/browser/back", post(crate::browser::back))
+        .route("/me/browser/reload", post(crate::browser::reload))
+        .route("/me/browser/live", get(crate::browser::live_socket))
         .route(
             "/me/schedules",
             get(crate::schedules::list).post(crate::schedules::add),

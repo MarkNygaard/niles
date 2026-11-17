@@ -67,6 +67,8 @@ pub enum WireEvent {
     },
     /// The viewer read their notifications, here or on another device.
     NotificationsRead {},
+    /// The viewer's browsing session opened, closed or changed hands.
+    BrowserChanged {},
     /// What waits for a restart changed; the app asks
     /// `/system/restart` again.
     RestartPendingChanged {},
@@ -115,6 +117,9 @@ impl WireEvent {
             }
             Event::NotificationsRead { person } => {
                 (person == viewer).then_some(WireEvent::NotificationsRead {})
+            }
+            Event::BrowserChanged { person } => {
+                (person == viewer).then_some(WireEvent::BrowserChanged {})
             }
             other => Self::from_event(other),
         }
@@ -202,7 +207,7 @@ pub async fn events_stream(
 /// is not a browser — a terminal, a script, a test — and the attack
 /// this defends against needs a browser holding somebody's cookie. A
 /// non-browser caller has nothing to borrow.
-fn same_origin(headers: &HeaderMap) -> bool {
+pub(crate) fn same_origin(headers: &HeaderMap) -> bool {
     let Some(origin) = header_str(headers, header::ORIGIN) else {
         return true;
     };

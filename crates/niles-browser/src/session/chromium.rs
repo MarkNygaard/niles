@@ -929,3 +929,100 @@ async fn a_checkout_is_known_by_its_path() {
     assert!(Tab::checkout(&*session).await.unwrap().at_checkout);
     Tab::close(&*session).await;
 }
+
+#[tokio::test]
+#[ignore = "needs a Chromium's DevTools at NILES_TEST_CHROMIUM, such as 127.0.0.1:9222"]
+async fn a_live_view_gets_pictures_of_the_page_until_it_stops() {
+    let session = session().await;
+    serve(
+        &session,
+        vec![("https://shop.example/", Page::html("<h1>Basket</h1>"))],
+    )
+    .await;
+    session
+        .open(&Url::parse("https://shop.example/").unwrap())
+        .await
+        .unwrap();
+    let pace = Arc::new(std::sync::atomic::AtomicU64::new(50));
+    let mut frames = session.screencast(pace).await.unwrap();
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            frames.changed().await.unwrap();
+            if let Some(frame) = frames.borrow().clone() {
+                return frame;
+            }
+        }
+    })
+    .await
+    .expect("a frame within ten seconds");
+    assert_eq!(&frame.jpeg[..2], &[0xFF, 0xD8], "a JPEG");
+    assert_eq!(
+        (frame.width, frame.height),
+        (crate::VIEW_WIDTH, crate::VIEW_HEIGHT)
+    );
+    session.stop_screencast().await;
+    assert!(
+        frames.changed().await.is_err(),
+        "stopping ends the pictures"
+    );
+    Tab::close(&*session).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Chromium's DevTools at NILES_TEST_CHROMIUM, such as 127.0.0.1:9222"]
+async fn a_persons_click_and_typing_reach_the_page() {
+    let session = session().await;
+    serve(
+        &session,
+        vec![(
+            "https://shop.example/",
+            Page::html(
+                r#"<input id="q" style="position:absolute;left:0;top:0;width:400px;height:40px">"#,
+            ),
+        )],
+    )
+    .await;
+    session
+        .open(&Url::parse("https://shop.example/").unwrap())
+        .await
+        .unwrap();
+    for input in [
+        crate::Input::Press {
+            x: 20.0,
+            y: 20.0,
+            press: crate::Press::Down,
+            button: crate::Button::Left,
+            clicks: 1,
+        },
+        crate::Input::Press {
+            x: 20.0,
+            y: 20.0,
+            press: crate::Press::Up,
+            button: crate::Button::Left,
+            clicks: 1,
+        },
+        crate::Input::Key {
+            press: crate::Press::Down,
+            key: crate::Key::Char('h'),
+            modifiers: crate::Modifiers::default(),
+        },
+        crate::Input::Key {
+            press: crate::Press::Up,
+            key: crate::Key::Char('h'),
+            modifiers: crate::Modifiers::default(),
+        },
+        crate::Input::Text {
+            text: "ello".into(),
+        },
+        crate::Input::Key {
+            press: crate::Press::Down,
+            key: crate::Key::Named(crate::Named::Backspace),
+            modifiers: crate::Modifiers::default(),
+        },
+    ] {
+        assert!(input.checked());
+        session.input(&input).await.unwrap();
+    }
+    assert_eq!(value_of(&session, 0, "#q").await, "hell");
+    Tab::close(&*session).await;
+}
