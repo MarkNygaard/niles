@@ -279,6 +279,18 @@ pub enum CodeRequestStatus {
     Lapsed,
 }
 
+/// Niles handed the browser to the person, on a card under the reply:
+/// a CAPTCHA, or something the model can't do. Whether it still waits
+/// is the live view's to say (`GET /me/browser`), not the turn's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Handoff {
+    pub id: String,
+    /// The page's origin, ASCII.
+    pub site: String,
+    /// Why, in Niles's words or the model's, shown on the card.
+    pub why: String,
+}
+
 /// Why a card's code could not be taken: the code request was refused,
 /// and the card stays as it was.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -318,6 +330,9 @@ pub struct Turn {
     /// What this turn asked the person to type a sign-in code for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_request: Option<CodeRequest>,
+    /// The browser Niles handed to the person in this turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<Handoff>,
     /// The artifacts this turn made or changed, for a card under the
     /// reply. Brought up to date when the conversation is read back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -889,6 +904,7 @@ mod tests {
             approval: None,
             login_request: None,
             code_request: None,
+            handoff: None,
             artifacts: Vec::new(),
             attachments: Vec::new(),
         }

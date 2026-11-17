@@ -6,6 +6,7 @@ import { APPROVALS, approvalTag } from "@/lib/approvals";
 import { closeWaitingLater } from "@/lib/pwa";
 import { ARTIFACTS, ARTIFACT_LIST } from "@/lib/artifacts";
 import { NOTIFICATIONS } from "@/lib/notifications";
+import { BROWSER } from "@/lib/browser";
 import { RESTART, startWaiting } from "@/lib/restart";
 import { UPDATE } from "@/lib/update";
 import type { Artifact, ArtifactList, ArtifactStatus, Device, DeviceState, RestartStatus } from "@/lib/api";
@@ -131,6 +132,11 @@ function stream(queryClient: QueryClient): () => void {
         case "notifications_read":
           void queryClient.invalidateQueries({ queryKey: NOTIFICATIONS });
           break;
+        // The person's browsing session opened, closed or changed
+        // hands: the Browser tab and the handoff cards follow.
+        case "browser_changed":
+          void queryClient.invalidateQueries({ queryKey: BROWSER });
+          break;
         // What waits changed somewhere — the app, another voice undo,
         // the API — so ask again.
         case "restart_pending_changed":
@@ -181,6 +187,7 @@ type WireEvent =
   | { type: "approval_changed"; id: string; status: string }
   | { type: "notification_added"; id: number }
   | { type: "notifications_read" }
+  | { type: "browser_changed" }
   | { type: "restart_pending_changed" }
   | { type: "restart_started"; boot_id: string }
   | { type: "update_checked" }

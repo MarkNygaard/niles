@@ -14,6 +14,7 @@ import { ApprovalCard } from "@/components/ApprovalCard";
 import { ArtifactCard } from "@/components/ArtifactCard";
 import { LoginRequestCard } from "@/components/LoginRequestCard";
 import { CodeRequestCard } from "@/components/CodeRequestCard";
+import { HandoffCard } from "@/components/HandoffCard";
 import { PushNudge } from "@/components/PushNudge";
 import { NilesAvatar } from "@/components/NilesPanel";
 import { Button } from "@/components/ui/button";
@@ -72,6 +73,10 @@ export interface ChatViewProps {
   onCodeEntered?: (request: string, code: string) => void;
   /** The conversation is carrying on after a code was entered. */
   enteringCode?: boolean;
+  /** The handoff the browser is still the person's for, if one is. */
+  handoffWaiting?: string | null;
+  /** Open Niles's browser live, in Niles's panel. */
+  onOpenBrowser?: () => void;
   /** Words from a recording. Without it there is no microphone. */
   onDictate?: (audio: Blob) => Promise<string>;
   /** Open an artifact a reply made, in Niles's panel. */
@@ -108,6 +113,8 @@ export function ChatView({
   addingLogin,
   onCodeEntered,
   enteringCode,
+  handoffWaiting,
+  onOpenBrowser,
   onDictate,
   onOpenArtifact,
   working,
@@ -363,6 +370,13 @@ export function ChatView({
                 request={turn.code_request}
                 entering={enteringCode}
                 onEnter={(code) => turn.code_request && onCodeEntered?.(turn.code_request.id, code)}
+              />
+            )}
+            {turn.handoff && (
+              <HandoffCard
+                handoff={turn.handoff}
+                waiting={turn.handoff.id === handoffWaiting}
+                onOpen={onOpenBrowser}
               />
             )}
             {/* Only the last turn's proposal is still open: once

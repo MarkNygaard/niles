@@ -98,6 +98,13 @@ pub enum Event {
         person: String,
         id: i64,
     },
+    /// A person's browsing session opened, closed, or changed hands
+    /// between Niles and them. Forwarded only to their own connections:
+    /// the app asks `/me/browser` again.
+    BrowserChanged {
+        /// The person key, `person:{slug}` or `email:{address}`.
+        person: String,
+    },
     /// A person read their notifications, on one of their devices.
     /// Forwarded only to their own connections, so every bell of theirs
     /// clears.

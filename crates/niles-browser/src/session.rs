@@ -50,6 +50,8 @@ pub struct Session {
     /// The task keeping a signed-in session's page on its login's
     /// origins; `None` until a sign-in binds one.
     guard: std::sync::Mutex<Option<JoinHandle<()>>>,
+    /// The task passing a live view's frames on, while one runs.
+    screencast: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 /// The script's `info(el)` answer.
@@ -112,6 +114,7 @@ impl Session {
             world: Mutex::new(None),
             dialogs,
             guard: std::sync::Mutex::new(None),
+            screencast: std::sync::Mutex::new(None),
         }))
     }
 
@@ -121,8 +124,8 @@ impl Session {
         conn.call(
             "Emulation.setDeviceMetricsOverride",
             json!({
-                "width": 1280,
-                "height": 900,
+                "width": crate::VIEW_WIDTH,
+                "height": crate::VIEW_HEIGHT,
                 "deviceScaleFactor": 1,
                 "mobile": false
             }),
@@ -293,6 +296,59 @@ impl Session {
             .await;
         Ok(Some((node, info)))
     }
+}
+
+/// Passes each screencast frame on as the newest picture, then
+/// acknowledges it no sooner than `pace` after the last: the browser
+/// sends nothing new while two frames wait, so the pace is the rate.
+async fn pass_frames(
+    conn: Arc<Connection>,
+    session: String,
+    mut frames: tokio::sync::mpsc::UnboundedReceiver<Event>,
+    newest: tokio::sync::watch::Sender<Option<crate::Frame>>,
+    pace: Arc<std::sync::atomic::AtomicU64>,
+) {
+    let mut acked = tokio::time::Instant::now();
+    while let Some(event) = frames.recv().await {
+        let Some(ack) = event.params.get("sessionId").and_then(Value::as_i64) else {
+            continue;
+        };
+        if let Some(frame) = frame_of(&event.params) {
+            newest.send_replace(Some(frame));
+        }
+        let gap = Duration::from_millis(pace.load(std::sync::atomic::Ordering::Relaxed));
+        tokio::time::sleep_until(acked + gap).await;
+        acked = tokio::time::Instant::now();
+        let acknowledged = conn
+            .call(
+                "Page.screencastFrameAck",
+                json!({"sessionId": ack}),
+                Some(&session),
+            )
+            .await;
+        if acknowledged.is_err() {
+            return;
+        }
+    }
+}
+
+/// A screencast frame's picture and the page size it shows.
+fn frame_of(params: &Value) -> Option<crate::Frame> {
+    let data = params.get("data").and_then(Value::as_str)?;
+    let jpeg = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data).ok()?;
+    let size = |key: &str, otherwise: u32| {
+        params
+            .get("metadata")
+            .and_then(|m| m.get(key))
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite() && *v >= 1.0 && *v <= 10_000.0)
+            .map_or(otherwise, |v| v.round() as u32)
+    };
+    Some(crate::Frame {
+        jpeg: jpeg.into(),
+        width: size("deviceWidth", crate::VIEW_WIDTH),
+        height: size("deviceHeight", crate::VIEW_HEIGHT),
+    })
 }
 
 /// Answers dialogs: alerts and leave-page prompts are accepted, confirm
@@ -684,8 +740,103 @@ impl Tab for Session {
         self.restore_in(origins, profile).await
     }
 
+    async fn screencast(
+        &self,
+        pace: Arc<std::sync::atomic::AtomicU64>,
+    ) -> Result<tokio::sync::watch::Receiver<Option<crate::Frame>>> {
+        self.stop_screencast().await;
+        let frames = self.conn.screencast_frames(&self.session);
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        if let Err(e) = self
+            .on(
+                "Page.startScreencast",
+                json!({
+                    "format": "jpeg",
+                    "quality": 60,
+                    "maxWidth": crate::VIEW_WIDTH,
+                    "maxHeight": crate::VIEW_HEIGHT,
+                }),
+            )
+            .await
+        {
+            self.conn.stop_frames(&self.session);
+            return Err(e);
+        }
+        let task = tokio::spawn(pass_frames(
+            Arc::clone(&self.conn),
+            self.session.clone(),
+            frames,
+            sender,
+            pace,
+        ));
+        if let Some(old) = self
+            .screencast
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(task)
+        {
+            old.abort();
+        }
+        Ok(receiver)
+    }
+
+    async fn stop_screencast(&self) {
+        let task = self
+            .screencast
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(task) = task {
+            task.abort();
+            self.conn.stop_frames(&self.session);
+            let _ = self.on("Page.stopScreencast", Value::Null).await;
+        }
+    }
+
+    async fn input(&self, input: &crate::Input) -> Result<()> {
+        for (method, params) in input.calls() {
+            self.on(method, params).await?;
+        }
+        Ok(())
+    }
+
+    async fn back(&self) -> Result<()> {
+        let history = self.on("Page.getNavigationHistory", Value::Null).await?;
+        let at = history
+            .get("currentIndex")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let Some(before) = at.checked_sub(1) else {
+            return Ok(());
+        };
+        let entry = history
+            .get("entries")
+            .and_then(Value::as_array)
+            .and_then(|entries| entries.get(usize::try_from(before).ok()?))
+            .and_then(|entry| entry.get("id"))
+            .and_then(Value::as_i64);
+        if let Some(entry) = entry {
+            self.on("Page.navigateToHistoryEntry", json!({"entryId": entry}))
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn reload(&self) -> Result<()> {
+        self.on("Page.reload", json!({})).await.map(|_| ())
+    }
+
     async fn close(&self) {
         self.dialogs.abort();
+        if let Some(task) = self
+            .screencast
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            task.abort();
+            self.conn.stop_frames(&self.session);
+        }
         if let Some(guard) = self.guard.lock().unwrap_or_else(|e| e.into_inner()).take() {
             guard.abort();
         }

@@ -280,6 +280,10 @@ impl niles_api::chat::Chat for AppChat {
                 .browsing
                 .as_ref()
                 .and_then(|b| b.code_for_turn(&person, started)),
+            handoff: ctx
+                .browsing
+                .as_ref()
+                .and_then(|b| b.handoff_for_turn(&person, started)),
             artifacts: match &ctx.artifacts {
                 Some(artifacts) => artifacts.for_turn(&person, started).await,
                 None => Vec::new(),
@@ -502,6 +506,7 @@ impl niles_api::chat::Chat for AppChat {
             approval: None,
             login_request: None,
             code_request: None,
+            handoff: None,
             artifacts: Vec::new(),
             attachments: Vec::new(),
         };
@@ -792,6 +797,7 @@ async fn answer(
             approval: ctx.approvals.for_turn(&person, started),
             login_request: None,
             code_request: None,
+            handoff: None,
             artifacts: Vec::new(),
             attachments: Vec::new(),
         }
@@ -883,6 +889,10 @@ async fn carry_on(
             .browsing
             .as_ref()
             .and_then(|b| b.code_for_turn(&asked.person, started)),
+        handoff: ctx
+            .browsing
+            .as_ref()
+            .and_then(|b| b.handoff_for_turn(&asked.person, started)),
         artifacts: match &ctx.artifacts {
             Some(artifacts) => artifacts.for_turn(&asked.person, started).await,
             None => Vec::new(),
@@ -974,6 +984,7 @@ pub(crate) async fn keep_said(
         approval: None,
         login_request: None,
         code_request: None,
+        handoff: None,
         artifacts: Vec::new(),
         attachments: Vec::new(),
     };

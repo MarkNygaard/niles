@@ -497,6 +497,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             crate::browsing::Conversations::NotKept
         },
         logins.clone(),
+        bus.clone(),
     );
     // What Vault changes ends a session open with that login
     // first, so its profile is kept or dropped by the right rule.
@@ -915,6 +916,8 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_nemlig(nemlig.clone())
     .with_music(Some(Arc::new(AppMusic(music.clone()))))
     .with_chat(Some(app_chat.clone()))
+    .with_live_browser(Some(Arc::new(crate::browsing::AppLive(chat_ctx.clone()))
+        as Arc<dyn niles_api::browser::LiveBrowser>))
     .with_approvals(Some(app_chat))
     .with_tado(tado.clone())
     .with_voices(voices.clone())

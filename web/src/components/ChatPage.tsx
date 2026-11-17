@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
-import { Bookmark, MessagesSquare, ShieldCheck } from "lucide-react";
+import { Bookmark, Globe, MessagesSquare, ShieldCheck } from "lucide-react";
 import { Approvals } from "@/components/ApprovalsList";
 import { ArtifactView } from "@/components/ArtifactView";
 import { ChatView } from "@/components/ChatView";
 import type { ShownTurn } from "@/components/ChatView";
 import { ConversationList } from "@/components/ConversationList";
+import { LiveBrowser } from "@/components/LiveBrowser";
 import { LOGINS } from "@/components/VaultPanel";
 import { NilesPanel } from "@/components/NilesPanel";
 import type { PanelTab } from "@/components/NilesPanel";
@@ -14,9 +15,17 @@ import { SavedList } from "@/components/SavedList";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDeviceStream } from "@/hooks/useDeviceStream";
 import { api } from "@/lib/api";
-import type { Artifact, ArtifactPatch, Conversation, ConversationSummary, Decision } from "@/lib/api";
+import type {
+  Artifact,
+  ArtifactPatch,
+  Conversation,
+  ConversationSummary,
+  Decision,
+  GiveBackThen,
+} from "@/lib/api";
 import { APPROVALS, PENDING, answerSaid, approvalTag } from "@/lib/approvals";
 import { ARTIFACTS, ARTIFACT_LIST, workingLine } from "@/lib/artifacts";
+import { BROWSER, GAVE_BACK } from "@/lib/browser";
 import { ADDED_A_LOGIN, ENTERED_A_CODE } from "@/lib/logins";
 import { closeWaiting } from "@/lib/pwa";
 import { thisDevice } from "@/lib/push";
@@ -119,6 +128,9 @@ export function ChatPage() {
   const saved = useQuery({ queryKey: ARTIFACT_LIST, queryFn: api.artifacts });
   // For the count on the Approvals tab; the tab itself asks the same.
   const pending = useQuery({ queryKey: PENDING, queryFn: api.approvals, retry: false });
+  // Whether Niles's browser is open for this person, which the Browser
+  // tab and the handoff cards follow.
+  const browser = useQuery({ queryKey: BROWSER, queryFn: api.browser, retry: false });
   // Saved, and the status line, follow the jobs as they go.
   useDeviceStream();
   // `null` is an empty new chat; undefined is "not chosen yet", settled
@@ -256,6 +268,23 @@ export function ChatPage() {
     gcTime: 0,
     onSettled: () => queryClient.invalidateQueries({ queryKey: CHAT }),
   });
+
+  // Given back, Niles carries on in the conversation on screen: the
+  // chat shows the said line and Niles working while that turn runs.
+  const giveBack = useMutation({
+    mutationFn: ({ then, to }: { then: GiveBackThen; to: number | null }) =>
+      api.giveBackBrowser(to, then),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: BROWSER });
+      return queryClient.invalidateQueries({ queryKey: CHAT });
+    },
+  });
+
+  const openBrowser = () => {
+    stopFollowing();
+    setTab("browser");
+    setPanelOpen(true);
+  };
 
   const changeArtifact = useMutation({
     mutationFn: ({ id, patch }: { id: number; patch: ArtifactPatch }) =>
@@ -398,6 +427,23 @@ export function ChatPage() {
       badge: pending.data?.approvals.length ?? 0,
       render: () => <Approvals onOpenConversation={pick} highlight={highlight} />,
     },
+    // Only while Niles's browser is open for this person.
+    ...(browser.data
+      ? [
+          {
+            id: "browser",
+            label: "Browser",
+            icon: Globe,
+            badge: browser.data.control === "person" ? 1 : 0,
+            render: () => (
+              <LiveBrowser
+                onGiveBack={(then) => giveBack.mutate({ then, to: current })}
+                givingBack={giveBack.isPending}
+              />
+            ),
+          },
+        ]
+      : []),
   ];
 
   if (list.isLoading) {
@@ -429,7 +475,12 @@ export function ChatPage() {
           ? ADDED_A_LOGIN
           : enterCode.isPending && enterCode.variables?.id === current
             ? ENTERED_A_CODE
-            : undefined;
+            : giveBack.isPending &&
+                giveBack.variables?.then === "carry_on" &&
+                giveBack.variables.to === current &&
+                current !== null
+              ? GAVE_BACK
+              : undefined;
 
   return (
     <>
@@ -447,6 +498,7 @@ export function ChatPage() {
           decide.error?.message ??
           loginAdded.error?.message ??
           enterCode.error?.message ??
+          giveBack.error?.message ??
           conversation.error?.message
         }
         onSend={(text, files) => send.mutate({ text, files, to: current })}
@@ -468,6 +520,10 @@ export function ChatPage() {
           current !== null && enterCode.mutate({ id: current, request, code })
         }
         enteringCode={enterCode.isPending}
+        handoffWaiting={
+          browser.data?.control === "person" ? (browser.data.handoff?.id ?? null) : null
+        }
+        onOpenBrowser={openBrowser}
         onDictate={async (audio) => (await api.dictate(audio)).text}
         onOpenArtifact={openArtifact}
         working={saved.data?.artifacts.filter((a) => a.status === "working").map((a) => a.id)}

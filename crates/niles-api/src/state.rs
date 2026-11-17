@@ -112,6 +112,8 @@ pub struct AppState {
     /// Each person's own MCP servers. Absent without a database and its
     /// secrets key: a key or token is not kept anywhere unsealed.
     pub personal_servers: Option<Arc<dyn crate::personal_servers::PersonalToolServers>>,
+    /// Each person's live browser. Absent where browsing isn't built.
+    pub live_browser: Option<Arc<dyn crate::browser::LiveBrowser>>,
     /// Each person's own schedules. Absent without a database.
     pub schedules: Option<Arc<dyn crate::schedules::PersonalSchedules>>,
     /// Each person's Strava and the workouts it brings. Absent without a
@@ -182,6 +184,7 @@ impl AppState {
             tool_servers: None,
             personal_servers: None,
             schedules: None,
+            live_browser: None,
             strava: None,
             logins: None,
             strava_attempts: Arc::new(crate::auth::flow::Attempts::new()),
@@ -300,6 +303,14 @@ impl AppState {
         servers: Option<Arc<dyn crate::personal_servers::PersonalToolServers>>,
     ) -> Self {
         self.personal_servers = servers;
+        self
+    }
+
+    pub fn with_live_browser(
+        mut self,
+        live_browser: Option<Arc<dyn crate::browser::LiveBrowser>>,
+    ) -> Self {
+        self.live_browser = live_browser;
         self
     }
 

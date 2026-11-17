@@ -372,7 +372,16 @@ async fn run_entered(
     let label = card.bound.label.clone();
     let request = card.card.clone();
     let login = card.bound.login;
+    let serial = card.serial;
     let entered = enter(&browsing, card, &code).await;
+    if matches!(entered, Entered::CaptchaAfter) {
+        browsing.hand_over(
+            &follow.person,
+            serial,
+            super::handover::CAPTCHA_WHY.into(),
+            request.site.clone(),
+        );
+    }
     for used in entered.uses() {
         browsing
             .note(
@@ -453,11 +462,13 @@ fn entered_words(entered: &Entered, label: &str) -> (CodeRequestStatus, String, 
         Entered::CaptchaAfter => (
             CodeRequestStatus::Entered,
             format!(
-                "{label} took the code and then wanted a person to show they aren't a robot. \
-                 Niles doesn't do those, so it stopped there."
+                "Entered a code. {label} took it and then wanted a person to show they aren't \
+                 a robot (a CAPTCHA). Niles doesn't solve those, so it handed the browser to the \
+                 person: they see the page live under your reply and give it back when they're \
+                 done, and then you carry on. End your turn now and say so in one short sentence."
             ),
             format!("Entered your code for {label}."),
-            false,
+            true,
         ),
         Entered::Gone => (
             CodeRequestStatus::Lapsed,

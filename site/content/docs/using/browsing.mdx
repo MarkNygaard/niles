@@ -52,6 +52,32 @@ A purchase takes several cards: adding to the basket, going to the
 checkout, signing in, perhaps a code, a delivery time and the order itself.
 Niles follows links by opening their addresses, which needs no card.
 
+## Watching and taking over
+
+While Niles has a page open for you, the Niles panel in the chat has a
+**Browser** tab. On a computer it sits beside the chat; on a phone it
+fills the screen. It shows the page live as Niles works. Watching changes
+nothing.
+
+Press **Take over** to use the page yourself, with the mouse and keyboard
+or your finger. On a phone, a tap clicks and a drag scrolls, and **Type
+into the page** sends text through your phone's keyboard, with buttons
+for Enter, Backspace and Tab. **Back** and **Reload** are there too, but
+there's no address bar. While you have the browser, Niles doesn't touch
+it, and a step waiting on its card lapses.
+
+When you're done, press **Give back to Niles**. Niles reads the page as it
+is now and carries on in the conversation that's open. **Stop** gives the
+browser back without Niles carrying on. If you leave the browser alone
+for 15 minutes, it goes back to Niles by itself, and Niles waits for you
+to ask again.
+
+Niles sees nothing of the live view or what you do in it, only the page it
+reads once the browser is back. A page that asks for card details still
+stops Niles, even after you give it back.
+
+Only you see your browser, and only in the written chat.
+
 ## Placing an order
 
 The step that places an order or pays gets a card of its own, **Place this
@@ -142,9 +168,14 @@ there. It goes to the page and nowhere else, not to the chat and not to
 the model. A wrong code gets a new card. A code card lapses after 15
 minutes.
 
-When a page wants you to show you aren't a robot (a CAPTCHA), Niles stops
-and tells you the site wants a person. Niles doesn't solve CAPTCHAs, and
-you can't take over its browser.
+When a page wants you to show you aren't a robot (a CAPTCHA), Niles hands
+you the browser. A card in the chat says why, and **Open the browser**
+opens it live. Solve the CAPTCHA, then press **Give back to Niles**, and
+Niles carries on. Niles never solves a CAPTCHA itself.
+
+Niles can also hand you the browser for a step only a person can do, such
+as signing in with a passkey, scanning a QR code or approving on another
+device. The card says what to do.
 
 ## Sites that say no
 

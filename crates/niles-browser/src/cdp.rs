@@ -6,6 +6,10 @@
 //! request nobody answers hangs its page. So a session's guard gets those
 //! on its own channel, which keeps every one.
 //!
+//! A live view's `Page.screencastFrame`s go on a channel of their own
+//! too, and never on the broadcast: each carries a whole picture, and a
+//! stream of them would push out the load events a step waits on.
+//!
 //! No log line here carries parameters, results or event params.
 
 use std::collections::HashMap;
@@ -49,6 +53,8 @@ pub(crate) struct Connection {
     /// receiver closes.
     events: Arc<Mutex<Option<broadcast::Sender<Event>>>>,
     paused: Arc<Paused>,
+    /// Per session, where its screencast frames go while it is watched.
+    frames: Arc<Paused>,
     closed: Arc<AtomicBool>,
     reader_task: JoinHandle<()>,
     writer_task: JoinHandle<()>,
@@ -63,7 +69,9 @@ impl Connection {
         let events = Arc::new(Mutex::new(Some(events_tx)));
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let paused: Arc<Paused> = Arc::new(Mutex::new(HashMap::new()));
+        let frames: Arc<Paused> = Arc::new(Mutex::new(HashMap::new()));
 
+        let reader_frames = Arc::clone(&frames);
         let reader_pending = Arc::clone(&pending);
         let reader_events = Arc::clone(&events);
         let reader_paused = Arc::clone(&paused);
@@ -81,7 +89,15 @@ impl Connection {
                     }
                     continue;
                 };
-                dispatch(&text, &reader_pending, &reader_events, &reader_paused);
+                dispatch(
+                    &text,
+                    &reader_pending,
+                    &reader_events,
+                    &Takers {
+                        paused: &reader_paused,
+                        frames: &reader_frames,
+                    },
+                );
             }
             reader_closed.store(true, Ordering::SeqCst);
             for (_, (_, reply)) in reader_pending
@@ -102,6 +118,10 @@ impl Connection {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clear();
+            reader_frames
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
         });
 
         let writer_task = tokio::spawn(async move {
@@ -118,6 +138,7 @@ impl Connection {
             next: AtomicU64::new(1),
             events,
             paused,
+            frames,
             closed,
             reader_task,
             writer_task,
@@ -194,6 +215,28 @@ impl Connection {
         receiver
     }
 
+    /// Every `Page.screencastFrame` on `session` from now on, replacing
+    /// any earlier taker. A closed connection gives a receiver that ends
+    /// at once.
+    pub(crate) fn screencast_frames(&self, session: &str) -> mpsc::UnboundedReceiver<Event> {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        if !self.closed() {
+            self.frames
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(session.to_string(), sender);
+        }
+        receiver
+    }
+
+    /// No more frames for `session`: those still coming are dropped.
+    pub(crate) fn stop_frames(&self, session: &str) {
+        self.frames
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session);
+    }
+
     /// Whether the stream to the browser has ended.
     pub(crate) fn closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
@@ -207,6 +250,12 @@ impl Drop for Connection {
     }
 }
 
+/// The per-session channels some events go to instead of the broadcast.
+struct Takers<'a> {
+    paused: &'a Paused,
+    frames: &'a Paused,
+}
+
 /// Routes one text frame: answers to the pending call, events to every
 /// subscriber. Malformed frames are dropped with a log that names no
 /// content.
@@ -214,8 +263,9 @@ fn dispatch(
     text: &str,
     pending: &Pending,
     events: &Arc<Mutex<Option<broadcast::Sender<Event>>>>,
-    paused: &Paused,
+    takers: &Takers<'_>,
 ) {
+    let paused = takers.paused;
     let Ok(frame) = serde_json::from_str::<Value>(text) else {
         tracing::debug!("[browser] dropped a malformed DevTools frame");
         return;
@@ -255,6 +305,19 @@ fn dispatch(
             method: method.to_string(),
             params: frame.get("params").cloned().unwrap_or(Value::Null),
         };
+        if method == "Page.screencastFrame" {
+            // Never broadcast. Nobody watching drops it; the browser sends
+            // no more until a frame is acknowledged, so the stream stops.
+            if let Some(session) = event.session.clone() {
+                let mut takers = takers.frames.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(taker) = takers.get(&session)
+                    && taker.send(event).is_err()
+                {
+                    takers.remove(&session);
+                }
+            }
+            return;
+        }
         if method == "Fetch.requestPaused"
             && let Some(session) = event.session.clone()
         {
@@ -372,6 +435,27 @@ mod tests {
                         .await
                         .expect("send");
                     }
+                    // Three screencast frames, then the answer.
+                    "frames" => {
+                        for n in 0..3 {
+                            ws.send(Message::Text(
+                                json!({
+                                    "method": "Page.screencastFrame",
+                                    "params": {"sessionId": n, "data": ""},
+                                    "sessionId": frame["sessionId"],
+                                })
+                                .to_string()
+                                .into(),
+                            ))
+                            .await
+                            .expect("send");
+                        }
+                        ws.send(Message::Text(
+                            json!({"id": id, "result": {}}).to_string().into(),
+                        ))
+                        .await
+                        .expect("send");
+                    }
                     // Drop the connection without answering.
                     "die" => break,
                     _ => {}
@@ -447,6 +531,25 @@ mod tests {
         assert_eq!(event.session.as_deref(), Some("s7"));
         assert_eq!(event.method, "Page.frameStartedLoading");
         assert_eq!(event.params, json!({"frameId": "f1"}));
+    }
+
+    #[tokio::test]
+    async fn frames_go_to_their_watcher_and_never_on_the_broadcast() {
+        let conn = connect().await;
+        let mut everyone = conn.subscribe();
+        let mut frames = conn.screencast_frames("s7");
+        let answer = conn.call("frames", Value::Null, Some("s7")).await;
+        assert_eq!(answer.expect("answer"), json!({}));
+        for n in 0..3 {
+            let event = frames.recv().await.expect("every frame");
+            assert_eq!(event.params["sessionId"], json!(n));
+        }
+        assert!(everyone.try_recv().is_err(), "a frame is never broadcast");
+        conn.stop_frames("s7");
+        let again = conn.call("frames", Value::Null, Some("s7")).await;
+        assert_eq!(again.expect("answer"), json!({}));
+        assert!(frames.recv().await.is_none(), "nobody watches any more");
+        assert!(everyone.try_recv().is_err(), "still never broadcast");
     }
 
     #[tokio::test]
