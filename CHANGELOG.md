@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.0](https://github.com/MarkNygaard/niles/compare/v0.7.0...v0.8.0) (2026-11-17)
+
+
+### Features
+
+* each person's own MCP servers under My profile, only in their written chat (NIL-80) ([#530](https://github.com/MarkNygaard/niles/issues/530)) ([a2e7469](https://github.com/MarkNygaard/niles/commit/a2e746932851dde676ccccd3d336a010520aa827))
+* each person's own schedules under My profile, answered by the assistant as them (NIL-81) ([#532](https://github.com/MarkNygaard/niles/issues/532)) ([f9e60b9](https://github.com/MarkNygaard/niles/commit/f9e60b9259b983e4eb4ead147f6b0623bf7282f3))
+
 ## [0.7.0](https://github.com/MarkNygaard/niles/compare/v0.6.0...v0.7.0) (2026-11-07)
 
 

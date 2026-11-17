@@ -1,0 +1,10 @@
+# A Chromium for Niles's browsing, as a second container in Niles's own
+# pod. Add it to an overlay with `components: [../../components/browser]`.
+#
+# In the pod, Chromium's DevTools port and Niles's proxy both listen on
+# 127.0.0.1 only, so nothing outside the pod can drive the browser or
+# borrow the proxy, whatever the cluster's network plugin enforces.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - path: niles-browser.yaml

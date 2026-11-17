@@ -96,12 +96,15 @@ impl DynamicTools {
             .collect()
     }
 
+    /// The tool named `name` that is offered now: a tool hidden from
+    /// this request, such as one person's own while another asks, is
+    /// never found, even under a name it shares with another's.
     fn find(&self, name: &str) -> Option<Arc<dyn Tool>> {
         let owners = self.owners.read().unwrap_or_else(|e| e.into_inner());
         owners
             .values()
             .flat_map(|o| o.tools.iter())
-            .find(|t| t.descriptor().name == name)
+            .find(|t| t.offered() && t.descriptor().name == name)
             .cloned()
     }
 
@@ -112,6 +115,7 @@ impl DynamicTools {
         owners
             .values()
             .filter(|o| transcript.is_none_or(|t| crate::relevance::mentions(t, &o.keywords)))
+            .filter(|o| o.tools.iter().any(|t| t.offered()))
             .filter_map(|o| o.notes.clone())
             .collect()
     }
@@ -122,7 +126,8 @@ impl DynamicTools {
         owners
             .values()
             .filter(|o| transcript.is_none_or(|t| crate::relevance::mentions(t, &o.keywords)))
-            .flat_map(|o| o.tools.iter().map(|t| t.descriptor().to_llm_tool()))
+            .flat_map(|o| o.tools.iter().filter(|t| t.offered()))
+            .map(|t| t.descriptor().to_llm_tool())
             .collect()
     }
 }
@@ -520,6 +525,46 @@ mod gating_tests {
             names(reg.llm_tools_for("search for the news")).contains(&"web_search".to_string())
         );
         assert!(reg.has("web_search"));
+    }
+
+    #[tokio::test]
+    async fn a_dynamic_tool_hidden_now_is_neither_sent_nor_called() {
+        // Two people's own servers may share a tool's name: only the one
+        // offered to this request is sent, and only it is called.
+        let mine = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let theirs = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut reg = registry();
+        let dynamic = DynamicTools::new();
+        reg.attach_dynamic(dynamic.clone());
+        dynamic.set(
+            "person:a:mcp:1",
+            vec!["notion".into()],
+            vec![Arc::new(Switched("my-notion__search", theirs.clone()))],
+        );
+        dynamic.set(
+            "person:b:mcp:1",
+            vec!["notion".into()],
+            vec![Arc::new(Switched("my-notion__search", mine.clone()))],
+        );
+        let sent: Vec<String> = names(reg.llm_tools_for("search notion"))
+            .into_iter()
+            .filter(|n| n == "my-notion__search")
+            .collect();
+        assert_eq!(sent.len(), 1, "one of the two, not both");
+
+        mine.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            !names(reg.llm_tools_for("search notion")).contains(&"my-notion__search".to_string())
+        );
+        let call = niles_llm::ToolCall {
+            id: "1".into(),
+            name: "my-notion__search".into(),
+            arguments: serde_json::json!({}),
+        };
+        assert!(
+            reg.execute(&call).await.is_err(),
+            "a hidden tool can't be called by name"
+        );
     }
 
     #[test]

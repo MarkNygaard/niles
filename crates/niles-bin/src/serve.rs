@@ -18,8 +18,9 @@ use crate::speech_stream::{
 use crate::timers::spawn_timer_driver;
 use crate::voice::{hush_on_wake, spawn_dispatch_task};
 use crate::wiring::accounts::{
-    build_calendars, build_notify, build_push, build_secret_store, build_strava, build_tado_tokens,
-    build_weather_client, ensure_session_key, forget_retired_provider_keys,
+    build_calendars, build_logins, build_notify, build_personal_servers, build_push,
+    build_schedules, build_secret_store, build_strava, build_tado_tokens, build_weather_client,
+    ensure_session_key, forget_retired_provider_keys,
 };
 use crate::wiring::automations::{
     CenterNotifier, MqttDeviceSink, automation_rules, automation_waits, build_automation_store,
@@ -40,8 +41,8 @@ use crate::wiring::stores::{
 };
 use crate::{
     LOG_BUFFER, approvals, artifacts, assistant, calendar, courtesy, grocery_delivery, last_target,
-    mail, music, plugins, profile, review, ringer, shutdown, speakers, tool_servers, training, tv,
-    vocabulary, wake_up,
+    mail, music, personal_servers, plugins, profile, review, ringer, schedules, shutdown, speakers,
+    tool_servers, training, tv, vocabulary, wake_up,
 };
 use anyhow::Context;
 use chrono::{Datelike, Utc};
@@ -205,6 +206,11 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let _approvals_sweep = approvals.clone().spawn_sweep();
     let tool_servers =
         tool_servers::ToolServers::start(store.clone(), plugin_tools.clone(), approvals.clone());
+    // Each person's own servers: their tools sit beside the household's,
+    // offered only to them in the app's chat.
+    let personal_servers = build_personal_servers(&cfg).map(|servers| {
+        personal_servers::PersonalTools::start(servers, plugin_tools.clone(), approvals.clone())
+    });
     let plugin_database = plugin_host.as_ref().is_some_and(|(_, database)| *database);
     let plugin_runtime = plugin_host.map(|(runtime, _)| runtime);
     let router = Arc::new(match &plugin_runtime {
@@ -478,6 +484,25 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let (arrivals, mut arrived) = tokio::sync::mpsc::unbounded_channel();
     let strava = build_strava(&cfg, arrivals);
     let chat_log = build_chat_log(&cfg);
+    // Each person's saved logins, sealed: without a database and its
+    // secrets key there are none, and the tool is not offered.
+    let logins = build_logins(&cfg);
+    // Browsing needs the database its cards are kept with, so it is off
+    // without one.
+    let browsing = crate::browsing::start(
+        approvals.clone(),
+        if chat_log.is_some() {
+            crate::browsing::Conversations::Kept
+        } else {
+            crate::browsing::Conversations::NotKept
+        },
+        logins.clone(),
+    );
+    // What Vault changes ends a session open with that login
+    // first, so its profile is kept or dropped by the right rule.
+    let logins = logins.map(|store| crate::browsing::ending(store, browsing.clone()));
+    let login_cards = Arc::new(crate::browsing::Logins::new(logins.clone()));
+    crate::browsing::register(&mut tools, browsing.clone(), login_cards.clone());
     // Made by the assistant, which runs their jobs: the runner is handed
     // the assistant once it has started serving the tools.
     let artifact_runner = Arc::new(artifacts::AssistantRunner {
@@ -707,7 +732,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     niles_tools::register_notification_tools(&mut tools, notifications.clone());
     // Taken before the plugins' tools join: the names no plugin may use.
     let builtin_tool_names = tools.builtin_names();
-    tools.attach_dynamic(plugin_tools);
+    tools.attach_dynamic(plugin_tools.clone());
 
     let tools = Arc::new(tools);
     if let Some(artifacts) = &artifacts {
@@ -800,6 +825,23 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         ctx: chat_ctx.clone(),
         stt: whisper.clone(),
     });
+    // Each person's schedules, answered by the chat as they would be
+    // typed.
+    let schedules = build_schedules(&cfg).map(|kept| {
+        schedules::Schedules::new(
+            kept,
+            Arc::new(schedules::ChatAnswer {
+                chat: app_chat.clone(),
+                settings: store.clone(),
+            }),
+            notify.clone(),
+            store.clone(),
+        )
+    });
+    let _schedules_clock = schedules.as_ref().map(schedules::Schedules::spawn);
+    if let Some(schedules) = &schedules {
+        schedules::offer(schedules, &plugin_tools, approvals.clone());
+    }
     let restart = Arc::new(
         niles_api::Restart::new(
             boot,
@@ -861,6 +903,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_automation_runs(Some(automation_runs.clone()))
     .with_calendars(calendars.clone())
     .with_strava(strava.clone())
+    .with_logins(logins)
     .with_push(push.clone())
     .with_notifications(notify.inbox())
     .with_artifacts(
@@ -888,7 +931,15 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     .with_tool_servers(Some(
         Arc::new(tool_servers::AppToolServers(tool_servers.clone()))
             as Arc<dyn niles_api::tool_servers::ToolServers>,
-    ));
+    ))
+    .with_personal_servers(personal_servers.map(|servers| {
+        Arc::new(personal_servers::AppPersonalServers(servers))
+            as Arc<dyn niles_api::personal_servers::PersonalToolServers>
+    }))
+    .with_schedules(schedules.clone().map(|schedules| {
+        Arc::new(schedules::AppSchedules(schedules))
+            as Arc<dyn niles_api::schedules::PersonalSchedules>
+    }));
 
     // Starting no longer proves Niles is configured — every section has
     // a default, which is what lets the app be the way in. So say what
@@ -1022,6 +1073,8 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         follow_ups: Arc::default(),
         automations: automations.clone().map(|store| (store, proposals.clone())),
         approvals: approvals.clone(),
+        logins: login_cards,
+        browsing: Some(browsing.clone()),
         artifacts: artifacts.clone(),
     };
     // The API is already up; from here on the chat has something to

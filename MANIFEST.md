@@ -65,6 +65,9 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 
 | Feature | Summary | Since |
 | --- | --- | --- |
+| `browsing-authenticator-codes` | A saved login can keep its authenticator key, and Niles types the sign-in code itself | [#528](https://github.com/MarkNygaard/niles/pull/528) |
+| `browsing-sign-in` | Niles signs in with a saved login only on its own sites, asks for a sign-in code on a card, and stops at a CAPTCHA | [#526](https://github.com/MarkNygaard/niles/pull/526) |
+| `tool-browsing` | Do something on a website from the chat: Niles reads the pages, and each click, typing or submit waits on a card | [#520](https://github.com/MarkNygaard/niles/pull/520) |
 | `tool-command-history` | Ask what was said to Niles and when, from 14 days of spoken turns kept in Postgres | [#508](https://github.com/MarkNygaard/niles/pull/508) |
 | `tool-datetime` | Return the current date and time in the configured timezone | [#84](https://github.com/MarkNygaard/niles/pull/84) |
 | `tool-device-history` | Ask how devices were at a past time and set them back, from 14 days of history in Postgres | [#508](https://github.com/MarkNygaard/niles/pull/508) |
@@ -77,6 +80,11 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `tool-tv-volume` | tv_volume sets, steps, mutes or unmutes the TV's own speakers; music_volume turns the TV in a room with no Sonos | [#403](https://github.com/MarkNygaard/niles/pull/403) |
 | `tool-weather` | Fetch current weather and forecast via Open-Meteo | [#81](https://github.com/MarkNygaard/niles/pull/81) |
 | `tool-web-search` | Search the web via SearXNG and return summarized results; offered while the SearXNG add-on is set up | [#83](https://github.com/MarkNygaard/niles/pull/83) |
+
+### `tool-browsing` — example phrasings
+
+- put a 2 m USB-C cable in my basket on shop.example
+- book a delivery time on shop.example
 
 ### `tool-command-history` — example phrasings
 
@@ -99,6 +107,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | Feature | Summary | Since |
 | --- | --- | --- |
 | `approval-log` | Every approval logged when asked and answered, lapses included; one summary line, never the arguments | [#455](https://github.com/MarkNygaard/niles/pull/455) |
+| `browsing-order-card` | Placing an order waits on its own card with the page's total and delivery address; card details stop the run | [#527](https://github.com/MarkNygaard/niles/pull/527) |
 | `notify-approval-waiting` | Something waiting for your yes is on your page at once, on your devices at once or a minute later; a tap opens its card | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `push-approval-buttons` | On Android and computers an approval's notification has Deny, Approve where a spoken yes counts, Review for a mail | [#485](https://github.com/MarkNygaard/niles/pull/485) |
 | `push-approval-replaced` | Answered or lapsed, an approval's notification is replaced quietly on your other devices with what became of it | [#485](https://github.com/MarkNygaard/niles/pull/485) |
@@ -243,17 +252,31 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-notifications-page` | Notifications, by the avatar: Now (today's run, a delivery, pair this phone), then all Niles told you; Home is the house | [#483](https://github.com/MarkNygaard/niles/pull/483) |
 | `ui-todays-run-card` | Today's run under Now on your Notifications page: the session, the next, the week's km, the coach's note, Done, Skipped | [#438](https://github.com/MarkNygaard/niles/pull/438) |
 | `config-live-speaking-integrations` | Speaking and integration settings say they apply at once, as they always did, and the voice lock asks for no restart | [#507](https://github.com/MarkNygaard/niles/pull/507) |
+| `my-mcp-servers` | My profile → MCP servers: a person's own MCP servers, by key or sign-in, whose tools only they get in the written chat | [#530](https://github.com/MarkNygaard/niles/pull/530) |
+| `my-schedules` | My profile → Schedules: a person's own tasks the assistant answers on time as them, into a new conversation | [#532](https://github.com/MarkNygaard/niles/pull/532) |
 | `ui-about-niles` | About Niles in Settings: version, commit and build date; Update available lists what's new and how to update | [#516](https://github.com/MarkNygaard/niles/pull/516) |
 | `ui-api-access` | Settings → API access: the key masked, with reveal, copy, a curl example and New key, for a signed-in person only | [#405](https://github.com/MarkNygaard/niles/pull/405) |
 | `ui-profile-sections` | My profile laid out like Settings: About you, My phone, Notifications, each add-on a page, Approvals | [#455](https://github.com/MarkNygaard/niles/pull/455) |
 | `ui-push-notifications` | My profile → Notifications: on for this device, your devices, Send a test; iPhone asks for the Home Screen app | [#432](https://github.com/MarkNygaard/niles/pull/432) |
 | `ui-restart-now` | Restart now under Kubernetes or a declared supervisor: says what a restart cuts short, waits for the new Niles, reloads | [#507](https://github.com/MarkNygaard/niles/pull/507) |
 | `ui-restart-pending` | While a change waits for a restart, the top of Settings names it and its menu has a dot; changing it back clears both | [#507](https://github.com/MarkNygaard/niles/pull/507) |
+| `ui-saved-logins` | My profile → Vault: a site's login for browsing, added there or from the chat; the password is never shown again | [#521](https://github.com/MarkNygaard/niles/pull/521) |
 | `ui-settings-system` | Settings splits the system (Devices: the broker; Voice & AI: hearing, thinking, speaking) from optional add-ons | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `ui-setup-checklist` | On a new install each System page leads with what it still needs, and the settings list counts it | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `ui-strava-connect` | My profile → Strava: set up your own Strava app, save its keys, connect, last sync, Sync now, disconnect | [#418](https://github.com/MarkNygaard/niles/pull/418) |
 | `ui-update-dot` | While a newer Niles is published, Settings and its About Niles entry carry a dot | [#516](https://github.com/MarkNygaard/niles/pull/516) |
 | `ui-voice-roles` | Picking a hearing or thinking provider sets it up: its API key sits beside it, and one save declares it | [#394](https://github.com/MarkNygaard/niles/pull/394) |
+| `vault-activity` | Vault shows what each saved login was used for: sign-ins, codes and changes, with the site and the conversation | [#528](https://github.com/MarkNygaard/niles/pull/528) |
+
+### `my-mcp-servers` — example phrasings
+
+- find my notes on the trip in Notion
+- what's assigned to me in Linear?
+
+### `my-schedules` — example phrasings
+
+- every Monday at 8, give me my open Linear issues by priority
+- each weekday at 7, what's in my calendar today
 
 ## voice
 

@@ -35,6 +35,8 @@ pub enum Kind {
     Workout,
     /// Something waits for the person's yes.
     Approval,
+    /// One of the person's schedules ran.
+    Schedule,
 }
 
 impl Kind {
@@ -45,15 +47,17 @@ impl Kind {
             Kind::PlanChanged => "plan_changed",
             Kind::Workout => "workout",
             Kind::Approval => "approval",
+            Kind::Schedule => "schedule",
         }
     }
 
-    /// Whether its push opens the thing itself. One about an artifact
-    /// or an approval opens it; the others open the Notifications page.
+    /// Whether its push opens the thing itself. One about an artifact,
+    /// an approval or a schedule's run opens it; the others open the
+    /// Notifications page.
     fn opens_its_own_link(self) -> bool {
         matches!(
             self,
-            Kind::Artifact | Kind::Shared | Kind::PlanChanged | Kind::Approval
+            Kind::Artifact | Kind::Shared | Kind::PlanChanged | Kind::Approval | Kind::Schedule
         )
     }
 }
@@ -235,7 +239,12 @@ mod tests {
         assert_eq!(ready.title, "Hellerup plan");
         assert_eq!(ready.tag, "artifact-1");
         assert_eq!(notice(Kind::Workout, "x").push().url, NOTIFICATIONS_URL);
-        for kind in [Kind::Shared, Kind::PlanChanged, Kind::Approval] {
+        for kind in [
+            Kind::Shared,
+            Kind::PlanChanged,
+            Kind::Approval,
+            Kind::Schedule,
+        ] {
             assert_eq!(notice(kind, "x").push().url, "/#/chat?artifact=1");
         }
     }

@@ -152,12 +152,36 @@ jobs:
         run: >-
           docker compose
           -f deploy/compose/compose.yaml
+          -f deploy/compose/browser.yaml
           -f "$RUNNER_TEMP/compose.ci.yaml"
           --env-file "$RUNNER_TEMP/ci.env"
           up -d --wait --wait-timeout 180
 
       - name: /healthz answers
         run: curl -fsS --retry 10 --retry-delay 3 --retry-all-errors http://127.0.0.1:8080/healthz
+
+      # Browsing needs Niles's watcher to find the browser: it greps the
+      # log line `[browser] reached ...`. The watcher looks every 30 s,
+      # so this retries for about a minute before it fails.
+      - name: Niles reached the browser
+        run: |
+          for _ in $(seq 1 30); do
+            docker compose \
+              -f deploy/compose/compose.yaml \
+              -f deploy/compose/browser.yaml \
+              -f "$RUNNER_TEMP/compose.ci.yaml" \
+              --env-file "$RUNNER_TEMP/ci.env" \
+              logs niles > "$RUNNER_TEMP/niles-logs.txt" 2>/dev/null || true
+            # Captured before grep: grep -q closing the pipe early can
+            # SIGPIPE docker compose, and pipefail would then mask the
+            # match as a failure.
+            if grep -q '\[browser\] reached' "$RUNNER_TEMP/niles-logs.txt"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Niles never reached the browser" >&2
+          exit 1
 
       # With a database and a secrets key, Niles makes an API key at its
       # first start, seals it into Postgres and reads it back, and only
@@ -173,6 +197,7 @@ jobs:
         run: >-
           docker compose
           -f deploy/compose/compose.yaml
+          -f deploy/compose/browser.yaml
           -f "$RUNNER_TEMP/compose.ci.yaml"
           --env-file "$RUNNER_TEMP/ci.env"
           logs --no-color
@@ -182,9 +207,40 @@ jobs:
         run: >-
           docker compose
           -f deploy/compose/compose.yaml
+          -f deploy/compose/browser.yaml
           -f "$RUNNER_TEMP/compose.ci.yaml"
           --env-file "$RUNNER_TEMP/ci.env"
           down -v
+
+  # The ignored niles-browser tests against a real Chromium. Not a
+  # required check.
+  #
+  # The runner's Chrome is used rather than the service container because
+  # the proxy test needs the browser and Niles's test proxy on one host.
+  browser:
+    name: browser (Chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Start Chrome's DevTools
+        run: |
+          google-chrome --headless=new --no-sandbox \
+            --remote-debugging-port=9222 \
+            --user-data-dir="$RUNNER_TEMP/chrome" about:blank &
+          curl -fsS --retry 10 --retry-delay 1 --retry-all-errors \
+            http://127.0.0.1:9222/json/version
+
+      - name: cargo test -p niles-browser -- --ignored
+        run: cargo test -p niles-browser -- --ignored
+        env:
+          NILES_TEST_CHROMIUM: 127.0.0.1:9222
 
   site:
     name: site (typecheck + build)

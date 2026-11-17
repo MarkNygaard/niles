@@ -7,23 +7,29 @@
 //! refused when it is never the public internet, and every address it
 //! resolves to is refused when it is not a public one, including the
 //! ways IPv6 has of carrying an IPv4 address inside it.
+//!
+//! The browser's proxy in `niles-browser` applies the same two rules to
+//! every connection the browser makes.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// Names that are never the public internet, whatever they resolve to.
 /// An address written as an IP is judged by [`public_ip`] instead.
-pub(crate) fn public_name(host: &str) -> bool {
+pub fn public_name(host: &str) -> bool {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     if host.parse::<IpAddr>().is_ok() || host.starts_with('[') {
         return true;
     }
-    const PRIVATE_SUFFIXES: [&str; 6] = [
+    const PRIVATE_SUFFIXES: [&str; 7] = [
         ".local",
         ".localdomain",
         ".internal",
         ".lan",
         ".home.arpa",
         ".cluster.local",
+        // A Kubernetes Service's short name such as `niles.default.svc`
+        // is never a public name.
+        ".svc",
     ];
     host.contains('.')
         && host != "localhost"
@@ -34,7 +40,7 @@ pub(crate) fn public_name(host: &str) -> bool {
 /// Whether `ip` is on the public internet: not this machine, the house,
 /// the cluster, a carrier's NAT, the link, a multicast group, or a range
 /// set aside for documentation, benchmarks or the future.
-pub(crate) fn public_ip(ip: IpAddr) -> bool {
+pub fn public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => public_v4(v4),
         IpAddr::V6(v6) => public_v6(v6),
@@ -180,6 +186,8 @@ mod tests {
             "niles.localhost",
             "searxng.productivity.svc.cluster.local",
             "metadata.google.internal",
+            "kubernetes.default.svc",
+            "niles-browser.niles.svc",
             "printer.local",
             "nas.lan",
             "router",

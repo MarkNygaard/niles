@@ -15,6 +15,7 @@ mod openai;
 pub use backend::LlmBackend;
 pub use chat::{
     ChatRequest, ChatResponse, FinishReason, Message, ReasoningEffort, Tool, ToolCall, ToolChoice,
+    reasoning_kept_private,
 };
 pub use error::{Error, Result};
 pub use openai::{OpenAiClient, OpenAiConfig};

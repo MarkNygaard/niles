@@ -58,6 +58,12 @@ pub enum Error {
     /// who asked: "The bus service is not answering."
     #[error("{0}")]
     Plugin(String),
+
+    /// What a held call was about changed before it was allowed, so it
+    /// did not run: a browser step whose page moved on. In words for
+    /// the person.
+    #[error("{0}")]
+    Lapsed(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

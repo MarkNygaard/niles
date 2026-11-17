@@ -128,9 +128,94 @@ export interface RemoteTool {
  */
 export interface ToolServer {
   id: string;
-  status: "connecting" | "working" | "needs_key" | "failed";
+  status: "connecting" | "working" | "needs_key" | "needs_sign_in" | "failed";
   message: string | null;
   tools: RemoteTool[];
+}
+
+/** A day of the week, as the server writes it. */
+export type Weekday = "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun";
+
+/** When a schedule runs, in the household's time zone. Mirrors `When` in
+ * crates/niles-schedules/src/model.rs. */
+export type ScheduleWhen =
+  | { kind: "daily"; at: string }
+  | { kind: "weekdays"; at: string }
+  | { kind: "days"; days: Weekday[]; at: string }
+  | { kind: "every_hours"; hours: number };
+
+/** One of the person's own schedules. Mirrors `Schedule` in
+ * crates/niles-schedules/src/model.rs. */
+export interface Schedule {
+  id: number;
+  name: string;
+  instruction: string;
+  when: ScheduleWhen;
+  paused: boolean;
+  /** When it runs next; null while paused. */
+  next_due: string | null;
+}
+
+export interface ScheduleDraft {
+  name: string;
+  instruction: string;
+  when: ScheduleWhen;
+}
+
+export interface ScheduleList {
+  schedules: Schedule[];
+  /** Whether an assistant is switched on to run them. */
+  assistant: boolean;
+}
+
+/** One run of a schedule. Mirrors `Run` in crates/niles-schedules/src/model.rs. */
+export interface ScheduleRun {
+  id: number;
+  due: string;
+  finished: string | null;
+  outcome: "running" | "done" | "waiting" | "failed" | "missed";
+  conversation: number | null;
+  reason: string | null;
+}
+
+/** What the model may do with one of a person's own tools. */
+export type PersonalToolMode = "on" | "ask" | "off";
+
+/** How a person's server is signed in to. */
+export type ServerSignIn = "key" | "browser";
+
+/**
+ * One of the person's own MCP servers, as My profile shows it: never its
+ * key. Mirrors `PersonalServerView` in crates/niles-api/src/personal_servers.rs.
+ */
+export interface PersonalServer {
+  id: number;
+  slug: string;
+  name: string;
+  url: string;
+  sign_in: ServerSignIn;
+  header: string | null;
+  modes: Record<string, PersonalToolMode>;
+  signed_in: boolean;
+  status: ToolServer["status"];
+  message: string | null;
+  tools: (RemoteTool & { mode: PersonalToolMode })[];
+}
+
+/** What the add form sends. */
+export interface PersonalServerDraft {
+  name: string;
+  url: string;
+  sign_in: ServerSignIn;
+  header?: string;
+  key?: string;
+}
+
+/** What an edit sends. A missing key keeps the kept one. */
+export interface PersonalServerEdit {
+  name: string;
+  header?: string;
+  key?: string;
 }
 
 /**
@@ -1258,6 +1343,10 @@ export interface Turn {
   proposal: Proposal | null;
   /** What this turn left waiting for a yes. */
   approval?: ApprovalCard | null;
+  /** What this turn asked the person to add a login for. */
+  login_request?: LoginRequest | null;
+  /** What this turn asked the person to type a sign-in code for. */
+  code_request?: CodeRequest | null;
   /** The artifacts this turn made or changed, for a card under the
       reply. Absent when there are none. */
   artifacts?: ArtifactRef[];
@@ -1424,6 +1513,11 @@ export function chatAttachmentUrl(conversation: number, attachment: number): str
   return `/chat/conversations/${conversation}/attachments/${attachment}`;
 }
 
+/** Where the app fetches the page a held browser step would act on. */
+export function approvalPictureUrl(approval: string): string {
+  return `/me/approvals/${encodeURIComponent(approval)}/picture`;
+}
+
 export interface ArtifactList {
   artifacts: Artifact[];
   /** Which assistant makes them now; null when neither is on. */
@@ -1463,6 +1557,8 @@ export interface ApprovalCard {
   allow_conversation: boolean;
   status: ApprovalStatus;
   outcome: string | null;
+  /** A page's screenshot goes with it while it waits. */
+  picture?: boolean;
 }
 
 /**
@@ -1503,7 +1599,13 @@ export interface DecidedApproval {
 }
 
 /** What a notification is about. Mirrors `Kind` in crates/niles-webpush/src/inbox.rs. */
-export type NotificationKind = "artifact" | "shared" | "plan_changed" | "workout" | "approval";
+export type NotificationKind =
+  | "artifact"
+  | "shared"
+  | "plan_changed"
+  | "workout"
+  | "approval"
+  | "schedule";
 
 /** One notification Niles kept for the signed-in person. */
 export interface AppNotification {
@@ -1744,6 +1846,71 @@ export interface StravaAppUpdate {
   client_secret?: string;
 }
 
+/** One of the person's saved logins, as /me/logins lists it: never the
+    password. Mirrors `Login` in crates/niles-logins/src/model.rs. */
+export interface SavedLogin {
+  id: number;
+  label: string;
+  origins: string[];
+  username: string;
+  last_used: string | null;
+  /** Niles keeps a signed-in browser profile for it. */
+  signed_in: boolean;
+  /** An authenticator key is kept for it; the key is never sent. */
+  authenticator: boolean;
+}
+
+/** What Vault's form sends. In an edit, a missing password or key keeps
+    the saved one. */
+export interface LoginDraft {
+  label: string;
+  origins: string[];
+  username: string;
+  password?: string;
+  /** The setup key or otpauth:// link a site shows beside its QR code. */
+  authenticator?: string;
+  /** In an edit, forgets the saved key. */
+  remove_authenticator?: boolean;
+}
+
+/** One use of a saved login, as Vault lists it: never a value. Mirrors
+    `Activity` in crates/niles-logins/src/activity.rs. */
+export interface LoginActivity {
+  at: string;
+  used:
+    | "added"
+    | "edited"
+    | "signed_out"
+    | "profile_dropped"
+    | "signed_in"
+    | "sign_in_failed"
+    | "sign_in_uncertain"
+    | "profile_restored"
+    | "code_entered"
+    | "code_made";
+  site: string | null;
+  conversation: number | null;
+}
+
+/** A card asking the person to add a login. Mirrors `LoginRequest` in
+    crates/niles-api/src/chat.rs. */
+export interface LoginRequest {
+  id: string;
+  label: string;
+  site: string;
+  status: "waiting" | "added";
+  login?: number | null;
+}
+
+/** A card asking for a code a site sent. Mirrors `CodeRequest` in
+    crates/niles-api/src/chat.rs. */
+export interface CodeRequest {
+  id: string;
+  label: string;
+  site: string;
+  status: "waiting" | "entered" | "lapsed";
+}
+
 /** Each field: absent leaves it, empty clears it. */
 export type MeUpdate = Partial<
   Pick<Me, "spoken_as" | "address_as" | "notes" | "birthday">
@@ -1936,6 +2103,37 @@ export const api = {
   integrations: () => request<Integration[]>("/integrations"),
   plugins: () => request<PluginSummary[]>("/plugins"),
   toolServers: () => request<ToolServer[]>("/tool-servers"),
+  myServers: () => request<PersonalServer[]>("/me/tool-servers"),
+  addMyServer: (draft: PersonalServerDraft) =>
+    request<PersonalServer>("/me/tool-servers", { method: "POST", body: JSON.stringify(draft) }),
+  updateMyServer: (id: number, edit: PersonalServerEdit) =>
+    request<PersonalServer>(`/me/tool-servers/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(edit),
+    }),
+  removeMyServer: (id: number) => request<void>(`/me/tool-servers/${id}`, { method: "DELETE" }),
+  setMyServerMode: (id: number, tool: string, mode: PersonalToolMode) =>
+    request<void>(`/me/tool-servers/${id}/tools/${encodeURIComponent(tool)}`, {
+      method: "PUT",
+      body: JSON.stringify({ mode }),
+    }),
+  reconnectMyServer: (id: number) =>
+    request<void>(`/me/tool-servers/${id}/reconnect`, { method: "POST" }),
+  signInMyServer: (id: number) =>
+    request<{ url: string }>(`/me/tool-servers/${id}/sign-in`, { method: "POST" }),
+  schedules: () => request<ScheduleList>("/me/schedules"),
+  addSchedule: (draft: ScheduleDraft) =>
+    request<Schedule>("/me/schedules", { method: "POST", body: JSON.stringify(draft) }),
+  updateSchedule: (id: number, draft: ScheduleDraft) =>
+    request<Schedule>(`/me/schedules/${id}`, { method: "PUT", body: JSON.stringify(draft) }),
+  removeSchedule: (id: number) => request<void>(`/me/schedules/${id}`, { method: "DELETE" }),
+  pauseSchedule: (id: number, paused: boolean) =>
+    request<void>(`/me/schedules/${id}/pause`, {
+      method: "POST",
+      body: JSON.stringify({ paused }),
+    }),
+  runSchedule: (id: number) => request<void>(`/me/schedules/${id}/run`, { method: "POST" }),
+  scheduleRuns: (id: number) => request<{ runs: ScheduleRun[] }>(`/me/schedules/${id}/runs`),
   refreshToolServer: (id: string) =>
     request<void>(`/tool-servers/${encodeURIComponent(id)}/refresh`, { method: "POST" }),
   previewPlugin: (repo: string) =>
@@ -2085,6 +2283,28 @@ export const api = {
   syncStrava: () => request<{ started: boolean }>("/me/strava/sync", { method: "POST" }),
   disconnectStrava: () =>
     request<{ revoked_at_strava: boolean }>("/me/strava/connection", { method: "DELETE" }),
+  logins: () => request<{ logins: SavedLogin[] }>("/me/logins"),
+  addLogin: (draft: LoginDraft) =>
+    request<SavedLogin>("/me/logins", { method: "POST", body: JSON.stringify(draft) }),
+  updateLogin: (id: number, draft: LoginDraft) =>
+    request<SavedLogin>(`/me/logins/${id}`, { method: "PUT", body: JSON.stringify(draft) }),
+  removeLogin: (id: number) => request<void>(`/me/logins/${id}`, { method: "DELETE" }),
+  signOutLogin: (id: number) => request<void>(`/me/logins/${id}/sign-out`, { method: "POST" }),
+  loginActivity: (id: number) =>
+    request<{ activity: LoginActivity[] }>(`/me/logins/${id}/activity`),
+  /** Tells the chat a card's login was added: its id, never its values. */
+  loginAdded: (conversation: number, loginRequest: string, login: number) =>
+    request<{ reply: string }>(
+      `/chat/conversations/${conversation}/login-requests/${encodeURIComponent(loginRequest)}`,
+      { method: "POST", body: JSON.stringify({ login }) },
+    ),
+  /** Hands a sign-in code to its card: Niles types it into the page,
+      and it goes nowhere else. */
+  enterCode: (conversation: number, codeRequest: string, code: string) =>
+    request<{ reply: string }>(
+      `/chat/conversations/${conversation}/code-requests/${encodeURIComponent(codeRequest)}`,
+      { method: "POST", body: JSON.stringify({ code }) },
+    ),
   deviceStatus: () => request<DeviceView>("/presence/device"),
   pairDevice: () => request<void>("/presence/device", { method: "POST" }),
   captures: () => request<Capture[]>("/captures"),

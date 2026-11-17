@@ -221,6 +221,58 @@ pub(crate) fn build_strava(
     }
 }
 
+/// Each person's saved logins, when there is a database and a secrets
+/// key to seal their usernames and passwords with. Saving a login is
+/// the switch.
+pub(crate) fn build_logins(cfg: &Config) -> Option<Arc<dyn niles_logins::LoginStore>> {
+    let database = cfg.database.as_ref()?;
+    let key = std::env::var(&database.secret_key_env).ok()?;
+    if key.trim().is_empty() {
+        return None;
+    }
+    let url = database.resolve_url().ok()?;
+    let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
+    match niles_db::PostgresLogins::new(backend.pool(), backend.describe_target(), &key) {
+        Ok(store) => Some(Arc::new(store)),
+        Err(e) => {
+            tracing::error!("[logins] unavailable: {e}");
+            None
+        }
+    }
+}
+
+/// Each person's own MCP servers, kept sealed. None without a
+/// database and its secrets key: a key or token is not kept anywhere
+/// unsealed.
+pub(crate) fn build_personal_servers(cfg: &Config) -> Option<Arc<dyn niles_mcp::PersonalServers>> {
+    let database = cfg.database.as_ref()?;
+    let key = std::env::var(&database.secret_key_env).ok()?;
+    if key.trim().is_empty() {
+        return None;
+    }
+    let url = database.resolve_url().ok()?;
+    let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
+    match niles_db::PostgresServers::new(backend.pool(), backend.describe_target(), &key) {
+        Ok(store) => Some(Arc::new(store)),
+        Err(e) => {
+            tracing::error!("[my servers] unavailable: {e}");
+            None
+        }
+    }
+}
+
+/// Each person's schedules. None without a database: a schedule is
+/// kept nowhere else.
+pub(crate) fn build_schedules(cfg: &Config) -> Option<Arc<dyn niles_schedules::ScheduleStore>> {
+    let database = cfg.database.as_ref()?;
+    let url = database.resolve_url().ok()?;
+    let backend = niles_db::PostgresBackend::connect_lazy(&url, database.max_connections).ok()?;
+    Some(Arc::new(niles_db::PostgresSchedules::new(
+        backend.pool(),
+        backend.describe_target(),
+    )))
+}
+
 pub(crate) fn build_tado_tokens(
     cfg: &Config,
 ) -> anyhow::Result<Option<Arc<dyn niles_presence::TokenStore>>> {

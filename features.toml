@@ -1137,3 +1137,54 @@ id = "api-events-update"
 category = "api.events"
 summary = "update_checked on /events/stream, to everyone"
 since_pr = 516
+
+[[feature]]
+id = "tool-browsing"
+category = "llm.tools"
+summary = "Do something on a website from the chat: Niles reads the pages, and each click, typing or submit waits on a card"
+phrasings = ["put a 2 m USB-C cable in my basket on shop.example", "book a delivery time on shop.example"]
+since_pr = 520
+
+[[feature]]
+id = "ui-saved-logins"
+category = "ui.settings"
+summary = "My profile → Vault: a site's login for browsing, added there or from the chat; the password is never shown again"
+since_pr = 521
+
+[[feature]]
+id = "my-mcp-servers"
+category = "ui.settings"
+summary = "My profile → MCP servers: a person's own MCP servers, by key or sign-in, whose tools only they get in the written chat"
+phrasings = ["find my notes on the trip in Notion", "what's assigned to me in Linear?"]
+since_pr = 530
+
+[[feature]]
+id = "my-schedules"
+category = "ui.settings"
+summary = "My profile → Schedules: a person's own tasks the assistant answers on time as them, into a new conversation"
+phrasings = ["every Monday at 8, give me my open Linear issues by priority", "each weekday at 7, what's in my calendar today"]
+since_pr = 532
+
+[[feature]]
+id = "vault-activity"
+category = "ui.settings"
+summary = "Vault shows what each saved login was used for: sign-ins, codes and changes, with the site and the conversation"
+since_pr = 528
+
+[[feature]]
+id = "browsing-authenticator-codes"
+category = "llm.tools"
+summary = "A saved login can keep its authenticator key, and Niles types the sign-in code itself"
+since_pr = 528
+
+[[feature]]
+id = "browsing-sign-in"
+category = "llm.tools"
+summary = "Niles signs in with a saved login only on its own sites, asks for a sign-in code on a card, and stops at a CAPTCHA"
+since_pr = 526
+
+[[feature]]
+id = "browsing-order-card"
+category = "runtime.approvals"
+summary = "Placing an order waits on its own card with the page's total and delivery address; card details stop the run"
+since_pr = 527

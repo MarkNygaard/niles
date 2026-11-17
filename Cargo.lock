@@ -2711,7 +2711,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "niles-api"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "axum 0.8.9",
@@ -2732,6 +2732,8 @@ dependencies = [
  "niles-groceries",
  "niles-integration-linear",
  "niles-llm",
+ "niles-logins",
+ "niles-mcp",
  "niles-memory",
  "niles-mqtt",
  "niles-nemlig",
@@ -2740,6 +2742,7 @@ dependencies = [
  "niles-presence",
  "niles-recognition",
  "niles-scheduler",
+ "niles-schedules",
  "niles-skills",
  "niles-speakers",
  "niles-training",
@@ -2766,7 +2769,7 @@ dependencies = [
 
 [[package]]
 name = "niles-artifacts"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2780,7 +2783,7 @@ dependencies = [
 
 [[package]]
 name = "niles-automations"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2799,7 +2802,7 @@ dependencies = [
 
 [[package]]
 name = "niles-bin"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2815,6 +2818,7 @@ dependencies = [
  "niles-api",
  "niles-artifacts",
  "niles-automations",
+ "niles-browser",
  "niles-calendar",
  "niles-capabilities",
  "niles-config",
@@ -2824,6 +2828,7 @@ dependencies = [
  "niles-history",
  "niles-intent",
  "niles-llm",
+ "niles-logins",
  "niles-mcp",
  "niles-memory",
  "niles-mqtt",
@@ -2834,6 +2839,7 @@ dependencies = [
  "niles-presence",
  "niles-recognition",
  "niles-scheduler",
+ "niles-schedules",
  "niles-skills",
  "niles-speakers",
  "niles-stt",
@@ -2856,12 +2862,33 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "url",
  "wiremock",
 ]
 
 [[package]]
+name = "niles-browser"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "futures-util",
+ "image",
+ "niles-websearch",
+ "parking_lot 0.13.0",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "niles-calendar"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-imap",
  "async-trait",
@@ -2887,7 +2914,7 @@ dependencies = [
 
 [[package]]
 name = "niles-capabilities"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "serde",
  "serde_yaml",
@@ -2898,7 +2925,7 @@ dependencies = [
 
 [[package]]
 name = "niles-config"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2920,7 +2947,7 @@ dependencies = [
 
 [[package]]
 name = "niles-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2930,7 +2957,7 @@ dependencies = [
 
 [[package]]
 name = "niles-db"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2942,8 +2969,11 @@ dependencies = [
  "niles-config",
  "niles-core",
  "niles-history",
+ "niles-logins",
+ "niles-mcp",
  "niles-presence",
  "niles-recognition",
+ "niles-schedules",
  "niles-training",
  "niles-webpush",
  "rand 0.10.3",
@@ -2958,7 +2988,7 @@ dependencies = [
 
 [[package]]
 name = "niles-groceries"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "niles-nemlig",
@@ -2970,7 +3000,7 @@ dependencies = [
 
 [[package]]
 name = "niles-history"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2982,7 +3012,7 @@ dependencies = [
 
 [[package]]
 name = "niles-integration-linear"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "hex",
  "hmac",
@@ -2994,7 +3024,7 @@ dependencies = [
 
 [[package]]
 name = "niles-intent"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "niles-core",
  "regex",
@@ -3002,7 +3032,7 @@ dependencies = [
 
 [[package]]
 name = "niles-llm"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -3018,21 +3048,46 @@ dependencies = [
 ]
 
 [[package]]
-name = "niles-mcp"
-version = "0.7.0"
+name = "niles-logins"
+version = "0.8.0"
 dependencies = [
+ "async-trait",
+ "chrono",
+ "data-encoding",
+ "hmac",
+ "niles-websearch",
+ "serde",
+ "serde_json",
+ "sha1 0.11.0",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "niles-mcp"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "chrono",
+ "niles-websearch",
+ "rand 0.10.3",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "url",
  "wiremock",
 ]
 
 [[package]]
 name = "niles-memory"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3043,7 +3098,7 @@ dependencies = [
 
 [[package]]
 name = "niles-mqtt"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "niles-core",
@@ -3057,7 +3112,7 @@ dependencies = [
 
 [[package]]
 name = "niles-nemlig"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -3072,7 +3127,7 @@ dependencies = [
 
 [[package]]
 name = "niles-notifications"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3087,7 +3142,7 @@ dependencies = [
 
 [[package]]
 name = "niles-plugins"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -3132,7 +3187,7 @@ dependencies = [
 
 [[package]]
 name = "niles-podcasts"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3156,7 +3211,7 @@ dependencies = [
 
 [[package]]
 name = "niles-presence"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3171,7 +3226,7 @@ dependencies = [
 
 [[package]]
 name = "niles-recognition"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3190,7 +3245,7 @@ dependencies = [
 
 [[package]]
 name = "niles-scheduler"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "niles-core",
@@ -3201,8 +3256,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "niles-schedules"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "niles-automations",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "niles-skills"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3213,7 +3282,7 @@ dependencies = [
 
 [[package]]
 name = "niles-speakers"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "regex",
@@ -3226,7 +3295,7 @@ dependencies = [
 
 [[package]]
 name = "niles-stt"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "reqwest",
  "serde",
@@ -3238,7 +3307,7 @@ dependencies = [
 
 [[package]]
 name = "niles-tls"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "rcgen",
  "rustls 0.23.46",
@@ -3248,7 +3317,7 @@ dependencies = [
 
 [[package]]
 name = "niles-tools"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3281,7 +3350,7 @@ dependencies = [
 
 [[package]]
 name = "niles-training"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3298,7 +3367,7 @@ dependencies = [
 
 [[package]]
 name = "niles-tts"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "niles-core",
  "reqwest",
@@ -3312,7 +3381,7 @@ dependencies = [
 
 [[package]]
 name = "niles-update"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "hex",
@@ -3332,7 +3401,7 @@ dependencies = [
 
 [[package]]
 name = "niles-weather"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3347,7 +3416,7 @@ dependencies = [
 
 [[package]]
 name = "niles-webos"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "futures-util",
  "niles-tls",
@@ -3364,7 +3433,7 @@ dependencies = [
 
 [[package]]
 name = "niles-webpush"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -3386,7 +3455,7 @@ dependencies = [
 
 [[package]]
 name = "niles-websearch"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "html2text",
@@ -3403,7 +3472,7 @@ dependencies = [
 
 [[package]]
 name = "niles-wyoming"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "serde",
  "serde_json",

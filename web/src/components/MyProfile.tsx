@@ -1,8 +1,20 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bell, ChevronLeft, ShieldCheck, Smartphone, UserRound } from "lucide-react";
+import {
+  Bell,
+  ChevronLeft,
+  KeyRound,
+  PlugZap,
+  Repeat,
+  ShieldCheck,
+  Smartphone,
+  UserRound,
+} from "lucide-react";
 import { Approvals } from "@/components/ApprovalsList";
 import { CALENDARS } from "@/components/CalendarsPanel";
+import { McpServersPanel, signInReturn } from "@/components/McpServersPanel";
+import { SchedulesPanel } from "@/components/SchedulesPanel";
+import { VaultPanel } from "@/components/VaultPanel";
 import { AboutYou, PhoneCard } from "@/components/MeCard";
 import { Notifications } from "@/components/NotificationsCard";
 import {
@@ -22,7 +34,7 @@ import { useDeviceStream } from "@/hooks/useDeviceStream";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { api } from "@/lib/api";
 import { PENDING } from "@/lib/approvals";
-import { useRoute } from "@/lib/route";
+import { hashQuery, useRoute } from "@/lib/route";
 import { cn } from "@/lib/utils";
 
 /** Where the page opens on a desk, with nothing picked yet. */
@@ -55,6 +67,24 @@ export function profileSections(addOns: PersonalAddOn[]): { group: string; items
           label: "Notifications",
           hint: "Which of your devices Niles tells things to",
           icon: Bell,
+        },
+        {
+          id: "vault",
+          label: "Vault",
+          hint: "Your saved logins, and what Niles used them for",
+          icon: KeyRound,
+        },
+        {
+          id: "mcp",
+          label: "MCP servers",
+          hint: "Your own tools for the chat",
+          icon: PlugZap,
+        },
+        {
+          id: "schedules",
+          label: "Schedules",
+          hint: "What Niles does for you on a schedule",
+          icon: Repeat,
         },
       ],
     },
@@ -208,6 +238,9 @@ export function MyProfile() {
           </>
         )}
         {shown === "notifications" && <Notifications />}
+        {shown === "vault" && <ProfileVault />}
+        {shown === "mcp" && <ProfileMcpServers returned={signInReturn(hashQuery(window.location.hash))} />}
+        {shown === "schedules" && <ProfileSchedules />}
         {addOns
           .filter((a) => a.id === shown)
           .map((a) => (
@@ -216,6 +249,62 @@ export function MyProfile() {
         {shown === "approvals" && <ProfileApprovals />}
       </div>
     </div>
+  );
+}
+
+/** The person's Vault: what Niles signs in to for them, sealed. */
+function ProfileVault() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Vault</CardTitle>
+        <CardDescription>
+          The sites Niles signs in to for you when it browses. Only you see yours. A password is
+          never shown again, and the model never sees it.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <VaultPanel />
+      </CardContent>
+    </Card>
+  );
+}
+
+/** The person's own MCP servers: their tools, only in their written chat. */
+function ProfileMcpServers({ returned }: { returned: "done" | "failed" | null }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>MCP servers</CardTitle>
+        <CardDescription>
+          Servers whose tools Niles may use for you in the written chat, never by voice. Only you
+          see yours. A tool that only reads runs; any other asks you first, until you set it
+          otherwise.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <McpServersPanel returned={returned} />
+      </CardContent>
+    </Card>
+  );
+}
+
+/** The person's own schedules: agent tasks answered on time, as them. */
+function ProfileSchedules() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Schedules</CardTitle>
+        <CardDescription>
+          Tasks Niles does for you on a schedule, with your own tools. Each run is a new
+          conversation in your chat, and you get a notification. Only you see yours. For the
+          house's lights and devices, use automations.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <SchedulesPanel />
+      </CardContent>
+    </Card>
   );
 }
 

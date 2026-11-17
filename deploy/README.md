@@ -182,6 +182,22 @@ example with `pg_dump`, and keep the secret key beside it. The pod's
 `/data` is working space for Claude Code and pi, and an `emptyDir` is
 enough.
 
+## Browsing
+
+Niles can drive a headless Chromium of its own, for reading pages and
+acting on a site on a card. Add
+`components: [../../components/browser]` to an overlay's
+`kustomization.yaml` to add the browser as a second container in Niles's
+pod. Its DevTools port and Niles's proxy both listen on 127.0.0.1, so no
+other pod can drive the browser or use the proxy, whatever the cluster's
+network plugin. The container gets no service-account token. Niles finds
+the browser at `niles-browser`, which the component points at the pod
+itself, and turns browsing on by itself once it answers.
+
+A pod is ready only when all its containers are, so while Chromium
+restarts (once a day when idle, or when its liveness probe fails) Niles's
+pod is briefly not ready.
+
 ## Layout
 
 ```
@@ -191,6 +207,8 @@ deploy/kustomize/
 │   ├── deployment.yaml     # Niles, its probes and the Secret's keys
 │   ├── service.yaml        # ClusterIP: 8080 and 10300
 │   └── configmap.yaml      # Placeholder niles.toml
+├── components/
+│   └── browser/            # Chromium as a second container in Niles's pod (opt-in)
 └── overlays/
     ├── dev/                # namespace niles-dev, :latest
     └── production/         # namespace niles, a pinned version, resource limits

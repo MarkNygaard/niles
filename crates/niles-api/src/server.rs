@@ -62,6 +62,14 @@ pub fn router(state: AppState) -> Router {
             post(crate::chat::decide),
         )
         .route(
+            "/chat/conversations/{id}/login-requests/{request}",
+            post(crate::chat::login_added),
+        )
+        .route(
+            "/chat/conversations/{id}/code-requests/{request}",
+            post(crate::chat::code_entered),
+        )
+        .route(
             "/chat/conversations/{id}/attachments/{a}",
             get(crate::chat_attachments::serve),
         )
@@ -235,6 +243,10 @@ pub fn router(state: AppState) -> Router {
         .route("/me/approvals", get(crate::approvals::list))
         .route("/me/approvals/history", get(crate::approvals::history))
         .route("/me/approvals/{approval}", post(crate::approvals::decide))
+        .route(
+            "/me/approvals/{approval}/picture",
+            get(crate::approvals::picture),
+        )
         .route("/me/artifacts", get(crate::artifacts::list))
         .route(
             "/me/artifacts/{id}",
@@ -282,6 +294,51 @@ pub fn router(state: AppState) -> Router {
         .route("/me/strava/callback", get(crate::training::callback))
         .route("/me/strava/sync", post(crate::training::sync_now))
         .route("/me/strava/connection", delete(crate::training::disconnect))
+        .route(
+            "/me/logins",
+            get(crate::logins::list).post(crate::logins::add),
+        )
+        .route(
+            "/me/logins/{id}",
+            put(crate::logins::update).delete(crate::logins::remove),
+        )
+        .route("/me/logins/{id}/sign-out", post(crate::logins::sign_out))
+        .route(
+            "/me/tool-servers",
+            get(crate::personal_servers::list).post(crate::personal_servers::add),
+        )
+        .route(
+            crate::personal_servers::CALLBACK,
+            get(crate::personal_servers::callback),
+        )
+        .route(
+            "/me/tool-servers/{id}",
+            put(crate::personal_servers::update).delete(crate::personal_servers::remove),
+        )
+        .route(
+            "/me/tool-servers/{id}/tools/{tool}",
+            put(crate::personal_servers::set_mode),
+        )
+        .route(
+            "/me/tool-servers/{id}/sign-in",
+            post(crate::personal_servers::sign_in),
+        )
+        .route(
+            "/me/tool-servers/{id}/reconnect",
+            post(crate::personal_servers::reconnect),
+        )
+        .route(
+            "/me/schedules",
+            get(crate::schedules::list).post(crate::schedules::add),
+        )
+        .route(
+            "/me/schedules/{id}",
+            put(crate::schedules::update).delete(crate::schedules::remove),
+        )
+        .route("/me/schedules/{id}/pause", post(crate::schedules::pause))
+        .route("/me/schedules/{id}/run", post(crate::schedules::run))
+        .route("/me/schedules/{id}/runs", get(crate::schedules::runs))
+        .route("/me/logins/{id}/activity", get(crate::logins::activity))
         .route("/presence/device", get(crate::presence::device_status))
         .route("/presence/device", post(crate::presence::pair_device))
         .route("/presence/tado", get(crate::presence::tado_status))

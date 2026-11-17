@@ -109,10 +109,19 @@ pub struct AppState {
     pub plugins: Option<Arc<dyn crate::plugins::Plugins>>,
     /// The remote MCP servers whose tools the model is offered.
     pub tool_servers: Option<Arc<dyn crate::tool_servers::ToolServers>>,
-    /// Each person's Strava and the workouts it brings. Absent without
-    /// a database and its secrets key: an app secret and its tokens are
+    /// Each person's own MCP servers. Absent without a database and its
+    /// secrets key: a key or token is not kept anywhere unsealed.
+    pub personal_servers: Option<Arc<dyn crate::personal_servers::PersonalToolServers>>,
+    /// Each person's own schedules. Absent without a database.
+    pub schedules: Option<Arc<dyn crate::schedules::PersonalSchedules>>,
+    /// Each person's Strava and the workouts it brings. Absent without a
+    /// database and its secrets key: an app secret and its tokens are
     /// not kept anywhere unsealed.
     pub strava: Option<Arc<niles_training::Strava>>,
+    /// Each person's saved logins for Niles's browser. Absent without a
+    /// database and its secrets key: a password is not kept anywhere
+    /// unsealed.
+    pub logins: Option<Arc<dyn niles_logins::LoginStore>>,
     /// Strava sign-ins in flight, apart from the others.
     pub strava_attempts: Arc<crate::auth::flow::Attempts>,
     /// Plugins' account connections in flight, apart from the others.
@@ -171,7 +180,10 @@ impl AppState {
             nemlig: None,
             plugins: None,
             tool_servers: None,
+            personal_servers: None,
+            schedules: None,
             strava: None,
+            logins: None,
             strava_attempts: Arc::new(crate::auth::flow::Attempts::new()),
             plugin_attempts: Arc::new(crate::auth::flow::Attempts::new()),
             artifacts: None,
@@ -283,8 +295,29 @@ impl AppState {
         self
     }
 
+    pub fn with_personal_servers(
+        mut self,
+        servers: Option<Arc<dyn crate::personal_servers::PersonalToolServers>>,
+    ) -> Self {
+        self.personal_servers = servers;
+        self
+    }
+
+    pub fn with_schedules(
+        mut self,
+        schedules: Option<Arc<dyn crate::schedules::PersonalSchedules>>,
+    ) -> Self {
+        self.schedules = schedules;
+        self
+    }
+
     pub fn with_strava(mut self, strava: Option<Arc<niles_training::Strava>>) -> Self {
         self.strava = strava;
+        self
+    }
+
+    pub fn with_logins(mut self, logins: Option<Arc<dyn niles_logins::LoginStore>>) -> Self {
+        self.logins = logins;
         self
     }
 

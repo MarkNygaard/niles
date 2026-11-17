@@ -1,0 +1,64 @@
+---
+title: "Your own MCP servers"
+description: "Add a remote MCP server of your own under My profile. Its tools are yours alone, in the written chat, never by voice."
+---
+
+An MCP server brings a service's own tools: Notion's pages, Linear's
+issues, your company's wiki, anything that speaks MCP. The household's
+servers are under Settings → Add-ons and everyone uses them. Your own go
+under **My profile → MCP servers**, and nobody else sees them or their
+tools.
+
+Your servers' tools are only for the **written chat** in the app. They are
+never offered to a satellite, never in a spoken request, and never in
+the household's automations. Name the server in your message, by the
+name you gave it, and Niles brings its tools along: "find my notes on the
+trip in Notion", "what's assigned to me in Linear?". With Claude or
+ChatGPT answering the chat, every one of your tools is at hand anyway.
+
+## Adding a server
+
+Press **Add a server**, give it a name, and paste its address. The
+address must start with `https://` and be on the public internet: Niles
+won't reach the house's own network, its cluster or itself this way.
+Then choose how it signs in.
+
+- **With a key.** Paste the key or token the service gave you. It goes in
+  the `Authorization: Bearer` header unless you name another, such as
+  `X-API-Key`. You can't read a key back, here or anywhere else; leave
+  the field empty when you edit the server to keep it.
+- **Sign in on its page.** For a server that wants you to sign in, as
+  Notion's and Linear's do. After you add it, your browser goes to the
+  server's own sign-in page, and comes back to My profile when you're
+  done. Niles keeps what that sign-in gives it, encrypted, and keeps it
+  fresh. **Sign in again** starts over, for instance after you revoked
+  Niles's access on the service.
+
+Each server shows whether it's connected, and why not when it isn't.
+**Reconnect** tries again.
+
+## What each tool may do
+
+Once a server is connected, its tools are listed, each set to **On**,
+**Ask** or **Off**.
+
+- A tool the server says only reads starts **On**: Niles uses it without
+  asking.
+- Every other tool starts at **Ask**: when Niles wants to use it, the
+  chat shows a card, and nothing happens until you press **Allow once**.
+  See [Approvals](/docs/using/approvals).
+- **Off** keeps the tool from Niles altogether.
+
+## What stays private
+
+- Keys and sign-ins are encrypted for you and that server alone, so they
+  can't be opened as anyone else's. They never reach the model, a reply,
+  a log or the chat, and Niles takes them out of anything a tool sends
+  back.
+- What a tool answers is information for Niles, never an instruction to
+  it.
+- Niles's log notes that one of your tools answered, and how much, but
+  never what it said, and the same goes for the reply that used it.
+
+Your own servers need Niles's database and its secrets key. Without
+them, the page says so.
