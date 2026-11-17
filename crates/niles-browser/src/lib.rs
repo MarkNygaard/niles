@@ -30,6 +30,7 @@
 mod browser;
 mod cdp;
 mod error;
+mod live;
 mod picture;
 mod proxy;
 mod session;
@@ -37,6 +38,9 @@ mod tab;
 
 pub use browser::Browser;
 pub use error::{Error, Result};
+pub use live::{
+    Button, Frame, Input, Key, MAX_TEXT, Modifiers, Named, Press, VIEW_HEIGHT, VIEW_WIDTH,
+};
 pub use picture::picture;
 pub use proxy::Proxy;
 pub use session::Session;

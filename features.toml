@@ -1188,3 +1188,9 @@ id = "browsing-order-card"
 category = "runtime.approvals"
 summary = "Placing an order waits on its own card with the page's total and delivery address; card details stop the run"
 since_pr = 527
+
+[[feature]]
+id = "browsing-live-view"
+category = "ui.chat"
+summary = "Watch Niles's browser live in the Niles panel, take it over and give it back; Niles hands it over on a CAPTCHA"
+since_pr = 534

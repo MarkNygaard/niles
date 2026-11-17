@@ -239,6 +239,7 @@ pub(crate) async fn handle_transcript(
                     .for_turn(&chat_log::person(Some(slug), ""), started),
                 login_request: None,
                 code_request: None,
+                handoff: None,
                 artifacts: Vec::new(),
                 attachments: Vec::new(),
             };

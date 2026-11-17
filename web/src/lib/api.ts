@@ -1347,6 +1347,8 @@ export interface Turn {
   login_request?: LoginRequest | null;
   /** What this turn asked the person to type a sign-in code for. */
   code_request?: CodeRequest | null;
+  /** The browser Niles handed to the person in this turn. */
+  handoff?: Handoff | null;
   /** The artifacts this turn made or changed, for a card under the
       reply. Absent when there are none. */
   artifacts?: ArtifactRef[];
@@ -1911,6 +1913,29 @@ export interface CodeRequest {
   status: "waiting" | "entered" | "lapsed";
 }
 
+/** Niles handed the browser to the person: a CAPTCHA, or a step only a
+    person can do. Whether it still waits is the live view's to say.
+    Mirrors `Handoff` in crates/niles-api/src/chat.rs. */
+export interface Handoff {
+  id: string;
+  site: string;
+  why: string;
+}
+
+/** The person's browsing session, as the live view shows it. Mirrors
+    `LiveView` in crates/niles-api/src/browser.rs. */
+export interface LiveView {
+  address: string;
+  control: "niles" | "person";
+  handoff: Handoff | null;
+  /** The page's size in CSS pixels, which input is in. */
+  width: number;
+  height: number;
+}
+
+/** What giving the browser back leads to. */
+export type GiveBackThen = "carry_on" | "stop";
+
 /** Each field: absent leaves it, empty clears it. */
 export type MeUpdate = Partial<
   Pick<Me, "spoken_as" | "address_as" | "notes" | "birthday">
@@ -2305,6 +2330,15 @@ export const api = {
       `/chat/conversations/${conversation}/code-requests/${encodeURIComponent(codeRequest)}`,
       { method: "POST", body: JSON.stringify({ code }) },
     ),
+  browser: () => request<LiveView | null>("/me/browser"),
+  takeBrowser: () => request<void>("/me/browser/take", { method: "POST" }),
+  giveBackBrowser: (conversation: number | null, then: GiveBackThen) =>
+    request<void>("/me/browser/give-back", {
+      method: "POST",
+      body: JSON.stringify({ conversation, then }),
+    }),
+  browserBack: () => request<void>("/me/browser/back", { method: "POST" }),
+  browserReload: () => request<void>("/me/browser/reload", { method: "POST" }),
   deviceStatus: () => request<DeviceView>("/presence/device"),
   pairDevice: () => request<void>("/presence/device", { method: "POST" }),
   captures: () => request<Capture[]>("/captures"),

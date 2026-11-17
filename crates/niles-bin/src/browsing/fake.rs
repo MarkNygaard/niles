@@ -86,6 +86,15 @@ pub(crate) struct FakeState {
     /// When true, the tab closes right after a fill: what the page did
     /// with it can't be seen.
     pub(crate) lost_after_fill: bool,
+    /// What a person passed to the page in the live view, in order.
+    pub(crate) inputs: Vec<niles_browser::Input>,
+    /// How many live views were started and stopped.
+    pub(crate) casts: usize,
+    pub(crate) uncasts: usize,
+    /// The live view's pictures, while one runs.
+    pub(crate) frames: Option<tokio::sync::watch::Sender<Option<niles_browser::Frame>>>,
+    /// "back" and "reload", in order.
+    pub(crate) moved: Vec<&'static str>,
 }
 
 /// What `asks` answers for the state: the standing ask. A submit moves
@@ -397,8 +406,54 @@ impl Tab for FakeTab {
         Ok(())
     }
 
+    async fn screencast(
+        &self,
+        _pace: Arc<std::sync::atomic::AtomicU64>,
+    ) -> Result<tokio::sync::watch::Receiver<Option<niles_browser::Frame>>> {
+        let mut state = self.state();
+        if state.closed {
+            return Err(niles_browser::Error::Closed);
+        }
+        state.casts += 1;
+        let (sender, receiver) = tokio::sync::watch::channel(Some(niles_browser::Frame {
+            jpeg: vec![0xFF, 0xD8, 0xFF, 0xD9].into(),
+            width: niles_browser::VIEW_WIDTH,
+            height: niles_browser::VIEW_HEIGHT,
+        }));
+        state.frames = Some(sender);
+        Ok(receiver)
+    }
+
+    async fn stop_screencast(&self) {
+        let mut state = self.state();
+        if state.frames.take().is_some() {
+            state.uncasts += 1;
+        }
+    }
+
+    async fn input(&self, input: &niles_browser::Input) -> Result<()> {
+        let mut state = self.state();
+        if state.closed {
+            return Err(niles_browser::Error::Closed);
+        }
+        state.inputs.push(input.clone());
+        Ok(())
+    }
+
+    async fn back(&self) -> Result<()> {
+        self.state().moved.push("back");
+        Ok(())
+    }
+
+    async fn reload(&self) -> Result<()> {
+        self.state().moved.push("reload");
+        Ok(())
+    }
+
     async fn close(&self) {
-        self.state().closed = true;
+        let mut state = self.state();
+        state.closed = true;
+        state.frames = None;
     }
 }
 

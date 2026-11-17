@@ -334,6 +334,28 @@ pub trait Tab: Send + Sync {
     /// Put a profile back and open the page again.
     async fn restore(&self, origins: &[String], profile: &str) -> Result<()>;
 
+    /// The page as pictures for a live view, the newest one at a time.
+    /// `pace` is the least milliseconds between two, read for each so it
+    /// can change while the view runs. Starting again replaces the last
+    /// one; it ends with [`Tab::stop_screencast`] or the page.
+    async fn screencast(
+        &self,
+        pace: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Result<tokio::sync::watch::Receiver<Option<crate::Frame>>>;
+
+    /// No more pictures.
+    async fn stop_screencast(&self);
+
+    /// What the person did in the live view, passed to the page. Only a
+    /// person's, and only an input [`crate::Input::checked`] passed.
+    async fn input(&self, input: &crate::Input) -> Result<()>;
+
+    /// The page before this one, if there is one.
+    async fn back(&self) -> Result<()>;
+
+    /// Load the page again.
+    async fn reload(&self) -> Result<()>;
+
     /// End the session, releasing its browser context.
     async fn close(&self);
 }

@@ -234,7 +234,8 @@ jobs:
           google-chrome --headless=new --no-sandbox \
             --remote-debugging-port=9222 \
             --user-data-dir="$RUNNER_TEMP/chrome" about:blank &
-          curl -fsS --retry 10 --retry-delay 1 --retry-all-errors \
+          # Chrome has taken over ten seconds to start on the runners.
+          curl -fsS --retry 60 --retry-delay 1 --retry-all-errors \
             http://127.0.0.1:9222/json/version
 
       - name: cargo test -p niles-browser -- --ignored

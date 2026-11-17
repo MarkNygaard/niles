@@ -16,6 +16,8 @@ mod code;
 mod ending;
 #[cfg(test)]
 pub(crate) mod fake;
+mod handover;
+mod live;
 mod login;
 mod order;
 mod scrub;
@@ -78,6 +80,8 @@ struct Open {
     login: Option<Bound>,
     /// The code card this session waits on, if one does.
     code: Option<String>,
+    /// Who has the browser, and who watches it.
+    live: live::Live,
 }
 
 /// The saved login a session is signed in with: what keeps it on its
@@ -138,6 +142,9 @@ pub(crate) struct Browsing {
     /// The code cards being waited on, in memory only: a restart lapses
     /// them all.
     codes: Mutex<Vec<code::CodeCard>>,
+    /// Where a session opening, closing or changing hands is said, for
+    /// its person's app.
+    bus: niles_core::EventBus,
 }
 
 /// What the model is told when browsing is off or a page won't open.
@@ -155,6 +162,7 @@ pub(crate) fn start(
     approvals: Arc<Approvals>,
     conversations: Conversations,
     store: Option<Arc<dyn LoginStore>>,
+    bus: niles_core::EventBus,
 ) -> Arc<Browsing> {
     let browsing = Arc::new(Browsing {
         approvals,
@@ -166,6 +174,7 @@ pub(crate) fn start(
         proxy: Mutex::new(None),
         store: store.clone(),
         codes: Mutex::new(Vec::new()),
+        bus,
     });
     if let Some(store) = store {
         tokio::spawn(sweep_profiles(store));
@@ -214,6 +223,7 @@ pub(crate) fn built(
         proxy: Mutex::new(None),
         store,
         codes: Mutex::new(Vec::new()),
+        bus: niles_core::EventBus::default(),
     })
 }
 
@@ -241,12 +251,15 @@ pub(crate) fn register(
     logins: Arc<Logins>,
 ) {
     tools::register(reg, browsing.clone());
+    reg.register(Box::new(handover::HandOver(browsing.clone())));
     reg.register(Box::new(signin::SignIn(browsing.clone())));
     reg.register(Box::new(login::RequestLogin { browsing, logins }));
 }
 
 pub(crate) use code::{ENTERED_A_CODE, code_asked_text, code_from_card};
 pub(crate) use ending::ending;
+pub(crate) use handover::AppLive;
+pub(crate) use live::Viewer;
 pub(crate) use login::{ADDED_A_LOGIN, Logins, added_from_card, added_text};
 use scrub::Scrub;
 
@@ -386,13 +399,14 @@ impl Browsing {
             let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             std::mem::take(&mut *sessions)
         };
-        for (_, open) in sessions {
+        for (person, open) in sessions {
             if let Some(id) = open.holding {
                 self.approvals.lapse(&id).await;
             }
             if let Some(id) = open.code {
                 self.drop_code(&id);
             }
+            self.changed(&person);
         }
         self.codes.lock().unwrap_or_else(|e| e.into_inner()).clear();
         *self.found.lock().unwrap_or_else(|e| e.into_inner()) = Found::Looking;
@@ -409,6 +423,7 @@ impl Browsing {
                 _ => return,
             }
         };
+        self.lapse_control(now);
         let reaped: Vec<(String, Open)> = {
             let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             let idle_ids: Vec<String> = sessions
@@ -460,7 +475,7 @@ impl Browsing {
             .as_deref()
             .is_some_and(|id| self.approvals.waiting(id));
         let code_waits = open.code.as_deref().is_some_and(|id| self.code_waiting(id));
-        step_waits || code_waits
+        step_waits || code_waits || open.live.held(Instant::now())
     }
 
     /// Whether browsing is on, and the driver if it is.
@@ -488,6 +503,9 @@ impl Browsing {
         {
             let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(open) = sessions.get_mut(&asker.person) {
+                if open.live.control == niles_api::browser::Control::Person {
+                    return Err(live::PERSON_HAS_IT);
+                }
                 open.used = Instant::now();
                 return Ok(Opened {
                     tab: open.tab.clone(),
@@ -511,6 +529,7 @@ impl Browsing {
             holding: None,
             login: None,
             code: None,
+            live: live::Live::default(),
         };
         let kept = {
             let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
@@ -526,7 +545,10 @@ impl Browsing {
             }
         };
         match kept {
-            Ok(Kept::Ours(opened)) => Ok(opened),
+            Ok(Kept::Ours(opened)) => {
+                self.changed(&asker.person);
+                Ok(opened)
+            }
             Ok(Kept::Older(opened)) => {
                 tab.close().await;
                 Ok(opened)
@@ -705,6 +727,7 @@ impl Browsing {
         if let Some(id) = open.code {
             self.drop_code(&id);
         }
+        self.changed(person);
         // Wait for an in-flight step or save to finish first.
         let _tab = open.lock.lock().await;
         if matches!(save, Save::Profile)

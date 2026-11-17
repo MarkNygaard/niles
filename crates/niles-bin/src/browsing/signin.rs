@@ -13,10 +13,11 @@ use niles_tools::{Tool, ToolDescriptor};
 use serde_json::{Value, json};
 use url::Url;
 
+use super::handover::{CAPTCHA_AFTER, CAPTCHA_WHY};
 use super::login::{NO_LOGINS, NOBODY, nobody};
 use super::scrub::Scrub;
 use super::step::{SESSION_ENDED, lapsed, page_of};
-use super::tools::{CAPTCHA_NOTE, WAITING, in_the_chat, invalid, note, remote};
+use super::tools::{WAITING, in_the_chat, invalid, note, remote};
 use super::{Bound, Browsing, Create, NOT_FOR_JOBS, Opened, State};
 use crate::approvals::Asker;
 
@@ -35,7 +36,6 @@ const LEFT_MID_SIGN_IN: &str =
 /// Typing began and then the page couldn't be read: the login may
 /// have gone through, so it is never typed again on a guess.
 const UNCERTAIN: &str = "Niles typed the saved login into the page, but then couldn't see what the page did with it, so whether it signed in is uncertain. Read the page with browser_read before anything else, and sign in again only if the page shows its sign-in form.";
-const CAPTCHA_STOP: &str = "The site wants a person to show they aren't a robot (a CAPTCHA). Niles doesn't solve those, so it stopped there.";
 const NO_FORM: &str = "Niles finds no sign-in form on this page to fill. Open the site's sign-in page first; a link or button on the page usually leads there.";
 
 /// Sign in to the open site with one of the person's saved logins:
@@ -149,10 +149,11 @@ async fn hold_sign_in(
         .iter()
         .map(|o| o.as_str().to_string())
         .collect();
-    let opened = browsing
-        .session(asker, Create::No)
-        .await
-        .map_err(|reason| invalid(TOOL, reason))?;
+    let opened = match browsing.session(asker, Create::No).await {
+        Ok(opened) => opened,
+        Err(why) if why == super::live::PERSON_HAS_IT => return Ok(note(why)),
+        Err(reason) => return Err(invalid(TOOL, reason)),
+    };
     let _guard = opened.lock.lock().await;
     session_checks(browsing, &asker.person, opened.serial, id, &login.label)?;
     let address = opened.tab.address().await.map_err(remote)?;
@@ -177,7 +178,14 @@ async fn hold_sign_in(
     )
     .await?
     {
-        PageAsk::Captcha => return Ok(json!({ "captcha": true, "note": CAPTCHA_NOTE })),
+        PageAsk::Captcha => {
+            return Ok(super::handover::captcha(
+                browsing,
+                &asker.person,
+                opened.serial,
+                &address,
+            ));
+        }
         PageAsk::NoForm => return Err(invalid(TOOL, NO_FORM)),
         PageAsk::Ready => {}
     }
@@ -435,6 +443,18 @@ impl SignInStep {
         origin_of(&opened.tab.address().await.unwrap_or_default())
     }
 
+    /// A CAPTCHA after the login went in: the browser goes to the
+    /// person, and the run says so.
+    async fn captcha_after(&self, browsing: &Browsing, opened: &Opened) -> niles_tools::Error {
+        browsing.hand_over(
+            &self.asker.person,
+            opened.serial,
+            CAPTCHA_WHY.into(),
+            Self::site_now(opened).await,
+        );
+        niles_tools::Error::Remote(CAPTCHA_AFTER.into())
+    }
+
     /// When the page asks for a code and the login keeps an authenticator
     /// key: Niles types the current code, once. `None` sends the person a
     /// code card as before: no key, nothing typed, or the page still
@@ -478,7 +498,7 @@ impl SignInStep {
                 ))))
             }
             Ok(Asks::Code) => None,
-            Ok(Asks::Captcha) => Some(Err(niles_tools::Error::Remote(CAPTCHA_STOP.into()))),
+            Ok(Asks::Captcha) => Some(Err(self.captcha_after(browsing, opened).await)),
             Ok(Asks::Password { .. } | Asks::Username) => {
                 self.note(browsing, Used::SignInFailed, site).await;
                 Some(Ok(Value::String(format!(
@@ -537,7 +557,7 @@ impl SignInStep {
                     "{label} sent the person a code to finish signing in."
                 )))
             }
-            Round::Captcha => Err(niles_tools::Error::Remote(CAPTCHA_STOP.into())),
+            Round::Captcha => Err(self.captcha_after(browsing, opened).await),
             Round::StillAsks => {
                 self.note(browsing, Used::SignInFailed, Self::site_now(opened).await)
                     .await;
@@ -1198,15 +1218,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_captcha_on_the_page_stops_it_without_a_card() {
+    async fn a_captcha_on_the_page_hands_the_browser_over_without_a_card() {
         let h = harness().await;
         h.page(LOGIN, Asks::Captcha).await;
         let said = sign_in(&h.tool, json!({ "login_id": h.login.id }))
             .await
             .expect("a note, not an error");
         assert_eq!(said["captcha"], true);
-        assert_eq!(said["note"], CAPTCHA_NOTE);
+        assert_eq!(said["handed_over"], true);
         assert!(h.approvals.pending(MARK).is_empty(), "no card at call time");
+        assert!(h.tool.0.held_by_person(MARK));
     }
 
     #[tokio::test]
@@ -1220,7 +1241,8 @@ mod tests {
             .push((LOGIN.to_string(), Asks::Captcha));
         let (card, reply) = h.run(json!({ "login_id": h.login.id })).await;
         assert_eq!(card.status, ApprovalStatus::Failed, "{reply}");
-        assert!(reply.contains("wants a person"), "{reply}");
+        assert!(reply.contains("handed the browser"), "{reply}");
+        assert!(h.tool.0.held_by_person(MARK), "the person has it now");
         let tab = h.tab();
         let state = tab.state.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(
