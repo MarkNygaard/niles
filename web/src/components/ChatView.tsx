@@ -15,6 +15,7 @@ import { ArtifactCard } from "@/components/ArtifactCard";
 import { LoginRequestCard } from "@/components/LoginRequestCard";
 import { CodeRequestCard } from "@/components/CodeRequestCard";
 import { HandoffCard } from "@/components/HandoffCard";
+import { BrowserGlimpse, BrowserStrip } from "@/components/BrowserGlimpse";
 import { PushNudge } from "@/components/PushNudge";
 import { NilesAvatar } from "@/components/NilesPanel";
 import { Button } from "@/components/ui/button";
@@ -22,7 +23,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { dictationSupported, useDictation } from "@/hooks/useDictation";
 import { ACCEPT, accept, filesFrom, isImage, readable } from "@/lib/attachments";
-import type { AssistantId, Attachment, Decision, Turn } from "@/lib/api";
+import type { AssistantId, Attachment, Decision, LiveView, Turn } from "@/lib/api";
 import { chatAttachmentUrl } from "@/lib/api";
 import { Markdown } from "@/lib/markdown";
 import { humanize } from "@/lib/rooms";
@@ -75,6 +76,8 @@ export interface ChatViewProps {
   enteringCode?: boolean;
   /** The handoff the browser is still the person's for, if one is. */
   handoffWaiting?: string | null;
+  /** Niles's browser, while it has one open for the person. */
+  browser?: LiveView | null;
   /** Open Niles's browser live, in Niles's panel. */
   onOpenBrowser?: () => void;
   /** Words from a recording. Without it there is no microphone. */
@@ -114,6 +117,7 @@ export function ChatView({
   onCodeEntered,
   enteringCode,
   handoffWaiting,
+  browser,
   onOpenBrowser,
   onDictate,
   onOpenArtifact,
@@ -431,9 +435,13 @@ export function ChatView({
                 back. */}
             {pending ? <Bubble from="you">{pending}</Bubble> : null}
             <Bubble from="niles">
-              <span className="text-muted-foreground" aria-label="Niles is answering">
-                …
-              </span>
+              <div className="flex flex-col gap-2">
+                <Working />
+                {/* Niles at work in its browser, live, while this turn
+                    is waited for: the way to watch or take over is
+                    right here, not only behind the avatar. */}
+                {browser && <BrowserGlimpse live={browser} onOpen={onOpenBrowser} />}
+              </div>
             </Bubble>
           </li>
         )}
@@ -468,6 +476,7 @@ export function ChatView({
           "sm:bottom-0 sm:pb-[env(safe-area-inset-bottom)]",
         )}
       >
+        {browser && !busy && <BrowserStrip live={browser} onOpen={onOpenBrowser} />}
         {/* The files about to go, each removable: above the field the
             way a messages app shows what is attached. */}
         {files.length > 0 && (
@@ -629,6 +638,23 @@ function Spoken({ room }: { room: string | null }) {
       <Mic className="size-3" aria-hidden />
       {room ? humanize(room) : "Spoken"}
     </p>
+  );
+}
+
+/** Three dots that rise in turn while Niles answers; still for anyone
+    who asked for less motion. */
+function Working() {
+  return (
+    <span role="status" aria-label="Niles is answering" className="flex h-5 items-center gap-1">
+      {[0, 150, 300].map((delay) => (
+        <span
+          key={delay}
+          aria-hidden
+          className="bg-muted-foreground size-1.5 rounded-full motion-safe:animate-bounce"
+          style={{ animationDelay: `${delay}ms` }}
+        />
+      ))}
+    </span>
   );
 }
 

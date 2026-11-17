@@ -103,3 +103,13 @@ export function dragWheel(
 ): { dx: number; dy: number } {
   return { dx: from.x - to.x, dy: from.y - to.y };
 }
+
+/** The site a page is on, for a person to read: its host, without a
+    leading www. The whole address when it isn't one. */
+export function siteOf(address: string): string {
+  try {
+    return new URL(address).hostname.replace(/^www\./, "");
+  } catch {
+    return address;
+  }
+}

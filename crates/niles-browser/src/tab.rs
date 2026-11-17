@@ -129,6 +129,10 @@ pub struct Reading {
     /// The page shows a CAPTCHA, which Niles never solves.
     #[serde(default)]
     pub captcha: bool,
+    /// The site refused the page with 403 or 429, as a site that keeps
+    /// automated browsers out does. Never set with `captcha`.
+    #[serde(default)]
+    pub blocked: bool,
     /// The page asks for a code the site sent.
     #[serde(default)]
     pub asks_code: bool,

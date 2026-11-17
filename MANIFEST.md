@@ -223,6 +223,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `auth-api-key-made` | Niles makes its own API key on a start with a database, and a new one works at once with no restart | [#405](https://github.com/MarkNygaard/niles/pull/405) |
 | `auth-api-token` | A bearer token for reading the API from a terminal | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `auth-github-sign-in` | Sign in with GitHub, against an allowlist of verified email addresses | [#186](https://github.com/MarkNygaard/niles/pull/186) |
+| `browsing-in-the-chat` | While Niles browses, the reply being waited for shows the page live; a site that refuses automated browsers is said so | [#537](https://github.com/MarkNygaard/niles/pull/537) |
 | `browsing-live-view` | Watch Niles's browser live in the Niles panel, take it over and give it back; Niles hands it over on a CAPTCHA | [#534](https://github.com/MarkNygaard/niles/pull/534) |
 | `chat-attachments` | Attach photos and PDFs to a chat message by dragging, the paperclip or a paste; chips before sending, thumbnails after | [#449](https://github.com/MarkNygaard/niles/pull/449) |
 | `ui-approval-link` | #/chat?approval= and an approval's id opens its card in the conversation, outlined, or in Approvals when it has none | [#485](https://github.com/MarkNygaard/niles/pull/485) |

@@ -1026,3 +1026,45 @@ async fn a_persons_click_and_typing_reach_the_page() {
     assert_eq!(value_of(&session, 0, "#q").await, "hell");
     Tab::close(&*session).await;
 }
+
+#[tokio::test]
+#[ignore = "needs a Chromium's DevTools at NILES_TEST_CHROMIUM, such as 127.0.0.1:9222"]
+async fn a_page_the_site_refused_reads_as_blocked_and_a_challenge_as_a_captcha() {
+    let session = session().await;
+    let refused = |body: &str| Page {
+        status: 403,
+        headers: vec![],
+        body: body.to_string(),
+    };
+    serve(
+        &session,
+        vec![
+            ("https://shop.example/", Page::html("<h1>Jeans</h1>")),
+            (
+                "https://shop.example/blocked",
+                refused("<h1>Site can't be reached right now</h1>"),
+            ),
+            (
+                "https://shop.example/challenge",
+                refused(
+                    r#"<iframe src="https://www.google.com/recaptcha/api2/anchor?k=x&amp;size=normal" width="304" height="78"></iframe>"#,
+                ),
+            ),
+        ],
+    )
+    .await;
+    for (address, blocked, captcha) in [
+        ("https://shop.example/", false, false),
+        ("https://shop.example/blocked", true, false),
+        ("https://shop.example/challenge", false, true),
+    ] {
+        session.open(&Url::parse(address).unwrap()).await.unwrap();
+        let read = session.read().await.unwrap();
+        assert_eq!(
+            (read.blocked, read.captcha),
+            (blocked, captcha),
+            "{address}"
+        );
+    }
+    Tab::close(&*session).await;
+}

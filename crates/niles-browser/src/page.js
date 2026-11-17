@@ -847,11 +847,13 @@
     if (document.body) walk(document.body);
     flush();
 
+    const seen = captcha();
     return {
       address: location.href,
       title: document.title,
       text,
-      captcha: captcha(),
+      captcha: seen,
+      blocked: !seen && refused(),
       card_details: cardDetails(),
       asks_code: passwordField() === null && codeFields().length > 0,
       more_above: above || window.scrollY > 0,
@@ -859,6 +861,16 @@
         cut ||
         window.scrollY + window.innerHeight < document.documentElement.scrollHeight - 2,
     };
+  }
+
+  // Whether the site refused the page: its document came back as 403 or
+  // 429, which is how a site that keeps automated browsers out answers
+  // one. A CAPTCHA is told apart first, since a challenge may come back
+  // as 403 too and a person can pass that one.
+  function refused() {
+    const entry = performance.getEntriesByType("navigation")[0];
+    const status = entry && typeof entry.responseStatus === "number" ? entry.responseStatus : 0;
+    return status === 403 || status === 429;
   }
 
   globalThis.__niles = {

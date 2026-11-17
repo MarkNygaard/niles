@@ -80,6 +80,7 @@ pub(crate) struct FakeState {
     pub(crate) restored: Vec<String>,
     /// What the reading reports.
     pub(crate) captcha: bool,
+    pub(crate) blocked: bool,
     pub(crate) asks_code: bool,
     /// What `checkout` answers; its `card_details` is the reading's too.
     pub(crate) checkout: Checkout,
@@ -174,6 +175,7 @@ impl Tab for FakeTab {
             title: "A fake page".into(),
             text,
             captcha: state.captcha,
+            blocked: state.blocked,
             asks_code: state.asks_code,
             card_details: state.checkout.card_details,
             more_above: false,
