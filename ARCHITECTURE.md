@@ -96,6 +96,7 @@ A Cargo workspace of 39 crates; `niles-bin` is the only binary and wires the res
 | `niles-websearch` | The SearXNG client, and the fetcher that goes only to the public internet. |
 | `niles-browser` | Niles's own Chrome DevTools Protocol client for headless Chromium in a container of its own: a browser context per session, each page read as text for the model, screenshots for the cards, what a checkout page shows (its total, its delivery address, and whether it asks for card details), filling a saved login or a code only on its origins, and the guard that keeps a signed-in session on them, and the `CONNECT` proxy the browser reaches the internet through. |
 | `niles-mcp` | Niles as an MCP client, for remote tool servers such as Linear's and each person's own: the client, held to the public internet for a person's; MCP's OAuth sign-in; and the model and store of each person's servers. |
+| `niles-schedules` | Each person's schedules: when one runs (on the automations' clock triggers), its runs, and the store, with Postgres in `niles-db`. |
 | `niles-plugins` | Third-party plugins: WebAssembly components run in wasmtime, installed from GitHub releases and found in the add-on library. |
 | `niles-integration-linear` | Linear's webhook, turned into notifications. |
 | `niles-tls` | TLS to devices that sign their own certificate (an LG TV). |
@@ -341,6 +342,17 @@ NIL-80. A person adds remote MCP servers of their own under My profile → MCP s
 - **What runs.** A tool the server marks read-only (`readOnlyHint`) starts On; any other starts at Ask, an Allow once / Deny card in the chat. The person sets each On, Ask or Off.
 - **What comes back** is capped at 16 KiB as a household server's is, with the server's key and tokens taken out; a call's result, the reply and the reasoning of that turn reach `/logs` by size only, as browsing's do.
 
+## Each person's schedules
+
+NIL-81. A person keeps agent tasks under My profile → Schedules: "every Monday at 8, my open Linear issues by priority". Automations stay the household's fixed rules, with no model in them.
+
+- **Theirs alone.** Kept per person (`schedules` and `schedule_runs`, in `niles-db`), every query scoped by the person's key; another person's id answers like one never kept.
+- **One clock.** A schedule's `When` (daily, weekdays, chosen days at a time, or every 1, 2, 3, 4, 6, 8 or 12 hours) becomes the automations' `Trigger::Time`s, and its next time is the first one they make due, day by day in the household's time zone. So the two features share one time engine, daylight saving included. Never more often than once an hour.
+- **A run is a typed chat turn.** Every 30 seconds `niles-bin` takes what is due, moves each on to its next time first so nothing runs twice, and answers `<name>: <instruction>` through the same `AppChat::reply` a typed message takes, in a new conversation, as the person. The turn's asker is theirs, in the chat and on no satellite, so their own tools are offered and nothing is spoken. A tool that asks puts its card in that conversation; the run is then Waiting and the card lapses as any does. An answer from Niles's own model, which has none of the person's tools, is a failed run.
+- **Told.** Each run is a notification (`schedule`) that opens its conversation, or says why it failed.
+- **Missed, not caught up.** A run more than two minutes late (Niles was down) is noted as missed, and the schedule moves on to its next time. A run still marked running when Niles starts is failed.
+- **Made in the chat too.** `make_schedule` keeps one for the person typing, behind an Allow once / Deny card, and is offered only in their written chat.
+
 ## House rules
 
 Every change keeps these. Each is one rule and, in italics, its reason.
@@ -412,6 +424,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 - Third-party add-ons as sandboxed WebAssembly components installed from GitHub releases (spec #384, #388, #390, #391); MQTT in 0.2 (#392); accounts and webhooks in 0.3 (#439, #444). **Rejected:** native Rust dylibs, because Rust has no stable ABI and a native library has the whole process's rights; and a subprocess or container per plugin, because it is sandboxed differently on every OS and Niles in Kubernetes can't start containers. A component is one portable file whose imports are all it can touch. Trust model: see Security notes.
 - The add-on library (NIL-35): found by a GitHub topic, listed through pull requests to a registry repo, read from one `index.json` on GitHub Pages, and counted by GitHub's download count of a `niles-installed` file each fresh install fetches once. **Rejected:** a server of Niles's own, which someone would have to run and trust; counts reported by each Niles, which is telemetry; and the component's own download count, which previews and updates inflate.
 - Linear through Linear's own MCP server, as a remote tool server; Niles files and queries issues and never talks to the ai-harness (#417, #419).
+- Each person's agent tasks on a schedule (NIL-81) are My profile → Schedules, run as a chat turn of theirs, apart from the household's automations, which stay without a model. They share the automations' time triggers. **Rejected:** an automation action that runs the assistant, which would put one person's tools and answers in a household rule anyone can see and change.
 - Each person's own MCP servers (NIL-80), in the same client and registry as the household's, but per person, sealed, held to the public internet and offered only in that person's written chat. **Rejected:** a hosted connection service such as Composio, which would hold the household's tokens and see every call.
 - Approvals: Ask-first tools and every mail wait for the person's yes (spec #422, #423); the panel and the history (#455).
 - Approvals reach the person's own devices by Web Push (NIL-16). One asked in the open chat is pushed only if it still waits a minute later, and anything else at once. Every notification has Deny. Approve is only where a spoken yes would count too, and a mail gets Review instead. Answered or lapsed, it is replaced on the person's other devices by a quiet push with the same tag, never a hidden one, since Safari drops a subscription whose push shows nothing. iOS draws no buttons on a Home Screen app's notification, so a tap opens the card there. That comes from Apple's forums in October 2026 and is still to be checked on a current iPhone, along with whether iOS honours a quiet push.
@@ -483,6 +496,7 @@ Every change keeps these. Each is one rule and, in italics, its reason.
 - **Voice print**: the 192-float embedding of a voice, matched against the enrolled ones.
 - **Notification**: something Niles says unprompted at a satellite, with a chime and quiet hours; a person's own things also go to their devices by Web Push.
 - **Automation**: when X, do Y. Rules are stored in Postgres; the curve and the morning routine are code.
+- **Schedule**: a person's own task the assistant answers on time, as them, into a new conversation; not an automation.
 - **Tool server**: a remote MCP server whose tools Niles offers, named `<id>__<tool>`. A person's own is named `my-<slug>__<tool>` and offered only to them, in the written chat.
 - **Add-on library**: the add-ons other people published, read from the registry's `index.json` and shown under Add-ons → Browse. Each is Listed (reviewed into the registry), Unreviewed (found by the `niles-addon` topic) or, once taken off the list, No longer listed.
 - **Plugin**: a WebAssembly component installed from a GitHub release, targeting the `niles:integration/plugin` world in `schemas/niles-integration.wit`.

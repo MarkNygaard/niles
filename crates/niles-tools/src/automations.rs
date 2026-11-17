@@ -642,7 +642,9 @@ impl Tool for ProposeAutomation {
             description: "First step of making an automation — 'when the office door opens, \
                 turn off the office lights', 'turn the lights off five minutes after the door \
                 closes', 'tell me if the garden door has been open for ten minutes', 'turn on the \
-                porch light at sunset'. Saves nothing. Returns the rule as a sentence, and \
+                porch light at sunset'. Not for something the assistant looks up, checks or \
+                sums up on a schedule ('every Monday at 8, my open issues'): that is \
+                make_schedule. Saves nothing. Returns the rule as a sentence, and \
                 rule_in_full, every trigger, condition and action as it will run: check that \
                 against what was asked, then read the sentence to the person and ask whether to \
                 save it ('When the office door opens, I'll turn off the office lights. Shall \

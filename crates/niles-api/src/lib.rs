@@ -55,6 +55,7 @@ pub mod presence;
 pub mod publish;
 pub mod push;
 pub mod scenes;
+pub mod schedules;
 pub mod secrets;
 pub mod server;
 pub mod skills;

@@ -2742,6 +2742,7 @@ dependencies = [
  "niles-presence",
  "niles-recognition",
  "niles-scheduler",
+ "niles-schedules",
  "niles-skills",
  "niles-speakers",
  "niles-training",
@@ -2838,6 +2839,7 @@ dependencies = [
  "niles-presence",
  "niles-recognition",
  "niles-scheduler",
+ "niles-schedules",
  "niles-skills",
  "niles-speakers",
  "niles-stt",
@@ -2971,6 +2973,7 @@ dependencies = [
  "niles-mcp",
  "niles-presence",
  "niles-recognition",
+ "niles-schedules",
  "niles-training",
  "niles-webpush",
  "rand 0.10.3",
@@ -3250,6 +3253,20 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tracing",
+]
+
+[[package]]
+name = "niles-schedules"
+version = "0.7.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "chrono-tz",
+ "niles-automations",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

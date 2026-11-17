@@ -1663,3 +1663,92 @@ async fn a_persons_server_and_its_key_are_theirs_and_sealed() {
     );
     assert!(store.remove(&person, server.id).await.expect("remove"));
 }
+
+// ---- each person's schedules ------------------------------------------
+
+#[tokio::test]
+#[ignore = "needs NILES_TEST_DATABASE_URL"]
+async fn a_persons_schedule_and_its_runs_are_theirs() {
+    use niles_schedules::{NewSchedule, Outcome, ScheduleStore, When};
+    let Some(backend) = backend() else {
+        return;
+    };
+    let store = niles_db::PostgresSchedules::new(backend.pool(), backend.describe_target());
+    let person = format!("person:test-{}", rand::random::<u64>());
+    let other = format!("{person}-else");
+    let now = chrono::Utc::now();
+    let new = NewSchedule::new(
+        "Linear on Monday",
+        "my open Linear issues by priority",
+        When::Days {
+            days: vec![chrono::Weekday::Mon],
+            at: "08:00".into(),
+        },
+    )
+    .expect("valid");
+    let schedule = store
+        .add(&person, &new, Some(now - chrono::TimeDelta::seconds(5)))
+        .await
+        .expect("add");
+    assert_eq!(schedule.when, new.when, "when reads back as written");
+    assert!(store.list(&other).await.expect("list").is_empty());
+    assert!(store.get(&other, schedule.id).await.expect("get").is_none());
+    assert!(
+        store
+            .start_run(&other, schedule.id, now, Outcome::Running)
+            .await
+            .expect("start")
+            .is_none(),
+        "nobody runs another's schedule"
+    );
+    assert!(
+        store
+            .due(now)
+            .await
+            .expect("due")
+            .iter()
+            .any(|(p, s)| *p == person && s.id == schedule.id)
+    );
+
+    let run = store
+        .start_run(&person, schedule.id, now, Outcome::Running)
+        .await
+        .expect("start")
+        .expect("theirs");
+    store
+        .finish_run(run, Outcome::Waiting, Some(7), None)
+        .await
+        .expect("finish");
+    let runs = store
+        .runs(&person, schedule.id)
+        .await
+        .expect("runs")
+        .expect("theirs");
+    assert_eq!(runs[0].outcome, Outcome::Waiting);
+    assert_eq!(runs[0].conversation, Some(7));
+    assert!(
+        store
+            .runs(&other, schedule.id)
+            .await
+            .expect("runs")
+            .is_none()
+    );
+
+    assert!(
+        store
+            .set_paused(&person, schedule.id, true, None)
+            .await
+            .expect("pause")
+    );
+    assert!(
+        !store
+            .due(now)
+            .await
+            .expect("due")
+            .iter()
+            .any(|(_, s)| s.id == schedule.id),
+        "paused is never due"
+    );
+    assert!(!store.remove(&other, schedule.id).await.expect("remove"));
+    assert!(store.remove(&person, schedule.id).await.expect("remove"));
+}

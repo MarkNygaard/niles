@@ -128,6 +128,7 @@ niles-podcasts = { path = "crates/niles-podcasts" }
 niles-notifications = { path = "crates/niles-notifications" }
 niles-presence = { path = "crates/niles-presence" }
 niles-automations = { path = "crates/niles-automations" }
+niles-schedules = { path = "crates/niles-schedules" }
 niles-integration-linear = { path = "crates/niles-integration-linear" }
 niles-mcp = { path = "crates/niles-mcp" }
 niles-plugins = { path = "crates/niles-plugins" }
