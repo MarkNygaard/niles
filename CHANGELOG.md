@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/MarkNygaard/niles/compare/v0.8.0...v0.9.0) (2026-11-17)
+
+
+### Features
+
+* **browsing:** watch Niles's browser live, take it over, give it back; a CAPTCHA hands it over (NIL-82) ([#534](https://github.com/MarkNygaard/niles/issues/534)) ([1ac2c4d](https://github.com/MarkNygaard/niles/commit/1ac2c4dc43be2b0ac290ca384ad041aa9f1afc8f))
+
 ## [0.8.0](https://github.com/MarkNygaard/niles/compare/v0.7.0...v0.8.0) (2026-11-17)
 
 
