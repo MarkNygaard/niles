@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.0](https://github.com/MarkNygaard/niles/compare/v0.9.0...v0.10.0) (2026-11-18)
+
+
+### Features
+
+* **browsing:** Niles closes cookie and newsletter popups, picks a size with no card, and the live view enlarges (NIL-84) ([#539](https://github.com/MarkNygaard/niles/issues/539)) ([1418fe6](https://github.com/MarkNygaard/niles/commit/1418fe62c04553f0c4f25f1f115a13f95bcbedbe))
+* **browsing:** the chat shows Niles's browser while it works, and says when a site refuses it (NIL-83) ([#537](https://github.com/MarkNygaard/niles/issues/537)) ([b6caa6f](https://github.com/MarkNygaard/niles/commit/b6caa6f17c9c144cbd130ffe8fa31597c5f6631d))
+
 ## [0.9.0](https://github.com/MarkNygaard/niles/compare/v0.8.0...v0.9.0) (2026-11-17)
 
 
