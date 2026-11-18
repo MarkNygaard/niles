@@ -71,6 +71,49 @@ describe("the browser in the chat", () => {
     expect(FakeSocket.made).toHaveLength(0);
   });
 
+  it("steps aside while the Browser tab shows the page, and streams nothing", async () => {
+    const onCloseBrowser = vi.fn();
+    const onOpenBrowser = vi.fn();
+    renderChat({
+      pending: "find me some black jeans",
+      browser: ZALANDO,
+      browserBeside: true,
+      onCloseBrowser,
+      onOpenBrowser,
+    });
+    const aside = screen.getByRole("group", {
+      name: "The browser on zalando.dk is open beside the chat",
+    });
+    expect(aside).toHaveTextContent("Open beside the chat");
+    expect(screen.queryByRole("button", { name: /Open the browser/ })).toBeNull();
+    expect(FakeSocket.made).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onCloseBrowser).toHaveBeenCalled();
+    expect(onOpenBrowser).not.toHaveBeenCalled();
+  });
+
+  it("comes back live when the Browser tab closes", async () => {
+    const handlers = { onSend: vi.fn(), onNew: vi.fn(), onOpenPanel: vi.fn(), onAnswer: vi.fn() };
+    const { rerender } = render(
+      <ChatView turns={[]} {...handlers} pending="jeans" browser={ZALANDO} browserBeside />,
+    );
+    expect(FakeSocket.made).toHaveLength(0);
+    rerender(<ChatView turns={[]} {...handlers} pending="jeans" browser={ZALANDO} />);
+    expect(
+      screen.getByRole("button", { name: "Niles is on zalando.dk. Open the browser" }),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(FakeSocket.made).toHaveLength(1));
+  });
+
+  it("turns the strip into a way to close the tab while it shows the page", () => {
+    const onCloseBrowser = vi.fn();
+    const onOpenBrowser = vi.fn();
+    renderChat({ browser: ZALANDO, browserBeside: true, onCloseBrowser, onOpenBrowser });
+    fireEvent.click(screen.getByRole("button", { name: /Showing beside the chat · zalando\.dk/ }));
+    expect(onCloseBrowser).toHaveBeenCalled();
+    expect(onOpenBrowser).not.toHaveBeenCalled();
+  });
+
   it("says when the person has the browser", () => {
     renderChat({ browser: { ...ZALANDO, control: "person" } });
     expect(

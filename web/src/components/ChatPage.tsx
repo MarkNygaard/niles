@@ -524,6 +524,8 @@ export function ChatPage() {
           browser.data?.control === "person" ? (browser.data.handoff?.id ?? null) : null
         }
         browser={browser.data ?? null}
+        browserBeside={panelOpen && tab === "browser" && browser.data != null}
+        onCloseBrowser={() => setPanelOpen(false)}
         onOpenBrowser={openBrowser}
         onDictate={async (audio) => (await api.dictate(audio)).text}
         onOpenArtifact={openArtifact}

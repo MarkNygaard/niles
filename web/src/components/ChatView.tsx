@@ -78,6 +78,10 @@ export interface ChatViewProps {
   handoffWaiting?: string | null;
   /** Niles's browser, while it has one open for the person. */
   browser?: LiveView | null;
+  /** The Browser tab shows it beside the chat now. */
+  browserBeside?: boolean;
+  /** Shut the panel the Browser tab is in. */
+  onCloseBrowser?: () => void;
   /** Open Niles's browser live, in Niles's panel. */
   onOpenBrowser?: () => void;
   /** Words from a recording. Without it there is no microphone. */
@@ -118,6 +122,8 @@ export function ChatView({
   enteringCode,
   handoffWaiting,
   browser,
+  browserBeside,
+  onCloseBrowser,
   onOpenBrowser,
   onDictate,
   onOpenArtifact,
@@ -440,7 +446,14 @@ export function ChatView({
                 {/* Niles at work in its browser, live, while this turn
                     is waited for: the way to watch or take over is
                     right here, not only behind the avatar. */}
-                {browser && <BrowserGlimpse live={browser} onOpen={onOpenBrowser} />}
+                {browser && (
+                  <BrowserGlimpse
+                    live={browser}
+                    beside={browserBeside}
+                    onOpen={onOpenBrowser}
+                    onClose={onCloseBrowser}
+                  />
+                )}
               </div>
             </Bubble>
           </li>
@@ -476,7 +489,14 @@ export function ChatView({
           "sm:bottom-0 sm:pb-[env(safe-area-inset-bottom)]",
         )}
       >
-        {browser && !busy && <BrowserStrip live={browser} onOpen={onOpenBrowser} />}
+        {browser && !busy && (
+          <BrowserStrip
+            live={browser}
+            beside={browserBeside}
+            onOpen={onOpenBrowser}
+            onClose={onCloseBrowser}
+          />
+        )}
         {/* The files about to go, each removable: above the field the
             way a messages app shows what is attached. */}
         {files.length > 0 && (
