@@ -1,6 +1,15 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, CornerDownLeft, Delete, Hand, RotateCw } from "lucide-react";
+import {
+  ArrowLeft,
+  CornerDownLeft,
+  Delete,
+  Hand,
+  Maximize2,
+  Minimize2,
+  RotateCw,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -49,6 +58,19 @@ export function LiveBrowser({
   const reload = useMutation({ mutationFn: api.browserReload });
   const live = view.data ?? null;
   const { picture, refused, clearRefused, send } = useLivePicture(live !== null);
+  // As large as the window, over everything: the panel's half of a desk
+  // is small for a page. The socket stays here, so the picture carries
+  // on whichever size it is shown at.
+  const [big, setBig] = useState(false);
+  useEffect(() => {
+    if (!big) return;
+    const shrink = (e: KeyboardEvent) => {
+      // An Escape the page took while it is the person's is the page's.
+      if (e.key === "Escape" && !e.defaultPrevented) setBig(false);
+    };
+    window.addEventListener("keydown", shrink);
+    return () => window.removeEventListener("keydown", shrink);
+  }, [big]);
 
   if (view.isPending) return <Skeleton className="aspect-[1280/900] w-full" />;
   if (view.isError) return <p className="text-destructive text-sm">{view.error.message}</p>;
@@ -63,7 +85,7 @@ export function LiveBrowser({
 
   const working = live.control === "person";
   const error = take.error ?? back.error ?? reload.error;
-  return (
+  const shown = (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-1">
         <p className="text-muted-foreground truncate text-xs" title={live.address}>
@@ -124,8 +146,37 @@ export function LiveBrowser({
             Take over
           </Button>
         )}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="ml-auto"
+          aria-label={big ? "Make the browser smaller" : "Enlarge the browser"}
+          onClick={() => setBig((b) => !b)}
+        >
+          {big ? <Minimize2 aria-hidden /> : <Maximize2 aria-hidden />}
+          {big ? "Smaller" : "Enlarge"}
+        </Button>
       </div>
     </div>
+  );
+  if (!big) return shown;
+  return (
+    <>
+      <p className="text-muted-foreground text-sm">The browser is enlarged.</p>
+      {createPortal(
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Niles's browser, enlarged"
+          className="bg-background fixed inset-0 z-50 overflow-auto p-4 sm:p-6"
+        >
+          {/* As wide as the window allows while the page and its
+              controls still fit its height. */}
+          <div className="mx-auto w-full max-w-[calc((100dvh-11rem)*1280/900)]">{shown}</div>
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }
 

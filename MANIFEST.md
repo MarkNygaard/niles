@@ -66,6 +66,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | Feature | Summary | Since |
 | --- | --- | --- |
 | `browsing-authenticator-codes` | A saved login can keep its authenticator key, and Niles types the sign-in code itself | [#528](https://github.com/MarkNygaard/niles/pull/528) |
+| `browsing-popups-and-choices` | Niles closes cookie and newsletter popups itself and picks a size or colour with no card; the live view can be enlarged | [#539](https://github.com/MarkNygaard/niles/pull/539) |
 | `browsing-sign-in` | Niles signs in with a saved login only on its own sites, asks for a sign-in code on a card, and stops at a CAPTCHA | [#526](https://github.com/MarkNygaard/niles/pull/526) |
 | `tool-browsing` | Do something on a website from the chat: Niles reads the pages, and each click, typing or submit waits on a card | [#520](https://github.com/MarkNygaard/niles/pull/520) |
 | `tool-command-history` | Ask what was said to Niles and when, from 14 days of spoken turns kept in Postgres | [#508](https://github.com/MarkNygaard/niles/pull/508) |

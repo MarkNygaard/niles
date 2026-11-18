@@ -623,7 +623,7 @@ fn page(html: &str) -> Url {
             byte => format!("%{byte:02X}"),
         })
         .collect();
-    Url::parse(&format!("data:text/html,{encoded}")).unwrap()
+    Url::parse(&format!("data:text/html;charset=utf-8,{encoded}")).unwrap()
 }
 
 #[tokio::test]
@@ -1066,5 +1066,117 @@ async fn a_page_the_site_refused_reads_as_blocked_and_a_challenge_as_a_captcha()
             "{address}"
         );
     }
+    Tab::close(&*session).await;
+}
+
+/// The reference a reading gives the element labelled `label`.
+fn reference_of(text: &str, label: &str) -> Reference {
+    let quoted = format!("\"{label}\"");
+    let line = text
+        .lines()
+        .find(|line| line.contains(&quoted))
+        .unwrap_or_else(|| panic!("no {quoted} in the reading: {text}"));
+    let number = line
+        .split('[')
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .unwrap();
+    Reference::parse(&json!(number.parse::<u32>().unwrap())).unwrap()
+}
+
+/// What the page script's `window[name]` holds, in the page's own world.
+async fn page_value(session: &Session, name: &str) -> Value {
+    session
+        .on(
+            "Runtime.evaluate",
+            json!({"expression": format!("window.{name} ?? null"), "returnByValue": true}),
+        )
+        .await
+        .unwrap()
+        .get("result")
+        .and_then(|r| r.get("value"))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+#[tokio::test]
+#[ignore = "needs a Chromium's DevTools at NILES_TEST_CHROMIUM, such as 127.0.0.1:9222"]
+async fn a_cookiebot_banner_is_declined_and_never_accepted() {
+    let session = session().await;
+    let banner = page(
+        r#"<h1>Shop</h1>
+<div id="CybotCookiebotDialog" style="position:fixed;left:100px;top:100px;width:900px;height:400px;background:#fff">
+  <p>Denne hjemmeside bruger cookies</p>
+  <button id="CybotCookiebotDialogBodyButtonDecline" onclick="window.declined=true;this.closest('#CybotCookiebotDialog').remove()">Afvis</button>
+  <button onclick="window.accepted=true;this.closest('#CybotCookiebotDialog').remove()">Tillad alle</button>
+</div>"#,
+    );
+    session.open(&banner).await.unwrap();
+    let closed = session.tidy().await.unwrap();
+    assert_eq!(
+        closed,
+        [crate::Tidied {
+            popup: crate::Popup::Cookies,
+            pressed: crate::Pressed::Declined
+        }]
+    );
+    assert_eq!(page_value(&session, "declined").await, json!(true));
+    assert_eq!(page_value(&session, "accepted").await, Value::Null);
+    assert!(
+        session.tidy().await.unwrap().is_empty(),
+        "nothing left to close"
+    );
+    Tab::close(&*session).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Chromium's DevTools at NILES_TEST_CHROMIUM, such as 127.0.0.1:9222"]
+async fn a_newsletter_popup_is_closed_without_signing_up() {
+    let session = session().await;
+    let popup = page(
+        r#"<h1>Shop</h1>
+<div role="dialog" aria-modal="true" style="position:fixed;left:200px;top:150px;width:600px;height:300px;background:#fff">
+  <p>Tilmeld dig vores nyhedsbrev og få 10% rabat</p>
+  <input id="email" type="email" placeholder="Din e-mail">
+  <button onclick="window.signedUp=true">Tilmeld</button>
+  <button class="modal-close" aria-label="Luk" onclick="window.closedIt=true;this.closest('[role=dialog]').remove()">×</button>
+</div>"#,
+    );
+    session.open(&popup).await.unwrap();
+    let closed = session.tidy().await.unwrap();
+    assert_eq!(
+        closed,
+        [crate::Tidied {
+            popup: crate::Popup::Signup,
+            pressed: crate::Pressed::Closed
+        }]
+    );
+    assert_eq!(page_value(&session, "closedIt").await, json!(true));
+    assert_eq!(page_value(&session, "signedUp").await, Value::Null);
+    Tab::close(&*session).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a Chromium's DevTools at NILES_TEST_CHROMIUM, such as 127.0.0.1:9222"]
+async fn a_size_among_others_is_a_choice_and_a_lone_toggle_or_plain_button_is_not() {
+    let session = session().await;
+    let product = page(
+        r#"<h1>Bluse</h1>
+<div class="sizes"><button type="submit" aria-pressed="false">S</button><button type="submit" aria-pressed="false">M</button><button type="submit" aria-pressed="false">L</button></div>
+<fieldset><label><input type="radio" name="c" value="red"> Red</label><label><input type="radio" name="c" value="blue"> Blue</label></fieldset>
+<div class="wish"><span>Wishlist</span><button aria-pressed="false">Save for later</button></div>
+<button>Add to basket</button>"#,
+    );
+    session.open(&product).await.unwrap();
+    let text = session.read().await.unwrap().text;
+    let choice = |label: &str| {
+        let reference = reference_of(&text, label);
+        let session = &session;
+        async move { session.element(reference).await.unwrap().unwrap().choice }
+    };
+    assert!(choice("M").await, "a size among sizes");
+    assert!(choice("Blue").await, "a radio among radios");
+    assert!(!choice("Save for later").await, "a toggle on its own");
+    assert!(!choice("Add to basket").await, "adding to the basket");
     Tab::close(&*session).await;
 }

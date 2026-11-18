@@ -121,6 +121,38 @@ describe("LiveBrowser", () => {
   });
 });
 
+describe("Enlarge", () => {
+  it("shows the browser as large as the window, and back", async () => {
+    vi.spyOn(api, "browser").mockResolvedValue(YOURS);
+    renderBrowser();
+    fireEvent.click(await screen.findByRole("button", { name: "Enlarge the browser" }));
+    const big = screen.getByRole("dialog", { name: "Niles's browser, enlarged" });
+    expect(big).toContainElement(screen.getByLabelText("The page, yours to use"));
+    expect(screen.getByRole("button", { name: "Give back to Niles" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Make the browser smaller" }));
+    expect(screen.queryByRole("dialog", { name: "Niles's browser, enlarged" })).toBeNull();
+    expect(FakeSocket.made).toHaveLength(1);
+  });
+
+  it("goes back to its size on Escape", async () => {
+    vi.spyOn(api, "browser").mockResolvedValue(NILES);
+    renderBrowser();
+    fireEvent.click(await screen.findByRole("button", { name: "Enlarge the browser" }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Niles's browser, enlarged" })).toBeNull(),
+    );
+  });
+
+  it("leaves an Escape typed into the page to the page", async () => {
+    vi.spyOn(api, "browser").mockResolvedValue(YOURS);
+    renderBrowser();
+    fireEvent.click(await screen.findByRole("button", { name: "Enlarge the browser" }));
+    fireEvent.keyDown(screen.getByLabelText("The page, yours to use"), { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Niles's browser, enlarged" })).toBeInTheDocument();
+  });
+});
+
 describe("HandoffCard", () => {
   const handoff = YOURS.handoff!;
 

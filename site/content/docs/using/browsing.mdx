@@ -27,8 +27,20 @@ first.
 
 ## The cards
 
-Every click, every bit of typing, every choice from a list and every form
-Niles submits waits on a card under its reply. The card asks the step, such
+Every click, every bit of typing and every form Niles submits waits on a
+card under its reply. Two kinds of step don't:
+
+- **Picking an option**, such as a size or a colour from a row of them, a
+  radio button, or a choice from a drop-down list. It changes nothing
+  until something is added or sent, which waits on a card. On a checkout
+  page, a choice waits on a card too.
+- **Closing a popup.** Niles closes a cookie banner by declining all but
+  the necessary cookies, or with its close button when there's no
+  decline. It accepts only when the banner offers nothing else. It closes
+  a newsletter or offer popup without signing up and never types into one.
+  Niles tells you what it closed.
+
+Otherwise the step waits on its card. The card asks the step, such
 as **Click "Add to basket"?**, with the site under the question. It shows a
 picture of the page with what Niles would act on outlined, the page's
 address, the element, the text or the option when there is one, and the
@@ -57,7 +69,8 @@ Niles follows links by opening their addresses, which needs no card.
 While Niles works in its browser, the reply you're waiting for shows the
 page live, small, with the site under it. Tap it to open the **Browser**
 tab of the Niles panel: on a computer it sits beside the chat, and on a
-phone it fills the screen. While the browser stays open afterwards, a
+phone it fills the screen. **Enlarge** makes it as large as the window,
+and **Smaller** or Escape puts it back. While the browser stays open afterwards, a
 strip above the message field leads back to it. Watching changes
 nothing.
 
