@@ -345,6 +345,7 @@ pub fn router(state: AppState) -> Router {
         .route("/me/schedules/{id}/run", post(crate::schedules::run))
         .route("/me/schedules/{id}/runs", get(crate::schedules::runs))
         .route("/me/logins/{id}/activity", get(crate::logins::activity))
+        .route("/me/logins/{id}/icon", get(crate::logins::icon))
         .route("/presence/device", get(crate::presence::device_status))
         .route("/presence/device", post(crate::presence::pair_device))
         .route("/presence/tado", get(crate::presence::tado_status))

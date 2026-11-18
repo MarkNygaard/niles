@@ -183,7 +183,16 @@ pub async fn remove(
 
 #[derive(Serialize)]
 pub struct ActivityList {
-    pub activity: Vec<Activity>,
+    pub activity: Vec<ActivityView>,
+}
+
+/// One use, with the title of the conversation it came from, when that
+/// conversation is the person's and still kept.
+#[derive(Serialize)]
+pub struct ActivityView {
+    #[serde(flatten)]
+    pub activity: Activity,
+    pub conversation_title: Option<String>,
 }
 
 /// `GET /me/logins/{id}/activity` — what the person's login was used
@@ -199,7 +208,64 @@ pub async fn activity(
         .await
         .map_err(refused)?
         .ok_or_else(|| failed(StatusCode::NOT_FOUND, NO_SUCH))?;
+    // The titles of the person's own conversations, read as their chat
+    // list is: another person's id finds no title.
+    let titles: std::collections::HashMap<i64, String> = match state.chat.as_ref() {
+        Some(chat) if activity.iter().any(|a| a.conversation.is_some()) => {
+            let (who, speaker) = crate::chat::caller(&state, &headers);
+            chat.conversations(&who, speaker.as_deref())
+                .await
+                .into_iter()
+                .map(|summary| (summary.id, summary.title))
+                .collect()
+        }
+        _ => std::collections::HashMap::new(),
+    };
+    let activity = activity
+        .into_iter()
+        .map(|activity| ActivityView {
+            conversation_title: activity
+                .conversation
+                .and_then(|id| titles.get(&id).cloned()),
+            activity,
+        })
+        .collect();
     Ok(Json(ActivityList { activity }))
+}
+
+/// `GET /me/logins/{id}/icon` — the login's site icon, fetched by Niles
+/// once a day at most. Another person's login, or a site with no icon
+/// Niles serves, answers 404.
+pub async fn icon(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> Result<axum::response::Response, Failure> {
+    use axum::response::IntoResponse;
+    let person = signed_in_person(&state, &headers)?;
+    let login = store(&state)?
+        .get(&person, id)
+        .await
+        .map_err(refused)?
+        .ok_or_else(|| failed(StatusCode::NOT_FOUND, NO_SUCH))?;
+    let origin = login
+        .origins
+        .first()
+        .ok_or_else(|| failed(StatusCode::NOT_FOUND, "no icon"))?;
+    let icon = state
+        .login_icons
+        .of(origin.as_str())
+        .await
+        .ok_or_else(|| failed(StatusCode::NOT_FOUND, "no icon"))?;
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, icon.mime),
+            (axum::http::header::CACHE_CONTROL, "private, max-age=86400"),
+            (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        icon.bytes.to_vec(),
+    )
+        .into_response())
 }
 
 /// `POST /me/logins/{id}/sign-out` — forget the browser profile, keep
@@ -269,9 +335,20 @@ mod tests {
             Err("unused".into())
         }
 
-        async fn conversations(&self, _who: &str, _speaker: Option<&str>) -> Vec<chat::Summary> {
+        async fn conversations(&self, who: &str, _speaker: Option<&str>) -> Vec<chat::Summary> {
             self.calls.fetch_add(1, Ordering::Relaxed);
-            Vec::new()
+            // Majse has one conversation; nobody else has any.
+            if who != "majse@example.com" {
+                return Vec::new();
+            }
+            vec![chat::Summary {
+                id: 7,
+                title: "Buy black jeans".into(),
+                started_at: chrono::Utc::now(),
+                last_at: chrono::Utc::now(),
+                turns: 2,
+                spoken: false,
+            }]
         }
 
         async fn conversation(
@@ -401,7 +478,8 @@ allowed = [
             niles_core::EventBus::default(),
         )
         .with_config_store(Some(config))
-        .with_chat(Some(watched.clone()));
+        .with_chat(Some(watched.clone()))
+        .with_login_icons(Arc::new(crate::login_icons::Icons::new(Box::new(ShopIcon))));
         if with_store {
             state = state.with_logins(Some(store.clone()));
         }
@@ -460,6 +538,17 @@ allowed = [
             body["password"] = json!(password);
         }
         body
+    }
+
+    /// shop.example's favicon, and nothing else on the internet.
+    struct ShopIcon;
+
+    #[async_trait::async_trait]
+    impl crate::login_icons::Fetch for ShopIcon {
+        async fn fetch(&self, address: &str, _accept: &str, _max: usize) -> Option<Vec<u8>> {
+            (address == "https://shop.example/favicon.ico")
+                .then(|| vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A])
+        }
     }
 
     async fn add_login(f: &Fixture, email: &str) -> i64 {
@@ -786,6 +875,62 @@ allowed = [
             status,
             StatusCode::NOT_FOUND,
             "his request reads nothing of hers"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_logins_icon_is_its_persons_alone_and_served_as_a_picture() {
+        let f = fixture(true).await;
+        let id = add_login(&f, "majse@example.com").await;
+        let uri = format!("/me/logins/{id}/icon");
+        let res = f
+            .app
+            .clone()
+            .oneshot(by("majse@example.com", "GET", &uri, None))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()[header::CONTENT_TYPE], "image/png");
+        assert_eq!(res.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        let (status, _) = send(&f.app, by("mark@example.com", "GET", &uri, None)).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "his request finds nothing of hers"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_use_carries_its_conversations_title_for_its_person_only() {
+        let f = fixture(true).await;
+        let id = add_login(&f, "majse@example.com").await;
+        let context = niles_logins::Context {
+            site: Some("https://shop.example".into()),
+            conversation: Some(7),
+        };
+        f.store
+            .record(MAJSE, id, niles_logins::Used::SignedIn, &context)
+            .await
+            .unwrap();
+        let mut stray = context.clone();
+        stray.conversation = Some(99);
+        f.store
+            .record(MAJSE, id, niles_logins::Used::SignedIn, &stray)
+            .await
+            .unwrap();
+        let uri = format!("/me/logins/{id}/activity");
+        let (status, body) = send(&f.app, by("majse@example.com", "GET", &uri, None)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let titles: Vec<&Value> = body["activity"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| &a["conversation_title"])
+            .collect();
+        assert!(titles.contains(&&json!("Buy black jeans")), "{body}");
+        assert!(
+            titles.contains(&&Value::Null),
+            "a conversation that isn't hers has no title: {body}"
         );
     }
 

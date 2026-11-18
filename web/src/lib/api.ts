@@ -1892,6 +1892,13 @@ export interface LoginActivity {
     | "code_made";
   site: string | null;
   conversation: number | null;
+  /** The title of the conversation it came from, when it is still kept. */
+  conversation_title?: string | null;
+}
+
+/** Where a saved login's site icon is served, fetched by Niles. */
+export function loginIconUrl(id: number): string {
+  return `/me/logins/${id}/icon`;
 }
 
 /** A card asking the person to add a login. Mirrors `LoginRequest` in

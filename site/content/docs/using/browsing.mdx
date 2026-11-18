@@ -130,20 +130,28 @@ password you type there go straight to Niles, never into the chat or to
 the model.
 
 You can also add a login before you need it, under **My profile →
-Vault**. **Add login** asks for a label, the site's address, the username
-and the password, and, if you like, an authenticator key. A site that
-signs in or checks out on another address needs that address too. Each
-login in the list has these buttons:
+Vault**. **Add** asks for a label, the site's address, the username and
+the password, and, if you like, an authenticator key. A site that signs
+in or checks out on another address needs that address too.
 
-- **Edit** shows the password and any authenticator key as saved. Leave
-  a field empty to keep it.
-- **Activity** lists what Niles used the login for in the last 90 days:
-  each sign-in and whether it worked, each code it entered, and when you
-  added, changed or signed out of it, each with the site and a link to
-  the conversation. Never what was typed.
+Vault lists your logins with each site's icon, and **Search** finds one by
+its name, username or site. On a computer the login you pick opens beside
+the list; on a phone it opens over it.
+
+- **Username** has a button that copies it.
+- **Password** and **Authenticator** show as saved, never themselves.
+- **Edit** changes the login. Leave the password or the key empty to keep
+  it.
 - **Sign out** forgets what the site stored in Niles's browser for that
   login, and keeps the login.
-- **Remove** deletes the login, what the site stored, and its activity.
+- Below that is what Niles used the login for in the last 90 days, by
+  day: each sign-in and whether it worked, each code it entered, and when
+  you added, changed or signed out of it. Each one has the site, the time
+  and the conversation it came from, which opens it. Never what was typed.
+- **Delete login** deletes the login, what the site stored, and its
+  activity.
+
+Niles fetches each site's icon itself, once a day at most.
 
 Only you see your Vault. Nobody can read a password or a key back, and
 each is encrypted for your login alone, so it can't be opened as anyone
@@ -152,9 +160,20 @@ else's. Saved logins need Niles's database and its secrets key.
 ### Authenticator keys
 
 When you turn on sign-in with an authenticator app, a site shows a QR
-code and, beside it, a setup key (or a link starting `otpauth://`). Paste
-that into the login's **Authenticator key**, and when the site asks for
-the app's code, Niles makes the code and types it itself, with no card.
+code and, beside it, a setup key. In the login's form, either:
+
+- press **Scan QR code** and point your phone's camera at the code, for
+  example on your computer's screen;
+- press **From an image**, or paste a screenshot of the code into the
+  form; or
+- paste the setup key, or a link starting `otpauth://`, into
+  **Authenticator key**.
+
+The QR code is read on your device: only the key goes to Niles, never the
+picture or the camera's view. To get a QR code for an account that
+already uses an authenticator app, add another authenticator in the
+site's security settings. When the site asks for the app's code, Niles
+makes the code and types it itself, with no card.
 If the page still asks after that, because the site sent a code by text
 or mail as well, you get the usual code card. A login's key is used only
 for that login, in a sign-in you allowed. Your phone's app keeps working
