@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.0](https://github.com/MarkNygaard/niles/compare/v0.10.0...v0.11.0) (2026-11-18)
+
+
+### Features
+
+* **browsing:** the chat's small browser view steps aside while the Browser tab shows the page (NIL-86) ([#543](https://github.com/MarkNygaard/niles/issues/543)) ([aa6a561](https://github.com/MarkNygaard/niles/commit/aa6a561bd4fafe1f8b298714323f84157c54bb00))
+* **vault:** a list beside each login's detail, site icons, activity by day, and scanning an authenticator's QR code (NIL-85) ([#541](https://github.com/MarkNygaard/niles/issues/541)) ([b167638](https://github.com/MarkNygaard/niles/commit/b167638dfb6fd38535249f9fc6472e8f4580ba2d))
+
 ## [0.10.0](https://github.com/MarkNygaard/niles/compare/v0.9.0...v0.10.0) (2026-11-18)
 
 
