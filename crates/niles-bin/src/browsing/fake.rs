@@ -96,6 +96,8 @@ pub(crate) struct FakeState {
     pub(crate) frames: Option<tokio::sync::watch::Sender<Option<niles_browser::Frame>>>,
     /// "back" and "reload", in order.
     pub(crate) moved: Vec<&'static str>,
+    /// The popups `tidy` closes next, in order.
+    pub(crate) popups: Vec<niles_browser::Tidied>,
 }
 
 /// What `asks` answers for the state: the standing ask. A submit moves
@@ -408,6 +410,14 @@ impl Tab for FakeTab {
         Ok(())
     }
 
+    async fn tidy(&self) -> Result<Vec<niles_browser::Tidied>> {
+        let mut state = self.state();
+        if state.closed {
+            return Err(niles_browser::Error::Closed);
+        }
+        Ok(std::mem::take(&mut state.popups))
+    }
+
     async fn screencast(
         &self,
         _pace: Arc<std::sync::atomic::AtomicU64>,
@@ -496,6 +506,13 @@ pub(crate) fn select(reference: u32, node: i64, label: &str, options: &[(&str, &
     element
 }
 
+/// A size or colour among its group's: a click on it picks an option.
+pub(crate) fn toggle(reference: u32, node: i64, label: &str) -> Element {
+    let mut element = element(reference, node, Kind::Button, label);
+    element.choice = true;
+    element
+}
+
 /// A visible, enabled element of `kind` labelled `label`.
 fn element(reference: u32, node: i64, kind: Kind, label: &str) -> Element {
     Element {
@@ -508,5 +525,6 @@ fn element(reference: u32, node: i64, kind: Kind, label: &str) -> Element {
         disabled: false,
         visible: true,
         options: Vec::new(),
+        choice: false,
     }
 }
