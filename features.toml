@@ -1206,3 +1206,9 @@ id = "browsing-popups-and-choices"
 category = "llm.tools"
 summary = "Niles closes cookie and newsletter popups itself and picks a size or colour with no card; the live view can be enlarged"
 since_pr = 539
+
+[[feature]]
+id = "vault-redesign"
+category = "ui.settings"
+summary = "Vault lists logins with site icons beside each one's detail and activity by day; authenticator QR codes scan in"
+since_pr = 541

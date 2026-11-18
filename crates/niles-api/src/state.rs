@@ -114,6 +114,8 @@ pub struct AppState {
     pub personal_servers: Option<Arc<dyn crate::personal_servers::PersonalToolServers>>,
     /// Each person's live browser. Absent where browsing isn't built.
     pub live_browser: Option<Arc<dyn crate::browser::LiveBrowser>>,
+    /// The saved logins' site icons Niles found, kept for a day.
+    pub login_icons: Arc<crate::login_icons::Icons>,
     /// Each person's own schedules. Absent without a database.
     pub schedules: Option<Arc<dyn crate::schedules::PersonalSchedules>>,
     /// Each person's Strava and the workouts it brings. Absent without a
@@ -185,6 +187,7 @@ impl AppState {
             personal_servers: None,
             schedules: None,
             live_browser: None,
+            login_icons: Arc::new(crate::login_icons::Icons::default()),
             strava: None,
             logins: None,
             strava_attempts: Arc::new(crate::auth::flow::Attempts::new()),
@@ -303,6 +306,11 @@ impl AppState {
         servers: Option<Arc<dyn crate::personal_servers::PersonalToolServers>>,
     ) -> Self {
         self.personal_servers = servers;
+        self
+    }
+
+    pub fn with_login_icons(mut self, icons: Arc<crate::login_icons::Icons>) -> Self {
+        self.login_icons = icons;
         self
     }
 

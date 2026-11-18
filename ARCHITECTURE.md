@@ -266,6 +266,9 @@ A person asks in the chat for something done on a website, for example "put a 2 
 - `GET /me/logins` lists the signed-in person's own logins as `{logins: [{id, label, origins, username, last_used, signed_in}]}`; `signed_in` means a browser profile is kept. No response holds the password.
 - `POST /me/logins` adds one and answers 201. `PUT /me/logins/{id}` edits one and answers 200; an empty password keeps the current one. `DELETE /me/logins/{id}` and `POST /me/logins/{id}/sign-out` answer 204.
 - An edit that changes the username or the origins forgets the browser profile.
+- `GET /me/logins/{id}/icon` answers the login's first site's icon (NIL-85), fetched by Niles through the public-only fetcher: `/favicon.ico`, else the home page's `<link rel=icon>`, apple-touch-icon first. It is kept only when its first bytes make it PNG, ICO, GIF, JPEG or WebP, never SVG, at most 100 KB, and served with `nosniff`. What was found, or that nothing was, is kept in memory for a day. Another person's login answers 404.
+- `GET /me/logins/{id}/activity` gives each use's `conversation_title`, read from the person's own conversations, so another person's conversation id finds none.
+- An authenticator's setup QR code is read in the app (jsQR), from the camera or from a picture, and only the `otpauth://totp` link inside goes to the form. Neither the picture nor the camera's view leaves the device.
 - Remove and Sign out forget the profile, and end a session open with the login first without keeping its profile; an edit ends it after keeping it. `last_used` is set at each sign-in and each profile kept.
 - The API token gets 401, and another person's login answers 404 on every route (rule 18).
 - The password is the credential rule 7 covers; no response type can carry one. The username is sealed too, and goes back only to its owner, never to the model or a log. `Debug` prints `…` for both values.

@@ -270,6 +270,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `ui-update-dot` | While a newer Niles is published, Settings and its About Niles entry carry a dot | [#516](https://github.com/MarkNygaard/niles/pull/516) |
 | `ui-voice-roles` | Picking a hearing or thinking provider sets it up: its API key sits beside it, and one save declares it | [#394](https://github.com/MarkNygaard/niles/pull/394) |
 | `vault-activity` | Vault shows what each saved login was used for: sign-ins, codes and changes, with the site and the conversation | [#528](https://github.com/MarkNygaard/niles/pull/528) |
+| `vault-redesign` | Vault lists logins with site icons beside each one's detail and activity by day; authenticator QR codes scan in | [#541](https://github.com/MarkNygaard/niles/pull/541) |
 
 ### `my-mcp-servers` — example phrasings
 

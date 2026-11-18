@@ -40,6 +40,7 @@ niles-artifacts.workspace = true
 niles-podcasts.workspace = true
 niles-webpush.workspace = true
 niles-websearch.workspace = true
+url.workspace = true
 niles-update.workspace = true
 async-trait.workspace = true
 urlencoding.workspace = true

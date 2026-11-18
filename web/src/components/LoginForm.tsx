@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { QrKey } from "@/components/QrKey";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import type { LoginDraft, SavedLogin } from "@/lib/api";
@@ -145,9 +146,11 @@ export function LoginForm({
           onChange={(e) => setAuthenticator(e.target.value)}
         />
         <p className="text-muted-foreground text-xs">
-          The setup key or otpauth:// link the site shows beside its QR code when you turn on an
-          authenticator app. With it, Niles types the sign-in code itself.
+          Scan the QR code the site shows when you turn on an authenticator app, pick or paste
+          a screenshot of it, or paste the setup key it offers beside it. With it, Niles types
+          the sign-in code itself.
         </p>
+        {!removeKey && <QrKey onKey={setAuthenticator} />}
         {login?.authenticator && (
           <div>
             <Button
