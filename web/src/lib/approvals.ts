@@ -23,9 +23,12 @@ export function answerSaid(decision: Decision): string {
 export function decidedLabel(entry: DecidedApproval): string {
   switch (entry.status) {
     case "allowed":
+      if (entry.decision === "schedule") return "Allowed by its schedule";
       return entry.decision === "conversation" ? "Allowed for the conversation" : "Allowed once";
     case "failed":
-      return "Allowed, but it didn't work";
+      return entry.decision === "schedule"
+        ? "Allowed by its schedule, but it didn't work"
+        : "Allowed, but it didn't work";
     case "denied":
       return "Denied";
     case "lapsed":

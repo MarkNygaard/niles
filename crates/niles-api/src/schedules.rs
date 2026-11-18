@@ -104,6 +104,9 @@ pub struct ScheduleBody {
     pub name: String,
     pub instruction: String,
     pub when: When,
+    /// The saved login its runs may act on without asking (NIL-87).
+    #[serde(default)]
+    pub acts_on: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,7 +152,9 @@ pub async fn add(
     let person = signed_in_person(&state, &headers)?;
     let schedules = schedules(&state)?;
     let b = read(body)?;
-    let new = NewSchedule::new(&b.name, &b.instruction, b.when).map_err(refused)?;
+    let new = NewSchedule::new(&b.name, &b.instruction, b.when)
+        .map_err(refused)?
+        .acting_on(b.acts_on);
     let kept = schedules.add(&person, new).await.map_err(refused)?;
     tracing::info!("[schedules] {person} added schedule {}", kept.id);
     Ok((StatusCode::CREATED, Json(kept)))
@@ -165,7 +170,9 @@ pub async fn update(
     let person = signed_in_person(&state, &headers)?;
     let schedules = schedules(&state)?;
     let b = read(body)?;
-    let new = NewSchedule::new(&b.name, &b.instruction, b.when).map_err(refused)?;
+    let new = NewSchedule::new(&b.name, &b.instruction, b.when)
+        .map_err(refused)?
+        .acting_on(b.acts_on);
     schedules
         .update(&person, id, new)
         .await

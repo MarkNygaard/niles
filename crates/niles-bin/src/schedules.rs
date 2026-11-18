@@ -8,7 +8,7 @@
 //! turn and never spoken: the turn's asker has no satellite.
 
 use crate::app::AppChat;
-use crate::approvals::{Approvals, AskFirst, ToolCard};
+use crate::approvals::{Approvals, ToolCard};
 use crate::notify::Notify;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -33,6 +33,27 @@ const GLIMPSE: usize = 160;
 
 const NO_ASSISTANT: &str =
     "Schedules run on Claude or ChatGPT, and neither is switched on under Settings.";
+
+/// A schedule's run that its person allowed, when they made it, to act
+/// on its own on one of their saved login's sites (NIL-87). Scoped around
+/// that run's turn, and carried to the assistant's tool calls by the
+/// turn's grant; nothing else has one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Allowance {
+    pub(crate) person: String,
+    pub(crate) schedule: i64,
+    pub(crate) name: String,
+    pub(crate) login: i64,
+}
+
+tokio::task_local! {
+    pub(crate) static RUN_ALLOWS: Option<Allowance>;
+}
+
+/// The permission of the schedule whose run this is, if it has one.
+pub(crate) fn allowance() -> Option<Allowance> {
+    RUN_ALLOWS.try_with(Clone::clone).ok().flatten()
+}
 
 /// What became of the instruction.
 pub(crate) struct Answered {
@@ -125,6 +146,8 @@ pub(crate) struct Schedules {
     answer: Arc<dyn Answer>,
     notify: Arc<Notify>,
     settings: Arc<ConfigStore>,
+    /// The saved logins, which a schedule's permission names one of.
+    logins: Option<Arc<dyn niles_logins::LoginStore>>,
 }
 
 impl Schedules {
@@ -133,13 +156,46 @@ impl Schedules {
         answer: Arc<dyn Answer>,
         notify: Arc<Notify>,
         settings: Arc<ConfigStore>,
+        logins: Option<Arc<dyn niles_logins::LoginStore>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             store,
             answer,
             notify,
             settings,
+            logins,
         })
+    }
+
+    /// The person's own saved login `id`, which a schedule may be allowed
+    /// to act on. Anybody else's is no such login.
+    pub(crate) async fn login_of(
+        &self,
+        person: &str,
+        id: i64,
+    ) -> niles_schedules::Result<niles_logins::Login> {
+        let invalid = |reason: &str| niles_schedules::Error::Invalid {
+            kind: "login",
+            reason: reason.to_string(),
+        };
+        let store = self
+            .logins
+            .as_ref()
+            .ok_or_else(|| invalid("saved logins need Niles's database and its secrets key"))?;
+        store
+            .get(person, id)
+            .await
+            .ok()
+            .flatten()
+            .ok_or_else(|| invalid("there is no saved login of yours by that id"))
+    }
+
+    /// A schedule's permission names only its person's own login.
+    async fn checked(&self, person: &str, new: &NewSchedule) -> niles_schedules::Result<()> {
+        if let Some(id) = new.acts_on {
+            self.login_of(person, id).await?;
+        }
+        Ok(())
     }
 
     /// Reads the clock every [`TICK`] and runs what is due, each in its
@@ -277,7 +333,16 @@ impl Schedules {
         }
         // Named, so the conversation it starts is titled by it.
         let said = format!("{}: {}", schedule.name, schedule.instruction);
-        match self.answer.answer(person, &said).await {
+        let allows = schedule.acts_on.map(|login| Allowance {
+            person: person.to_string(),
+            schedule: schedule.id,
+            name: schedule.name.clone(),
+            login,
+        });
+        match RUN_ALLOWS
+            .scope(allows, self.answer.answer(person, &said))
+            .await
+        {
             Err(why) => failed(None, why),
             // Niles's own model has none of the person's tools; its
             // answer to an agent task is a guess, so the run failed.
@@ -306,6 +371,7 @@ impl Schedules {
         person: &str,
         new: &NewSchedule,
     ) -> niles_schedules::Result<Schedule> {
+        self.checked(person, new).await?;
         let kept = self.store.add(person, new, self.next(new)).await?;
         tracing::info!("[schedules] {person} added schedule {}", kept.id);
         Ok(kept)
@@ -413,7 +479,9 @@ impl Tool for MakeSchedule {
                 assistant does again and again — 'every Monday at 8, my open Linear issues \
                 by priority', 'each weekday at 7, what's in my calendar today'. Not for the \
                 house's lights and devices, which are automations. At most once an hour. \
-                The person allows it on a card first; nothing is kept until then."
+                The person allows it on a card first; nothing is kept until then. A schedule that \
+                books or acts on a site while they're away can be allowed to act there \
+                without asking (acts_on_login), when they ask for it."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -424,7 +492,8 @@ impl Tool for MakeSchedule {
                     "repeat": { "type": "string", "enum": ["daily", "weekdays", "days", "every_hours"], "title": "Repeats" },
                     "at": { "type": "string", "title": "At", "description": "daily, weekdays and days: the time of day, HH:MM, 24-hour, in the household's time zone." },
                     "days": { "type": "array", "items": { "type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] }, "title": "Days", "description": "days only: which days." },
-                    "hours": { "type": "integer", "enum": [1, 2, 3, 4, 6, 8, 12], "title": "Every (hours)", "description": "every_hours only: on the hour from midnight." }
+                    "hours": { "type": "integer", "enum": [1, 2, 3, 4, 6, 8, 12], "title": "Every (hours)", "description": "every_hours only: on the hour from midnight." },
+                    "acts_on_login": { "type": "integer", "title": "May act without asking on", "description": "Only when the person asks for it, after trying the task with you in this chat: the id of one of their saved logins whose site the schedule's runs may sign in to, click, choose and submit on without a card. Typing, other sites, orders and card details still wait on cards." }
                 }
             }),
         }
@@ -443,7 +512,8 @@ impl Tool for MakeSchedule {
             str_arg(&args, "instruction").unwrap_or_default(),
             when_of(&args)?,
         )
-        .map_err(|e| invalid(e.to_string()))?;
+        .map_err(|e| invalid(e.to_string()))?
+        .acting_on(args.get("acts_on_login").and_then(Value::as_i64));
         let kept = self
             .0
             .add(&person, &new)
@@ -458,9 +528,76 @@ impl Tool for MakeSchedule {
     }
 }
 
+/// `make_schedule` behind its card, always: like `AskFirst`, but the
+/// card names the login a schedule may act on by its label and sites,
+/// and no earlier yes in the conversation stands in for this one.
+struct HeldMake {
+    make: Arc<MakeSchedule>,
+    approvals: Arc<Approvals>,
+    card: ToolCard,
+}
+
+/// The card's line for a schedule's permission (NIL-87).
+const MAY_ACT: &str = "May act without asking on";
+
+#[async_trait]
+impl Tool for HeldMake {
+    fn descriptor(&self) -> ToolDescriptor {
+        self.make.descriptor()
+    }
+
+    fn offered(&self) -> bool {
+        self.make.offered()
+    }
+
+    async fn execute(&self, args: Value) -> niles_tools::Result<Value> {
+        let Some(asker) = crate::approvals::asker() else {
+            return Err(niles_tools::Error::Remote(
+                "a schedule is made by its person, in the app's chat".into(),
+            ));
+        };
+        let mut card = self.card.for_args(&args);
+        if let Some(id) = args.get("acts_on_login").and_then(Value::as_i64) {
+            let login = self
+                .make
+                .0
+                .login_of(&asker.person, id)
+                .await
+                .map_err(|e| invalid(e.to_string()))?;
+            let sites: Vec<String> = login
+                .origins
+                .iter()
+                .map(|o| o.as_str().to_string())
+                .collect();
+            let plain = format!(
+                "{} ({}): signs in, clicks, chooses and submits there without asking. Never types, pays or orders.",
+                login.label,
+                sites.join(", ")
+            );
+            for field in card.fields.iter_mut().filter(|f| f.label == MAY_ACT) {
+                field.value.clone_from(&plain);
+            }
+        }
+        let held = self.approvals.hold(
+            &asker,
+            self.make.clone(),
+            &self.card.subtitle,
+            args,
+            card,
+            crate::approvals::Allow::Anywhere,
+        );
+        tracing::info!("[approvals] {MAKE} is waiting for {}'s yes", asker.person);
+        Ok(json!({
+            "waiting_for_approval": true,
+            "shown_to_the_person": held.title,
+            "note": "Nothing has happened yet. Under your reply the person has a card with Allow and Deny. Say in one short sentence what is waiting for them. Do not ask them to type yes.",
+        }))
+    }
+}
+
 /// Offers `make_schedule` in the chat, behind its card.
 pub(crate) fn offer(schedules: &Arc<Schedules>, dynamic: &DynamicTools, approvals: Arc<Approvals>) {
-    let make = MakeSchedule(schedules.clone());
+    let make = Arc::new(MakeSchedule(schedules.clone()));
     let card = ToolCard {
         title: "Keep this schedule?".into(),
         subtitle: "Schedules".into(),
@@ -473,7 +610,11 @@ pub(crate) fn offer(schedules: &Arc<Schedules>, dynamic: &DynamicTools, approval
     dynamic.set(
         "schedules",
         keywords,
-        vec![Arc::new(AskFirst::new(Arc::new(make), approvals, card)) as Arc<dyn Tool>],
+        vec![Arc::new(HeldMake {
+            make,
+            approvals,
+            card,
+        }) as Arc<dyn Tool>],
     );
 }
 
@@ -500,6 +641,7 @@ impl niles_api::schedules::PersonalSchedules for AppSchedules {
         id: i64,
         new: NewSchedule,
     ) -> niles_schedules::Result<Option<Schedule>> {
+        self.0.checked(person, &new).await?;
         self.0
             .store
             .update(person, id, &new, self.0.next(&new))
@@ -542,6 +684,8 @@ mod tests {
         waiting: bool,
         fallback: Option<String>,
         said: Mutex<Vec<String>>,
+        /// The permission each run answered under.
+        allowed: Mutex<Vec<Option<Allowance>>>,
     }
 
     #[async_trait]
@@ -551,6 +695,10 @@ mod tests {
         }
 
         async fn answer(&self, _person: &str, said: &str) -> Result<Answered, String> {
+            self.allowed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(allowance());
             self.said
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -564,6 +712,30 @@ mod tests {
         }
     }
 
+    /// Majse's gym login is 1, Mark's is 2.
+    const HER_GYM: i64 = 1;
+    const HIS_GYM: i64 = 2;
+
+    fn logins() -> Arc<dyn niles_logins::LoginStore> {
+        let store = niles_logins::MemoryLogins::new();
+        let gym = |who: &str| {
+            niles_logins::NewLogin::new(
+                "Gym",
+                &["https://gym.example".to_string()],
+                niles_logins::Secret::new(who),
+                niles_logins::Secret::new("a long gym password"),
+            )
+            .unwrap()
+        };
+        futures_util::FutureExt::now_or_never(async {
+            use niles_logins::LoginStore;
+            store.add(MAJSE, &gym("majse")).await.unwrap();
+            store.add("person:mark", &gym("mark")).await.unwrap();
+        })
+        .expect("the memory store answers at once");
+        Arc::new(store)
+    }
+
     fn schedules(answer: Fake) -> (Arc<Schedules>, Arc<MemorySchedules>, Arc<Fake>) {
         let store = Arc::new(MemorySchedules::new());
         let answer = Arc::new(answer);
@@ -572,6 +744,7 @@ mod tests {
             answer.clone(),
             Arc::new(Notify::new(None, None, niles_core::EventBus::default())),
             Arc::new(ConfigStore::from_str_in_memory("").unwrap()),
+            Some(logins()),
         );
         (schedules, store, answer)
     }
@@ -745,6 +918,115 @@ mod tests {
         );
         assert!(kept[0].next_due.is_some());
         assert!(store.list("person:mark").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_run_answers_under_its_schedules_permission_and_no_other() {
+        let (schedules, store, answer) = schedules(Fake::default());
+        let now = Utc::now();
+        let allowed = NewSchedule::new(
+            "Book yoga",
+            "book Thursday yoga",
+            When::EveryHours { hours: 1 },
+        )
+        .unwrap()
+        .acting_on(Some(HER_GYM));
+        let allowed = schedules.add(MAJSE, &allowed).await.unwrap();
+        store.set_next(allowed.id, Some(now)).await.unwrap();
+        let plain = kept(&store, now).await;
+        run_due(&schedules, now).await;
+        let seen = answer.allowed.lock().unwrap().clone();
+        assert!(seen.contains(&Some(Allowance {
+            person: MAJSE.into(),
+            schedule: allowed.id,
+            name: "Book yoga".into(),
+            login: HER_GYM,
+        })));
+        assert!(seen.contains(&None), "{} runs with no permission", plain.id);
+        assert_eq!(allowance(), None, "nothing outside a run has one");
+    }
+
+    #[tokio::test]
+    async fn a_schedule_may_be_allowed_only_on_its_persons_own_login() {
+        let (schedules, _, _) = schedules(Fake::default());
+        let new = |login| {
+            NewSchedule::new(
+                "Book yoga",
+                "book Thursday yoga",
+                When::EveryHours { hours: 1 },
+            )
+            .unwrap()
+            .acting_on(Some(login))
+        };
+        assert!(
+            schedules.add(MAJSE, &new(HIS_GYM)).await.is_err(),
+            "his login"
+        );
+        assert!(
+            schedules.add(MAJSE, &new(99)).await.is_err(),
+            "no such login"
+        );
+        let kept = schedules.add(MAJSE, &new(HER_GYM)).await.unwrap();
+        assert_eq!(kept.acts_on, Some(HER_GYM));
+    }
+
+    #[tokio::test]
+    async fn make_schedule_holds_a_card_that_names_the_login_it_may_act_on() {
+        let (schedules, store, _) = schedules(Fake::default());
+        let approvals = Arc::new(Approvals::new(niles_core::EventBus::default(), None));
+        let held = HeldMake {
+            make: Arc::new(MakeSchedule(schedules.clone())),
+            approvals: approvals.clone(),
+            card: ToolCard {
+                title: "Keep this schedule?".into(),
+                subtitle: "Schedules".into(),
+                icon: None,
+                schema: MakeSchedule(schedules).descriptor().parameters,
+            },
+        };
+        let args = json!({
+            "name": "Book yoga",
+            "instruction": "book Thursday yoga when it opens",
+            "repeat": "days",
+            "days": ["tue"],
+            "at": "00:01",
+            "acts_on_login": HER_GYM,
+        });
+        let said = crate::approvals::ASKER
+            .scope(asker(None), held.execute(args.clone()))
+            .await
+            .unwrap();
+        assert_eq!(said["waiting_for_approval"], true);
+        assert!(
+            store.list(MAJSE).await.unwrap().is_empty(),
+            "nothing kept before her yes"
+        );
+        let card = &approvals.pending(MAJSE)[0].card;
+        let may = card
+            .fields
+            .iter()
+            .find(|f| f.label == MAY_ACT)
+            .expect("the permission is on the card");
+        assert!(
+            may.value.starts_with("Gym (https://gym.example)"),
+            "{}",
+            may.value
+        );
+        assert!(
+            may.value.contains("Never types, pays or orders"),
+            "{}",
+            may.value
+        );
+
+        let mut theirs = args;
+        theirs["acts_on_login"] = json!(HIS_GYM);
+        let refused = crate::approvals::ASKER
+            .scope(asker(None), held.execute(theirs))
+            .await;
+        assert!(
+            refused.is_err(),
+            "another person's login is no login of hers"
+        );
     }
 
     #[tokio::test]

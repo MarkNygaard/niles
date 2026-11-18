@@ -13,8 +13,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { LOGINS } from "@/components/VaultPanel";
 import { api } from "@/lib/api";
-import type { Schedule, ScheduleDraft, ScheduleRun, ScheduleWhen, Weekday } from "@/lib/api";
+import type {
+  SavedLogin,
+  Schedule,
+  ScheduleDraft,
+  ScheduleRun,
+  ScheduleWhen,
+  Weekday,
+} from "@/lib/api";
 
 export const MY_SCHEDULES = ["me-schedules"];
 
@@ -65,6 +73,7 @@ export interface Form {
   at: string;
   days: Weekday[];
   hours: number;
+  acts_on: number | null;
 }
 
 export function formOf(schedule?: Schedule): Form {
@@ -76,7 +85,18 @@ export function formOf(schedule?: Schedule): Form {
     at: when && "at" in when ? when.at : "08:00",
     days: when?.kind === "days" ? when.days : ["Mon"],
     hours: when?.kind === "every_hours" ? when.hours : 6,
+    acts_on: schedule?.acts_on ?? null,
   };
+}
+
+/** What a schedule may do without asking, in words; null when every
+    step asks. A login since removed allows nothing, so it says so. */
+export function actsOnLine(acts_on: number | null, logins: SavedLogin[]): string | null {
+  if (acts_on === null) return null;
+  const login = logins.find((l) => l.id === acts_on);
+  return login
+    ? `Acts without asking on ${login.label}: signs in, clicks, chooses and submits. Never types, pays or orders.`
+    : "Acts without asking on a login that's no longer saved, so every step asks.";
 }
 
 /** The form as the server takes it. */
@@ -87,7 +107,12 @@ export function draftOf(form: Form): ScheduleDraft {
       : form.kind === "days"
         ? { kind: "days", days: WEEK.filter((d) => form.days.includes(d)), at: form.at }
         : { kind: form.kind, at: form.at };
-  return { name: form.name.trim(), instruction: form.instruction.trim(), when };
+  return {
+    name: form.name.trim(),
+    instruction: form.instruction.trim(),
+    when,
+    acts_on: form.acts_on,
+  };
 }
 
 /** A time as the person reads it: "Mon 17 Nov, 08:00". */
@@ -109,6 +134,8 @@ export function shownAt(iso: string): string {
 export function SchedulesPanel() {
   const queryClient = useQueryClient();
   const list = useQuery({ queryKey: MY_SCHEDULES, queryFn: api.schedules, retry: false });
+  const saved = useQuery({ queryKey: LOGINS, queryFn: api.logins, retry: false });
+  const logins = saved.data?.logins ?? [];
   const settle = () => queryClient.invalidateQueries({ queryKey: MY_SCHEDULES });
   const [editing, setEditing] = useState<Schedule | "new" | null>(null);
   const [removing, setRemoving] = useState<Schedule | null>(null);
@@ -162,6 +189,9 @@ export function SchedulesPanel() {
                 <p className="text-muted-foreground text-sm whitespace-pre-line">
                   {s.instruction}
                 </p>
+                {s.acts_on !== null && (
+                  <p className="text-sm">{actsOnLine(s.acts_on, logins)}</p>
+                )}
                 {s.next_due && (
                   <p className="text-muted-foreground text-xs">Next: {shownAt(s.next_due)}</p>
                 )}
@@ -238,6 +268,7 @@ export function SchedulesPanel() {
             {editing !== null && (
               <ScheduleForm
                 schedule={editing === "new" ? undefined : editing}
+                logins={logins}
                 onSaved={() => {
                   setEditing(null);
                   void settle();
@@ -296,10 +327,12 @@ export function SchedulesPanel() {
 
 function ScheduleForm({
   schedule,
+  logins,
   onSaved,
   onCancel,
 }: {
   schedule?: Schedule;
+  logins: SavedLogin[];
   onSaved: () => void;
   onCancel: () => void;
 }) {
@@ -322,7 +355,10 @@ function ScheduleForm({
       className="flex flex-col gap-3"
       onSubmit={(e) => {
         e.preventDefault();
-        save.mutate(draftOf(form));
+        // A login removed since allows nothing: saving drops it rather
+        // than have the server refuse the whole schedule.
+        const kept = logins.some((l) => l.id === form.acts_on) ? form.acts_on : null;
+        save.mutate(draftOf({ ...form, acts_on: kept }));
       }}
     >
       <div className="flex flex-col gap-1.5">
@@ -401,6 +437,38 @@ function ScheduleForm({
             className="w-32"
             onChange={(e) => set({ at: e.target.value })}
           />
+        </div>
+      )}
+      {(logins.length > 0 || form.acts_on !== null) && (
+        <div className="flex flex-col gap-1.5">
+          <span className="text-sm font-medium">May act without asking on</span>
+          <div role="group" aria-label="May act without asking on" className="flex flex-wrap gap-1">
+            <Button
+              type="button"
+              size="sm"
+              variant={form.acts_on === null ? "secondary" : "ghost"}
+              aria-pressed={form.acts_on === null}
+              onClick={() => set({ acts_on: null })}
+            >
+              Nothing, ask each time
+            </Button>
+            {logins.map((l) => (
+              <Button
+                key={l.id}
+                type="button"
+                size="sm"
+                variant={form.acts_on === l.id ? "secondary" : "ghost"}
+                aria-pressed={form.acts_on === l.id}
+                onClick={() => set({ acts_on: l.id })}
+              >
+                {l.label}
+              </Button>
+            ))}
+          </div>
+          <p className="text-muted-foreground text-xs">
+            On that login's sites, its runs sign in, click, choose and submit with no card, and
+            each step goes into Approvals' history. Typing, paying and ordering still ask.
+          </p>
         </div>
       )}
       {save.error && <p className="text-destructive text-sm">{save.error.message}</p>}

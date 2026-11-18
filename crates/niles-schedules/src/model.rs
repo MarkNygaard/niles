@@ -161,6 +161,10 @@ pub struct NewSchedule {
     pub name: String,
     pub instruction: String,
     pub when: When,
+    /// The saved login whose sites its runs may act on without asking:
+    /// clicks, choices, submits and signing in with that login
+    /// (NIL-87). Checked to be its person's own before it is kept.
+    pub acts_on: Option<i64>,
 }
 
 impl NewSchedule {
@@ -169,7 +173,15 @@ impl NewSchedule {
             name: name(given_name)?,
             instruction: instruction(given_instruction)?,
             when: when.checked()?,
+            acts_on: None,
         })
+    }
+
+    /// The same schedule, allowed to act on its own on `login`'s sites.
+    #[must_use]
+    pub fn acting_on(mut self, login: Option<i64>) -> NewSchedule {
+        self.acts_on = login;
+        self
     }
 }
 
@@ -183,6 +195,8 @@ pub struct Schedule {
     pub paused: bool,
     /// When it runs next; `None` while paused.
     pub next_due: Option<DateTime<Utc>>,
+    /// The saved login whose sites its runs may act on without asking.
+    pub acts_on: Option<i64>,
 }
 
 /// What became of a run.

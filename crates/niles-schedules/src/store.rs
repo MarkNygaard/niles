@@ -136,6 +136,7 @@ impl ScheduleStore for MemorySchedules {
             when: new.when.clone(),
             paused: false,
             next_due: next,
+            acts_on: new.acts_on,
         };
         kept.rows.push(Row {
             person: person.to_string(),
@@ -163,6 +164,7 @@ impl ScheduleStore for MemorySchedules {
         row.schedule.name = new.name.clone();
         row.schedule.instruction = new.instruction.clone();
         row.schedule.when = new.when.clone();
+        row.schedule.acts_on = new.acts_on;
         if !row.schedule.paused {
             row.schedule.next_due = next;
         }

@@ -216,6 +216,15 @@ pub(super) async fn hold(
     if needs_no_card(&element, &action, &page) {
         return choose_now(browsing, asker, opened, &element, &action).await;
     }
+    if super::standing::kind_allowed(&action)
+        && order::of(&element, &action, &page).is_none()
+        && let Some(allows) = super::standing::covers(browsing, asker, opened, None, &page).await
+    {
+        return step_now(
+            browsing, asker, opened, &element, &action, &reason, scrub, &allows,
+        )
+        .await;
+    }
     let aim = checked(&opened.tab, &element, &action).await?;
     let outline = aim
         .outline()
@@ -293,6 +302,54 @@ async fn choose_now(
     answer["done"] = json!(format!(
         "Chose \"{label}\". Picking an option needs no card, so it is done; adding it to a basket or sending a form still waits on one."
     ));
+    Ok(answer)
+}
+
+/// Take a step the schedule may take without asking, with the same
+/// checks a card's step gets; keep it in Approvals' history, and answer
+/// with the page as it is after.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the step, its asker and session, and the permission it runs under; a struct for one call would only rename them"
+)]
+async fn step_now(
+    browsing: &Arc<Browsing>,
+    asker: &Asker,
+    opened: &Opened,
+    element: &Element,
+    action: &Action,
+    reason: &str,
+    scrub: &Scrub,
+    allows: &crate::schedules::Allowance,
+) -> niles_tools::Result<Value> {
+    let aim = checked(&opened.tab, element, action).await?;
+    let address = opened.tab.address().await.map_err(remote)?;
+    let kept = scrub.card(super::standing::marked(
+        card(action, element, &address, reason, None),
+        allows,
+    ));
+    let done = match (action, aim) {
+        (Action::Click, Aim::Clear { at, .. }) => opened.tab.click(at).await,
+        (Action::Choose { choice }, _) => opened.tab.choose(element, &choice.value).await,
+        (Action::Submit, _) => opened.tab.submit(element).await,
+        _ => return Err(invalid(action.name(), "Niles can't take that step now.")),
+    };
+    // A fixed reason for the history: a browser's error can quote the page.
+    let outcome = done
+        .as_ref()
+        .map(|_| ())
+        .map_err(|_| "It didn't work.".to_string());
+    super::standing::record(browsing, asker, &kept, outcome).await;
+    done.map_err(remote)?;
+    browsing.touch(&asker.person, opened.serial);
+    tracing::info!(
+        "[browser] {}'s schedule {} took a step with no card",
+        asker.person,
+        allows.schedule
+    );
+    let read = opened.tab.read().await.map_err(remote)?;
+    let mut answer = super::tools::read_out(browsing, &asker.person, opened.serial, read);
+    answer["done"] = json!(super::standing::said(allows, action.done()));
     Ok(answer)
 }
 

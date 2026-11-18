@@ -1212,3 +1212,10 @@ id = "vault-redesign"
 category = "ui.settings"
 summary = "Vault lists logins with site icons beside each one's detail and activity by day; authenticator QR codes scan in"
 since_pr = 541
+
+[[feature]]
+id = "schedule-acts-on-a-login"
+category = "runtime.approvals"
+summary = "A schedule can be allowed to sign in, click and submit on one saved login's sites with no card; typing and paying ask"
+phrasings = ["every Monday at midnight, book Tuesday's yoga class on my gym login"]
+since_pr = 544

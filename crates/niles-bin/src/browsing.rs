@@ -22,6 +22,7 @@ mod login;
 mod order;
 mod scrub;
 mod signin;
+mod standing;
 mod step;
 mod tools;
 

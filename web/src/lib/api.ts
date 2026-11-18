@@ -154,12 +154,16 @@ export interface Schedule {
   paused: boolean;
   /** When it runs next; null while paused. */
   next_due: string | null;
+  /** The saved login on whose sites its runs click, choose, submit and
+      sign in without asking; null when every step asks. */
+  acts_on: number | null;
 }
 
 export interface ScheduleDraft {
   name: string;
   instruction: string;
   when: ScheduleWhen;
+  acts_on: number | null;
 }
 
 export interface ScheduleList {
@@ -1590,11 +1594,12 @@ export interface DecidedApproval {
   title: string;
   summary: string;
   status: Exclude<ApprovalStatus, "pending">;
-  /** What the person chose; null for a lapse. */
-  decision: Decision | null;
+  /** What the person chose; null for a lapse. "schedule" when a
+      schedule's run took the step on its own, as its person allowed. */
+  decision: Decision | "schedule" | null;
   outcome: string | null;
-  decided_via: "app" | "voice" | null;
-  asked_via: "app" | "voice";
+  decided_via: "app" | "voice" | "schedule" | null;
+  asked_via: "app" | "voice" | "schedule";
   asked_at: string;
   decided_at: string | null;
   conversation_id: number | null;
