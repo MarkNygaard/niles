@@ -105,6 +105,9 @@ pub struct Element {
     pub disabled: bool,
     pub visible: bool,
     pub options: Vec<Choice>,
+    /// Clicking it only picks one of its group's options, such as a size:
+    /// a radio button, or a toggle or option among others like it.
+    pub choice: bool,
 }
 
 impl Element {
@@ -129,6 +132,10 @@ pub struct Reading {
     /// The page shows a CAPTCHA, which Niles never solves.
     #[serde(default)]
     pub captcha: bool,
+    /// The site refused the page with 403 or 429, as a site that keeps
+    /// automated browsers out does. Never set with `captcha`.
+    #[serde(default)]
+    pub blocked: bool,
     /// The page asks for a code the site sent.
     #[serde(default)]
     pub asks_code: bool,
@@ -137,6 +144,51 @@ pub struct Reading {
     pub card_details: bool,
     pub more_above: bool,
     pub more_below: bool,
+}
+
+/// A popup Niles closed by itself (NIL-84).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Popup {
+    /// A cookie or consent banner.
+    Cookies,
+    /// A newsletter or offer popup asking for a sign-up.
+    Signup,
+}
+
+/// What Niles pressed on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pressed {
+    /// Decline, or only the necessary cookies.
+    Declined,
+    /// Its close button, or No thanks.
+    Closed,
+    /// Accept: the banner had nothing else.
+    Accepted,
+}
+
+/// One popup closed, and how.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct Tidied {
+    pub popup: Popup,
+    pub pressed: Pressed,
+}
+
+impl Tidied {
+    /// What the model is told of it, in Niles's words.
+    pub fn said(self) -> &'static str {
+        match (self.popup, self.pressed) {
+            (Popup::Cookies, Pressed::Declined) => {
+                "Closed a cookie banner, declining all but the necessary cookies."
+            }
+            (Popup::Cookies, Pressed::Closed) => "Closed a cookie banner.",
+            (Popup::Cookies, Pressed::Accepted) => {
+                "Closed a cookie banner by accepting: it offered nothing else."
+            }
+            (Popup::Signup, _) => "Closed a newsletter popup without signing up.",
+        }
+    }
 }
 
 /// What a page shows of an order, for the order card and the stop at
@@ -334,6 +386,11 @@ pub trait Tab: Send + Sync {
     /// Put a profile back and open the page again.
     async fn restore(&self, origins: &[String], profile: &str) -> Result<()>;
 
+    /// Close the popups in the way of the page, a cookie banner and a
+    /// newsletter popup, with a real click, and say which (NIL-84).
+    /// Never types into one or signs up.
+    async fn tidy(&self) -> Result<Vec<Tidied>>;
+
     /// The page as pictures for a live view, the newest one at a time.
     /// `pace` is the least milliseconds between two, read for each so it
     /// can change while the view runs. Starting again replaces the last
@@ -376,6 +433,7 @@ mod tests {
             disabled: false,
             visible: true,
             options: vec![],
+            choice: false,
         }
     }
 

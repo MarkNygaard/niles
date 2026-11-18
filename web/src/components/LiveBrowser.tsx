@@ -1,6 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, CornerDownLeft, Delete, Hand, RotateCw } from "lucide-react";
+import {
+  ArrowLeft,
+  CornerDownLeft,
+  Delete,
+  Hand,
+  Maximize2,
+  Minimize2,
+  RotateCw,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -11,70 +20,12 @@ import {
   DRAG,
   dragWheel,
   keyOf,
-  liveUrl,
   modifiersOf,
   pageAt,
   tap,
 } from "@/lib/browser";
 import type { LiveInput } from "@/lib/browser";
-
-/** The page's pictures over the live socket, and a way to send it input.
-    Reconnects while `enabled`, so a session that ends and a new one that
-    opens are both followed. */
-function useLiveSocket(enabled: boolean) {
-  const [picture, setPicture] = useState<string | null>(null);
-  const [refused, setRefused] = useState<string | null>(null);
-  const socket = useRef<WebSocket | null>(null);
-
-  useEffect(() => {
-    if (!enabled) return;
-    let closed = false;
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    const connect = () => {
-      const ws = new WebSocket(liveUrl(window.location));
-      ws.binaryType = "blob";
-      ws.onmessage = (message) => {
-        if (message.data instanceof Blob) {
-          const next = URL.createObjectURL(message.data);
-          setPicture((shown) => {
-            if (shown) URL.revokeObjectURL(shown);
-            return next;
-          });
-          return;
-        }
-        try {
-          const said = JSON.parse(String(message.data)) as { refused?: string };
-          if (said.refused) setRefused(said.refused);
-        } catch {
-          // Not anything the view says.
-        }
-      };
-      ws.onclose = () => {
-        if (!closed) retry = setTimeout(connect, 2_000);
-      };
-      socket.current = ws;
-    };
-    connect();
-    return () => {
-      closed = true;
-      clearTimeout(retry);
-      socket.current?.close();
-      socket.current = null;
-      setPicture((shown) => {
-        if (shown) URL.revokeObjectURL(shown);
-        return null;
-      });
-    };
-  }, [enabled]);
-
-  const send = useCallback((inputs: LiveInput[]) => {
-    const ws = socket.current;
-    if (ws?.readyState !== WebSocket.OPEN) return;
-    for (const input of inputs) ws.send(JSON.stringify(input));
-  }, []);
-
-  return { picture, refused, clearRefused: () => setRefused(null), send };
-}
+import { useLivePicture } from "@/hooks/useLivePicture";
 
 const BUTTONS = ["left", "middle", "right"] as const;
 
@@ -106,7 +57,20 @@ export function LiveBrowser({
   const back = useMutation({ mutationFn: api.browserBack });
   const reload = useMutation({ mutationFn: api.browserReload });
   const live = view.data ?? null;
-  const { picture, refused, clearRefused, send } = useLiveSocket(live !== null);
+  const { picture, refused, clearRefused, send } = useLivePicture(live !== null);
+  // As large as the window, over everything: the panel's half of a desk
+  // is small for a page. The socket stays here, so the picture carries
+  // on whichever size it is shown at.
+  const [big, setBig] = useState(false);
+  useEffect(() => {
+    if (!big) return;
+    const shrink = (e: KeyboardEvent) => {
+      // An Escape the page took while it is the person's is the page's.
+      if (e.key === "Escape" && !e.defaultPrevented) setBig(false);
+    };
+    window.addEventListener("keydown", shrink);
+    return () => window.removeEventListener("keydown", shrink);
+  }, [big]);
 
   if (view.isPending) return <Skeleton className="aspect-[1280/900] w-full" />;
   if (view.isError) return <p className="text-destructive text-sm">{view.error.message}</p>;
@@ -121,7 +85,7 @@ export function LiveBrowser({
 
   const working = live.control === "person";
   const error = take.error ?? back.error ?? reload.error;
-  return (
+  const shown = (
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-1">
         <p className="text-muted-foreground truncate text-xs" title={live.address}>
@@ -182,8 +146,37 @@ export function LiveBrowser({
             Take over
           </Button>
         )}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="ml-auto"
+          aria-label={big ? "Make the browser smaller" : "Enlarge the browser"}
+          onClick={() => setBig((b) => !b)}
+        >
+          {big ? <Minimize2 aria-hidden /> : <Maximize2 aria-hidden />}
+          {big ? "Smaller" : "Enlarge"}
+        </Button>
       </div>
     </div>
+  );
+  if (!big) return shown;
+  return (
+    <>
+      <p className="text-muted-foreground text-sm">The browser is enlarged.</p>
+      {createPortal(
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Niles's browser, enlarged"
+          className="bg-background fixed inset-0 z-50 overflow-auto p-4 sm:p-6"
+        >
+          {/* As wide as the window allows while the page and its
+              controls still fit its height. */}
+          <div className="mx-auto w-full max-w-[calc((100dvh-11rem)*1280/900)]">{shown}</div>
+        </div>,
+        document.body,
+      )}
+    </>
   );
 }
 

@@ -20,8 +20,15 @@ use crate::cdp::{Connection, Event};
 use crate::error::{Error, Result};
 use crate::tab::{
     Aim, Asks, Checkout, Choice, Element, Filled, Kind, NodeId, Point, Reading, Rect, Reference,
-    Scroll, Tab,
+    Scroll, Tab, Tidied,
 };
+
+/// At most this many popups are closed before a read: a page that
+/// opens a new one for every one closed isn't tidied forever.
+const MOST_POPUPS: usize = 3;
+
+/// How long a closed popup is given to go before the page is read.
+const POPUP_GONE: Duration = Duration::from_millis(300);
 
 /// Niles's page script, installed in an isolated world the page can't
 /// see (`include_str!` keeps it out of Rust string quoting).
@@ -66,6 +73,8 @@ struct Info {
     connected: bool,
     #[serde(default)]
     options: Vec<Choice>,
+    #[serde(default)]
+    choice: bool,
 }
 
 impl Info {
@@ -82,6 +91,7 @@ impl Info {
             disabled: self.disabled,
             visible: self.visible,
             options: self.options,
+            choice: self.choice,
         }
     }
 }
@@ -740,6 +750,28 @@ impl Tab for Session {
         self.restore_in(origins, profile).await
     }
 
+    async fn tidy(&self) -> Result<Vec<Tidied>> {
+        let mut closed = Vec::new();
+        for _ in 0..MOST_POPUPS {
+            let found = self
+                .evaluate("__niles.popup()".to_string(), Returned::ByValue)
+                .await?;
+            let Some(tidied) = found
+                .get("value")
+                .filter(|v| !v.is_null())
+                .and_then(|v| serde_json::from_value::<Tidied>(v.clone()).ok())
+            else {
+                break;
+            };
+            if !self.press_popup().await? {
+                break;
+            }
+            closed.push(tidied);
+            tokio::time::sleep(POPUP_GONE).await;
+        }
+        Ok(closed)
+    }
+
     async fn screencast(
         &self,
         pace: Arc<std::sync::atomic::AtomicU64>,
@@ -888,6 +920,51 @@ fn visible_part(quads: &[Value], vw: f64, vh: f64) -> Option<Rect> {
 }
 
 impl Session {
+    /// Press the button `__niles.popup()` chose: a real click where it
+    /// shows, else the button's own click. False when it went.
+    async fn press_popup(&self) -> Result<bool> {
+        let handle = self
+            .evaluate("__niles.popupNode()".to_string(), Returned::AsHandle)
+            .await?;
+        let Some(object) = handle.get("objectId").and_then(Value::as_str) else {
+            return Ok(false);
+        };
+        let node = self
+            .on("DOM.describeNode", json!({"objectId": object}))
+            .await?
+            .get("node")
+            .and_then(|n| n.get("backendNodeId"))
+            .and_then(Value::as_i64);
+        let Some(node) = node else {
+            return Ok(false);
+        };
+        let button = Element {
+            node: NodeId(node),
+            reference: Reference(0),
+            kind: Kind::Button,
+            label: String::new(),
+            link: None,
+            in_form: false,
+            disabled: false,
+            visible: true,
+            options: vec![],
+            choice: false,
+        };
+        match Tab::aim(self, &button).await? {
+            Aim::Clear { at, .. } => Tab::click(self, at).await?,
+            _ => {
+                let rx = self.conn.subscribe();
+                self.call_on(object, "function(){ this.click(); }", &[])
+                    .await?;
+                self.settle(rx).await?;
+            }
+        }
+        let _ = self
+            .on("Runtime.releaseObject", json!({"objectId": object}))
+            .await;
+        Ok(true)
+    }
+
     /// The remote object id of the element, resolved in the isolated
     /// world.
     async fn resolve(&self, element: &Element) -> Result<String> {

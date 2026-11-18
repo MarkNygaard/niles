@@ -66,6 +66,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | Feature | Summary | Since |
 | --- | --- | --- |
 | `browsing-authenticator-codes` | A saved login can keep its authenticator key, and Niles types the sign-in code itself | [#528](https://github.com/MarkNygaard/niles/pull/528) |
+| `browsing-popups-and-choices` | Niles closes cookie and newsletter popups itself and picks a size or colour with no card; the live view can be enlarged | [#539](https://github.com/MarkNygaard/niles/pull/539) |
 | `browsing-sign-in` | Niles signs in with a saved login only on its own sites, asks for a sign-in code on a card, and stops at a CAPTCHA | [#526](https://github.com/MarkNygaard/niles/pull/526) |
 | `tool-browsing` | Do something on a website from the chat: Niles reads the pages, and each click, typing or submit waits on a card | [#520](https://github.com/MarkNygaard/niles/pull/520) |
 | `tool-command-history` | Ask what was said to Niles and when, from 14 days of spoken turns kept in Postgres | [#508](https://github.com/MarkNygaard/niles/pull/508) |
@@ -223,6 +224,7 @@ Niles is an AI-first home-automation system for private homes. It listens to nat
 | `auth-api-key-made` | Niles makes its own API key on a start with a database, and a new one works at once with no restart | [#405](https://github.com/MarkNygaard/niles/pull/405) |
 | `auth-api-token` | A bearer token for reading the API from a terminal | [#186](https://github.com/MarkNygaard/niles/pull/186) |
 | `auth-github-sign-in` | Sign in with GitHub, against an allowlist of verified email addresses | [#186](https://github.com/MarkNygaard/niles/pull/186) |
+| `browsing-in-the-chat` | While Niles browses, the reply being waited for shows the page live; a site that refuses automated browsers is said so | [#537](https://github.com/MarkNygaard/niles/pull/537) |
 | `browsing-live-view` | Watch Niles's browser live in the Niles panel, take it over and give it back; Niles hands it over on a CAPTCHA | [#534](https://github.com/MarkNygaard/niles/pull/534) |
 | `chat-attachments` | Attach photos and PDFs to a chat message by dragging, the paperclip or a paste; chips before sending, thumbnails after | [#449](https://github.com/MarkNygaard/niles/pull/449) |
 | `ui-approval-link` | #/chat?approval= and an approval's id opens its card in the conversation, outlined, or in Approvals when it has none | [#485](https://github.com/MarkNygaard/niles/pull/485) |

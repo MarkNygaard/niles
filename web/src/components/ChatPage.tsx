@@ -523,6 +523,7 @@ export function ChatPage() {
         handoffWaiting={
           browser.data?.control === "person" ? (browser.data.handoff?.id ?? null) : null
         }
+        browser={browser.data ?? null}
         onOpenBrowser={openBrowser}
         onDictate={async (audio) => (await api.dictate(audio)).text}
         onOpenArtifact={openArtifact}

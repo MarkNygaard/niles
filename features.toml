@@ -1194,3 +1194,15 @@ id = "browsing-live-view"
 category = "ui.chat"
 summary = "Watch Niles's browser live in the Niles panel, take it over and give it back; Niles hands it over on a CAPTCHA"
 since_pr = 534
+
+[[feature]]
+id = "browsing-in-the-chat"
+category = "ui.chat"
+summary = "While Niles browses, the reply being waited for shows the page live; a site that refuses automated browsers is said so"
+since_pr = 537
+
+[[feature]]
+id = "browsing-popups-and-choices"
+category = "llm.tools"
+summary = "Niles closes cookie and newsletter popups itself and picks a size or colour with no card; the live view can be enlarged"
+since_pr = 539

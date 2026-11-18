@@ -45,8 +45,8 @@ pub use picture::picture;
 pub use proxy::Proxy;
 pub use session::Session;
 pub use tab::{
-    Aim, Asks, Checkout, Choice, Driver, Element, Filled, Kind, NodeId, Point, Reading, Rect,
-    Reference, Scroll, Tab, on_sites,
+    Aim, Asks, Checkout, Choice, Driver, Element, Filled, Kind, NodeId, Point, Popup, Pressed,
+    Reading, Rect, Reference, Scroll, Tab, Tidied, on_sites,
 };
 
 /// Where Niles looks for the browser: the name both the Kustomize Service

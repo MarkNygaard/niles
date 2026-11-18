@@ -144,7 +144,48 @@
       visible: shown(el),
       connected: el.isConnected,
       options: options(el),
+      choice: choice(el),
     };
+  }
+
+  // Whether clicking the element only picks one of a group's options, a
+  // size or a colour, which changes nothing until something is added or
+  // submitted: a radio button, or an element marked as a toggle or an
+  // option, with a short label, among two or more like it in its group.
+  // Never a link. Steps like these run without a card (NIL-84).
+  const CHOICE_ROLES = ["radio", "option", "menuitemradio"];
+  function choiceSignature(el) {
+    if (el.tagName === "A" && el.href) return null;
+    const type = (el.getAttribute("type") || "").toLowerCase();
+    if (el.tagName === "INPUT" && type === "radio") return "input-radio";
+    const role = el.getAttribute("role");
+    if (CHOICE_ROLES.includes(role)) return "role-" + role;
+    if (el.hasAttribute("aria-pressed")) return el.tagName + "-pressed";
+    if (el.hasAttribute("aria-checked")) return el.tagName + "-checked";
+    return null;
+  }
+
+  function choice(el) {
+    const sign = choiceSignature(el);
+    if (!sign) return false;
+    if (label(el).trim().length > 24) return false;
+    // The group: a radio group or fieldset when there is one, else the
+    // nearest ancestor holding another element like it.
+    const group =
+      el.closest("[role=radiogroup],[role=listbox],fieldset") ||
+      (() => {
+        for (let up = el.parentElement, depth = 0; up && depth < 4; up = up.parentElement, depth++) {
+          if (up.children.length > 1) return up;
+        }
+        return null;
+      })();
+    if (!group) return false;
+    let alike = 0;
+    for (const other of group.querySelectorAll("*")) {
+      if (choiceSignature(other) === sign) alike++;
+      if (alike >= 2) return true;
+    }
+    return false;
   }
 
   function hit(el, x, y) {
@@ -847,11 +888,13 @@
     if (document.body) walk(document.body);
     flush();
 
+    const seen = captcha();
     return {
       address: location.href,
       title: document.title,
       text,
-      captcha: captcha(),
+      captcha: seen,
+      blocked: !seen && refused(),
       card_details: cardDetails(),
       asks_code: passwordField() === null && codeFields().length > 0,
       more_above: above || window.scrollY > 0,
@@ -861,7 +904,172 @@
     };
   }
 
+  // Popups Niles closes itself before it reads or acts (NIL-84): a
+  // cookie banner, declined when it can be, and a newsletter or offer
+  // popup, closed. Niles never types into one and never signs up.
+  // [banner, decline] of the consent tools Niles knows by their markup.
+  const CONSENT = [
+    ["#CybotCookiebotDialog", "#CybotCookiebotDialogBodyButtonDecline"],
+    ["#onetrust-banner-sdk", "#onetrust-reject-all-handler"],
+    ["#didomi-popup, #didomi-notice", "#didomi-notice-disagree-button"],
+    ["#coiOverlay, #coi-banner-wrapper", "#declineButton, .coi-banner__decline"],
+    ["#usercentrics-root", "[data-testid=uc-deny-all-button]"],
+  ];
+  const DECLINE =
+    /^(afvis( alle)?( cookies)?|reject( all)?( cookies)?|decline( all)?( cookies)?|deny( all)?|(use )?(only|just) (necessary|essential)( cookies)?|necessary (cookies )?only|kun nødvendige( cookies)?|tillad (kun )?nødvendige( cookies)?|nur (notwendige|erforderliche)( cookies)?|alle ablehnen|ablehnen|avvisa( alla)?|endast nödvändiga( cookies)?|avslå( alle)?|bare nødvendige( cookies)?)$/i;
+  const CLOSE =
+    /^(close|luk|lukk|stäng|schließen|schliessen|×|✕|✖|x|no,? thanks|nej,? tak|nej,? tack|nei,? takk|nein,? danke|ikke nu|not now|maybe later|måske senere|continue without accepting|fortsæt uden at acceptere)$/i;
+  const ACCEPT =
+    /^(accept( all)?( cookies)?|allow( all)?( cookies)?|ok|okay|i agree|agree|got it|accepter( alle)?( cookies)?|tillad alle( cookies)?|godkend( alle)?( cookies)?|forstået|alle akzeptieren|akzeptieren|acceptera( alla)?( cookies)?|godta( alle)?|tillat alle)$/i;
+  const COOKIE_WORDS = /cookie|samtykke|consent|einwilligung|samtycke/i;
+  const SIGNUP_WORDS =
+    /newsletter|nyhedsbrev|nyhetsbrev|tilmeld|sign ?up|subscribe|abonn|rabat|discount|% ?off|first order|første ordre|første køb/i;
+  const ICON_CLOSE = /close|dismiss|luk/i;
+
+  // The button the last popup() chose, for popupNode().
+  let popupButton = null;
+
+  function within(root, selector) {
+    const out = [];
+    const walk = (node) => {
+      for (const el of node.querySelectorAll(selector)) out.push(el);
+      for (const el of node.querySelectorAll("*")) {
+        if (el.shadowRoot && el.shadowRoot.mode === "open") walk(el.shadowRoot);
+      }
+    };
+    walk(root.shadowRoot && root.shadowRoot.mode === "open" ? root.shadowRoot : root);
+    return out;
+  }
+
+  function wording(b) {
+    return (b.innerText || b.value || b.getAttribute("aria-label") || b.getAttribute("title") || "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  // Every name a button goes by: what it shows, its value, its
+  // aria-label and its title. An icon's glyph and its "Close" label
+  // are both its names.
+  function names(b) {
+    return [b.innerText, b.value, b.getAttribute("aria-label"), b.getAttribute("title")]
+      .filter((n) => typeof n === "string")
+      .map((n) => n.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+  }
+
+  // What a person could press in the popup: never a link to elsewhere.
+  function pressable(box) {
+    return within(box, "button,[role=button],a,input[type=button],input[type=submit]").filter(
+      (b) => {
+        if (!shown(b)) return false;
+        const href = b.tagName === "A" ? b.getAttribute("href") : null;
+        return !href || /^(#|javascript:)/i.test(href);
+      },
+    );
+  }
+
+  // Dialogs, and boxes fixed over a good part of the view: where a
+  // popup sits. A box inside one already found is the same popup.
+  function overlays() {
+    const found = [];
+    const view = window.innerWidth * window.innerHeight;
+    for (const el of document.body ? document.body.querySelectorAll("*") : []) {
+      if (found.some((f) => f.contains(el))) continue;
+      if (el.offsetWidth * el.offsetHeight < 20000) continue;
+      const dialog =
+        ["dialog", "alertdialog"].includes(el.getAttribute("role")) ||
+        el.getAttribute("aria-modal") === "true" ||
+        (el.tagName === "DIALOG" && el.open);
+      const fixed = getComputedStyle(el).position === "fixed";
+      if (!(dialog || fixed) || !shown(el)) continue;
+      if (["HEADER", "NAV", "FOOTER"].includes(el.tagName) && !dialog) continue;
+      if (fixed && !dialog && el.offsetWidth * el.offsetHeight > view * 0.98) {
+        // A full-page backdrop: its popup is inside it.
+        found.push(el);
+        continue;
+      }
+      found.push(el);
+    }
+    return found;
+  }
+
+  function pick(box, popup) {
+    const buttons = pressable(box);
+    const order =
+      popup === "cookies"
+        ? [
+            [DECLINE, "declined"],
+            [CLOSE, "closed"],
+            [ACCEPT, "accepted"],
+          ]
+        : [[CLOSE, "closed"]];
+    for (const [pattern, pressed] of order) {
+      const b = buttons.find((b) => names(b).some((n) => pattern.test(n)));
+      if (b) {
+        popupButton = b;
+        return { popup, pressed };
+      }
+    }
+    // A close button with an icon and no words, named by its class,
+    // id or test id.
+    const icon = buttons.find(
+      (b) =>
+        wording(b).length <= 1 &&
+        ICON_CLOSE.test(
+          `${typeof b.className === "string" ? b.className : ""} ${b.id} ${b.getAttribute("data-testid") || ""}`,
+        ),
+    );
+    if (icon) {
+      popupButton = icon;
+      return { popup, pressed: "closed" };
+    }
+    return null;
+  }
+
+  // The first popup in the way and what Niles would press on it, or
+  // null. The button itself is popupNode()'s, for a real click.
+  function popup() {
+    popupButton = null;
+    for (const [banner, decline] of CONSENT) {
+      const box = deepAll(banner).find(shown);
+      if (!box) continue;
+      const declined = within(document, decline).find(shown);
+      if (declined) {
+        popupButton = declined;
+        return { popup: "cookies", pressed: "declined" };
+      }
+      const picked = pick(box, "cookies");
+      if (picked) return picked;
+    }
+    for (const box of overlays()) {
+      const text = (box.innerText || "").slice(0, 3000);
+      const picked = COOKIE_WORDS.test(text)
+        ? pick(box, "cookies")
+        : SIGNUP_WORDS.test(text)
+          ? pick(box, "signup")
+          : null;
+      if (picked) return picked;
+    }
+    return null;
+  }
+
+  function popupNode() {
+    return popupButton && popupButton.isConnected ? popupButton : null;
+  }
+
+  // Whether the site refused the page: its document came back as 403 or
+  // 429, which is how a site that keeps automated browsers out answers
+  // one. A CAPTCHA is told apart first, since a challenge may come back
+  // as 403 too and a person can pass that one.
+  function refused() {
+    const entry = performance.getEntriesByType("navigation")[0];
+    const status = entry && typeof entry.responseStatus === "number" ? entry.responseStatus : 0;
+    return status === 403 || status === 429;
+  }
+
   globalThis.__niles = {
+    popup,
+    popupNode,
     node,
     info,
     read,
