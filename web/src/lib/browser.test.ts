@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dragWheel, keyOf, liveUrl, modifiersOf, pageAt, tap } from "@/lib/browser";
+import { dragWheel, keyOf, liveUrl, modifiersOf, pageAt, siteOf, tap } from "@/lib/browser";
 
 const PAGE = { width: 1280, height: 900 };
 
@@ -61,5 +61,13 @@ describe("liveUrl", () => {
     expect(liveUrl({ protocol: "http:", host: "localhost:5173" })).toBe(
       "ws://localhost:5173/me/browser/live",
     );
+  });
+});
+
+describe("siteOf", () => {
+  it("is the host a person reads, without www", () => {
+    expect(siteOf("https://www.zalando.dk/herretoej-jeans/")).toBe("zalando.dk");
+    expect(siteOf("https://shop.example:443/basket")).toBe("shop.example");
+    expect(siteOf("")).toBe("");
   });
 });
