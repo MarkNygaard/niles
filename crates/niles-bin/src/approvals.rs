@@ -562,6 +562,47 @@ impl Approvals {
         tokio::spawn(async move { notify.push(&person, &message, except.as_deref()).await });
     }
 
+    /// A step a schedule was allowed, when its person made it, to take
+    /// without asking (NIL-87): never held, but kept in the history as
+    /// allowed by that schedule, with what became of it.
+    pub(crate) async fn allowed_by_schedule(
+        &self,
+        asker: &Asker,
+        label: &str,
+        card: &ApprovalCard,
+        outcome: Result<(), String>,
+    ) {
+        let Some(ledger) = self.ledger.clone() else {
+            return;
+        };
+        let now = Utc::now();
+        let (status, outcome) = match outcome {
+            Ok(()) => ("allowed", "Done".to_string()),
+            Err(why) => ("failed", why),
+        };
+        let entry = ApprovalEntry {
+            approval: new_id(),
+            person: asker.person.clone(),
+            tool: label.to_string(),
+            icon: card.icon.clone(),
+            title: card.title.clone(),
+            summary: summary(card),
+            status: status.into(),
+            decision: Some("schedule".into()),
+            outcome: Some(outcome),
+            asked_via: "schedule".into(),
+            decided_via: Some("schedule".into()),
+            asked_at: now,
+            decided_at: Some(now),
+            conversation_id: asker.conversation,
+        };
+        if let Err(e) = ledger.asked(&entry).await {
+            tracing::warn!("[approvals] a step a schedule took was not logged: {e}");
+            return;
+        }
+        self.keep(&entry).await;
+    }
+
     async fn keep(&self, entry: &ApprovalEntry) {
         if let Some(ledger) = &self.ledger
             && let Err(e) = ledger.settled(entry).await
@@ -880,7 +921,7 @@ pub(crate) struct ToolCard {
 }
 
 impl ToolCard {
-    fn for_args(&self, args: &Value) -> ApprovalCard {
+    pub(crate) fn for_args(&self, args: &Value) -> ApprovalCard {
         let properties = self.schema.get("properties");
         let fields = args
             .as_object()

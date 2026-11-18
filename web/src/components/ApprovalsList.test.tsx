@@ -70,6 +70,10 @@ describe("the history's words", () => {
     expect(decidedLabel(decided(1, { status: "denied", decision: "deny" }))).toBe("Denied");
     expect(decidedLabel(decided(1, { status: "lapsed", decision: null }))).toBe("Lapsed");
     expect(decidedLabel(decided(1, { status: "failed" }))).toBe("Allowed, but it didn't work");
+    expect(decidedLabel(decided(1, { decision: "schedule" }))).toBe("Allowed by its schedule");
+    expect(decidedLabel(decided(1, { status: "failed", decision: "schedule" }))).toBe(
+      "Allowed by its schedule, but it didn't work",
+    );
     expect(historyLine(decided(1, { decided_via: "voice" }))).toMatch(/^Allowed once by voice · /);
   });
 

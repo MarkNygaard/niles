@@ -113,6 +113,26 @@ impl Tool for SignInStep {
     }
 }
 
+/// The person's saved login `id`, or what the model can do about it.
+async fn saved_login(
+    store: &dyn niles_logins::LoginStore,
+    person: &str,
+    id: i64,
+) -> niles_tools::Result<niles_logins::Login> {
+    match store.get(person, id).await {
+        Ok(Some(login)) => Ok(login),
+        Ok(None) => Err(invalid(
+            TOOL,
+            format!(
+                "No saved login {id} for this person. request_login answers with their saved logins for a site."
+            ),
+        )),
+        Err(e) => Err(niles_tools::Error::Remote(format!(
+            "saved logins couldn't be read: {e}"
+        ))),
+    }
+}
+
 /// The call-time checks and the card. Each refusal names what the model
 /// can fix; nothing is typed by this half.
 async fn hold_sign_in(
@@ -128,22 +148,7 @@ async fn hold_sign_in(
         return Ok(note(NOBODY));
     }
     let id = login_id(args)?;
-    let login = match store.get(&asker.person, id).await {
-        Ok(Some(login)) => login,
-        Ok(None) => {
-            return Err(invalid(
-                TOOL,
-                format!(
-                    "No saved login {id} for this person. request_login answers with their saved logins for a site."
-                ),
-            ));
-        }
-        Err(e) => {
-            return Err(niles_tools::Error::Remote(format!(
-                "saved logins couldn't be read: {e}"
-            )));
-        }
-    };
+    let login = saved_login(store.as_ref(), &asker.person, id).await?;
     let origins: Vec<String> = login
         .origins
         .iter()
@@ -189,8 +194,6 @@ async fn hold_sign_in(
         PageAsk::NoForm => return Err(invalid(TOOL, NO_FORM)),
         PageAsk::Ready => {}
     }
-    let png = opened.tab.screenshot().await.map_err(remote)?;
-    let picture = niles_browser::picture(&png, None).map_err(remote)?;
     let card = scrub.card(sign_in_card(&login, &address));
     let step = Arc::new(SignInStep {
         browsing: Arc::downgrade(browsing),
@@ -198,6 +201,26 @@ async fn hold_sign_in(
         serial: opened.serial,
         login: id,
     });
+    // A schedule allowed, when it was made, to act on this login's sites
+    // signs in with it without asking (NIL-87).
+    let page = opened.tab.checkout().await.map_err(remote)?;
+    if let Some(allows) = super::standing::covers(browsing, asker, &opened, Some(id), &page).await {
+        // The step takes the tab's lock itself.
+        drop(_guard);
+        let kept = super::standing::marked(card, &allows);
+        let done = step.execute(json!({})).await;
+        let outcome = done
+            .as_ref()
+            .map(|_| ())
+            .map_err(|_| "It didn't work.".to_string());
+        super::standing::record(browsing, asker, &kept, outcome).await;
+        return Ok(json!({
+            "done": super::standing::said(&allows, "Signed in."),
+            "result": done?,
+        }));
+    }
+    let png = opened.tab.screenshot().await.map_err(remote)?;
+    let picture = niles_browser::picture(&png, None).map_err(remote)?;
     let held = browsing.approvals.hold_step(
         asker,
         step,
@@ -1215,6 +1238,61 @@ mod tests {
             .find(|a| a.used == niles_logins::Used::SignedIn)
             .expect("the sign-in is noted");
         assert_eq!(signed_in.site.as_deref(), Some(SHOP));
+    }
+
+    #[tokio::test]
+    async fn a_schedule_allowed_on_the_login_signs_in_with_no_card() {
+        let h = harness().await;
+        let tab = h.page(LOGIN, Asks::Password { username: true }).await;
+        let allows = crate::schedules::Allowance {
+            person: MARK.into(),
+            schedule: 3,
+            name: "Book yoga".into(),
+            login: h.login.id,
+        };
+        let said = crate::schedules::RUN_ALLOWS
+            .scope(
+                Some(allows),
+                sign_in(&h.tool, json!({ "login_id": h.login.id })),
+            )
+            .await
+            .expect("signed in");
+        assert!(
+            said["done"]
+                .as_str()
+                .is_some_and(|d| d.contains("Book yoga")),
+            "{said}"
+        );
+        assert!(h.approvals.pending(MARK).is_empty(), "no card");
+        assert_eq!(
+            tab.state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .typed
+                .len(),
+            2,
+            "the username and password went in"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_schedule_allowed_on_another_login_still_asks_to_sign_in() {
+        let h = harness().await;
+        h.page(LOGIN, Asks::Password { username: true }).await;
+        let allows = crate::schedules::Allowance {
+            person: MARK.into(),
+            schedule: 3,
+            name: "Book yoga".into(),
+            login: h.login.id + 1,
+        };
+        let said = crate::schedules::RUN_ALLOWS
+            .scope(
+                Some(allows),
+                sign_in(&h.tool, json!({ "login_id": h.login.id })),
+            )
+            .await
+            .expect("held");
+        assert_eq!(said["waiting_for_approval"], true);
     }
 
     #[tokio::test]

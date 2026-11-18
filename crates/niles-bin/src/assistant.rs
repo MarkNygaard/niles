@@ -41,6 +41,9 @@ struct Grant {
     /// Which assistant is running: `claude` or `chatgpt`. What a version
     /// it saves is marked as written by.
     via: &'static str,
+    /// The schedule's permission, when this run answers a schedule allowed
+    /// to act on its own (NIL-87): re-scoped around each tool call.
+    allows: Option<crate::schedules::Allowance>,
 }
 
 tokio::task_local! {
@@ -329,6 +332,7 @@ impl Assistant {
         let turn = TurnToken::issue(
             &self.turns,
             Grant {
+                allows: crate::schedules::allowance(),
                 turn: turn(),
                 speaker,
                 tools: None,
@@ -392,6 +396,7 @@ impl Assistant {
         let turn = TurnToken::issue(
             &self.turns,
             Grant {
+                allows: None,
                 turn: None,
                 speaker: for_whom.as_ref().and_then(|a| a.slug.clone()),
                 tools: Some(Arc::new(tools)),
@@ -508,7 +513,12 @@ async fn serve_mcp(
             }
         }),
     );
-    let reply = TURN.scope(grant.turn, handled).await;
+    let reply = TURN
+        .scope(
+            grant.turn,
+            crate::schedules::RUN_ALLOWS.scope(grant.allows, handled),
+        )
+        .await;
     if let Some((tool, artifact)) = logged {
         let refused = reply
             .as_ref()
@@ -877,6 +887,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let token = TurnToken::issue(
             &turns,
             Grant {
+                allows: None,
                 turn: None,
                 speaker: Some("mark".into()),
                 tools: None,
@@ -917,6 +928,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let token = TurnToken::issue(
             &assistant.turns,
             Grant {
+                allows: None,
                 turn: None,
                 speaker: None,
                 tools: None,
@@ -988,6 +1000,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let token = TurnToken::issue(
             &assistant.turns,
             Grant {
+                allows: None,
                 turn: None,
                 speaker: None,
                 tools: Some(Arc::new(review_tools())),
@@ -1015,6 +1028,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let turn = TurnToken::issue(
             &assistant.turns,
             Grant {
+                allows: None,
                 turn: None,
                 speaker: None,
                 tools: None,
@@ -1029,6 +1043,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let job = TurnToken::issue(
             &assistant.turns,
             Grant {
+                allows: None,
                 turn: None,
                 speaker: None,
                 tools: Some(Arc::new(ToolRegistry::new())),
@@ -1055,6 +1070,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let token = TurnToken::issue(
             &assistant.turns,
             Grant {
+                allows: None,
                 turn: None,
                 speaker: None,
                 tools: Some(Arc::new(review_tools())),
@@ -1214,6 +1230,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let token = TurnToken::issue(
             &state.turns,
             Grant {
+                allows: None,
                 turn: None,
                 speaker: None,
                 tools: None,
@@ -1336,6 +1353,7 @@ oauth_token_env = \"NILES_TEST_ASSISTANT_NONE_TOKEN\"
         let job = TurnToken::issue(
             &state.turns,
             Grant {
+                allows: None,
                 turn: None,
                 speaker: None,
                 tools: Some(Arc::new(ToolRegistry::new())),

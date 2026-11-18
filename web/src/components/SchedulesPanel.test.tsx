@@ -1,9 +1,15 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { SchedulesPanel, describeWhen, draftOf, formOf } from "@/components/SchedulesPanel";
+import {
+  SchedulesPanel,
+  actsOnLine,
+  describeWhen,
+  draftOf,
+  formOf,
+} from "@/components/SchedulesPanel";
 import { api } from "@/lib/api";
-import type { Schedule } from "@/lib/api";
+import type { SavedLogin, Schedule } from "@/lib/api";
 
 const LINEAR: Schedule = {
   id: 1,
@@ -12,7 +18,31 @@ const LINEAR: Schedule = {
   when: { kind: "days", days: ["Mon"], at: "08:00" },
   paused: false,
   next_due: "2026-11-23T07:00:00Z",
+  acts_on: null,
 };
+
+const GYM: SavedLogin = {
+  id: 4,
+  label: "Gym",
+  origins: ["https://gym.example"],
+  username: "majse@example.com",
+  last_used: null,
+  signed_in: true,
+  authenticator: false,
+};
+
+const YOGA: Schedule = {
+  ...LINEAR,
+  id: 2,
+  name: "Book yoga",
+  instruction: "book Tuesday's yoga class",
+  when: { kind: "days", days: ["Tue"], at: "00:01" },
+  acts_on: GYM.id,
+};
+
+beforeEach(() => {
+  vi.spyOn(api, "logins").mockResolvedValue({ logins: [GYM] });
+});
 
 function renderPanel() {
   render(
@@ -66,7 +96,35 @@ describe("SchedulesPanel", () => {
       name: "Linear on Monday",
       instruction: "my open Linear issues by priority",
       when: { kind: "days", days: ["Mon", "Wed"], at: "07:30" },
+      acts_on: null,
     });
+  });
+
+  it("shows the login a schedule may act on", async () => {
+    vi.spyOn(api, "schedules").mockResolvedValue({ schedules: [YOGA], assistant: true });
+    renderPanel();
+
+    const list = await screen.findByRole("list", { name: "Your schedules" });
+    await waitFor(() => expect(list).toHaveTextContent("Acts without asking on Gym"));
+  });
+
+  it("allows a schedule to act on a login, and takes it off", async () => {
+    vi.spyOn(api, "schedules").mockResolvedValue({ schedules: [LINEAR, YOGA], assistant: true });
+    const update = vi.spyOn(api, "updateSchedule").mockResolvedValue(LINEAR);
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Linear on Monday" }));
+    const group = await screen.findByRole("group", { name: "May act without asking on" });
+    fireEvent.click(group.querySelector("button:nth-child(2)")!);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    expect(update.mock.calls[0][1].acts_on).toBe(GYM.id);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Book yoga" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Nothing, ask each time" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(2));
+    expect(update.mock.calls[1][1].acts_on).toBeNull();
   });
 
   it("pauses and runs one now", async () => {
@@ -141,14 +199,24 @@ describe("draftOf", () => {
       name: "Mail",
       instruction: "anything new?",
       when: { kind: "every_hours", hours: 4 },
+      acts_on: null,
     });
   });
 
   it("reads a schedule back into the form", () => {
-    expect(draftOf(formOf(LINEAR))).toEqual({
-      name: LINEAR.name,
-      instruction: LINEAR.instruction,
-      when: LINEAR.when,
+    expect(draftOf(formOf(YOGA))).toEqual({
+      name: YOGA.name,
+      instruction: YOGA.instruction,
+      when: YOGA.when,
+      acts_on: GYM.id,
     });
+  });
+});
+
+describe("actsOnLine", () => {
+  it("names the login, or says a removed one allows nothing", () => {
+    expect(actsOnLine(null, [GYM])).toBeNull();
+    expect(actsOnLine(GYM.id, [GYM])).toMatch(/^Acts without asking on Gym:/);
+    expect(actsOnLine(99, [GYM])).toMatch(/no longer saved, so every step asks/);
   });
 });

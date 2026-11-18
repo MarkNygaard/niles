@@ -26,6 +26,7 @@ create table if not exists schedule_runs (
     due timestamptz not null, finished timestamptz, outcome text not null,
     conversation bigint, reason text);
 create index if not exists schedule_runs_schedule on schedule_runs (schedule_id, id desc);
+alter table schedules add column if not exists acts_on bigint;
 ";
 
 pub struct PostgresSchedules {
@@ -70,11 +71,12 @@ impl PostgresSchedules {
             when: when.0,
             paused: row.get("paused"),
             next_due: row.get("next_due"),
+            acts_on: row.get("acts_on"),
         })
     }
 }
 
-const COLUMNS: &str = "id, person, name, instruction, \"when\", paused, next_due";
+const COLUMNS: &str = "id, person, name, instruction, \"when\", paused, next_due, acts_on";
 
 #[async_trait]
 impl ScheduleStore for PostgresSchedules {
@@ -111,14 +113,15 @@ impl ScheduleStore for PostgresSchedules {
     ) -> Result<Schedule> {
         self.ensure_schema().await?;
         let row = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "insert into schedules (person, name, instruction, \"when\", next_due)
-             values ($1, $2, $3, $4, $5) returning {COLUMNS}"
+            "insert into schedules (person, name, instruction, \"when\", next_due, acts_on)
+             values ($1, $2, $3, $4, $5, $6) returning {COLUMNS}"
         )))
         .bind(person)
         .bind(&new.name)
         .bind(&new.instruction)
         .bind(sqlx::types::Json(&new.when))
         .bind(next)
+        .bind(new.acts_on)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| self.storage(e))?;
@@ -135,7 +138,7 @@ impl ScheduleStore for PostgresSchedules {
         self.ensure_schema().await?;
         let row = sqlx::query(sqlx::AssertSqlSafe(format!(
             "update schedules set name = $3, instruction = $4, \"when\" = $5,
-                 next_due = case when paused then null else $6 end
+                 next_due = case when paused then null else $6 end, acts_on = $7
              where person = $1 and id = $2 returning {COLUMNS}"
         )))
         .bind(person)
@@ -144,6 +147,7 @@ impl ScheduleStore for PostgresSchedules {
         .bind(&new.instruction)
         .bind(sqlx::types::Json(&new.when))
         .bind(next)
+        .bind(new.acts_on)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| self.storage(e))?;

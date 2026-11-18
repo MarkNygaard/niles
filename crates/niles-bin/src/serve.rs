@@ -837,6 +837,7 @@ pub(crate) async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             }),
             notify.clone(),
             store.clone(),
+            logins.clone(),
         )
     });
     let _schedules_clock = schedules.as_ref().map(schedules::Schedules::spawn);

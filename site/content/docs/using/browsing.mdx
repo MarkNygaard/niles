@@ -28,7 +28,9 @@ first.
 ## The cards
 
 Every click, every bit of typing and every form Niles submits waits on a
-card under its reply. Two kinds of step don't:
+card under its reply. Two kinds of step don't, and a schedule can be
+allowed a third (see [A schedule that books on its
+own](#a-schedule-that-books-on-its-own)):
 
 - **Picking an option**, such as a size or a colour from a row of them, a
   radio button, or a choice from a drop-down list. It changes nothing
@@ -59,6 +61,31 @@ changed after the card was made, the step lapses and nothing is done. When
 what the card was for is still on the page, a new card shows it as the page
 is now. Otherwise Niles stops, and you ask again. A card also lapses when
 nobody answers it within an hour, and when Niles or its browser restarts.
+
+## A schedule that books on its own
+
+Some things have to happen while you sleep: a class that opens for
+booking at midnight and is full by morning. A
+[schedule](/docs/using/schedules) can be allowed, when it is made, to act
+on one of your saved logins' sites without asking. Its runs then sign in
+with that login, click, pick options and submit forms there with no card.
+
+Everything else still waits on its card, in the schedule's conversation:
+
+- typing anything,
+- a step on any other site,
+- a session already signed in with another login,
+- placing an order or paying, and a page that asks for card details.
+
+Each step a schedule takes this way goes into Approvals' history as
+**Allowed by its schedule**, with the schedule's name on it. The
+permission is the schedule's alone: the same steps asked in the chat, or
+by another schedule, wait on their cards.
+
+Try it in the chat first. Ask Niles to book this week's class, allow its
+cards, and when it worked, ask it to do the same every week at the time
+booking opens, on that login. The schedule's card names the login and
+what it may do there; nothing is kept until you press **Allow once**.
 
 A purchase takes several cards: adding to the basket, going to the
 checkout, signing in, perhaps a code, a delivery time and the order itself.
